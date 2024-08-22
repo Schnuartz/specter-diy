@@ -55,6 +55,11 @@ You may need to set up udev rules and add yourself to `dialout` group. Read more
 
 ## Video and screenshots
 
+Good presentation:
+
+[![Specter-DIY Overview](https://img.youtube.com/vi/HOR9bGK57ZA/0.jpg)](https://www.youtube.com/watch?v=HOR9bGK57ZA)
+
+
 Check out [this video](https://www.youtube.com/watch?v=1H7FqG_FmCw) to get an idea how to assemble it and how it works.
 
 Here is a [Gallery](./docs/pictures/gallery/README.md) with devices assembled by the community.
