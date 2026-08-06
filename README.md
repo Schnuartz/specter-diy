@@ -36,7 +36,8 @@ All the docs are stored in the [`docs/`](./docs) folder:
 - [`quickstart.md`](./docs/quickstart.md) guides you through the initial steps how to get firmware on the board
 - [`reproducible-build.md`](./docs/reproducible-build.md) describes how to build the initial firmware and upgrade files with the same hash as in the release using Docker
 - [`build.md`](./docs/build.md) describes how to build the firmware and the simulator yourself
-- [`security.md`](./docs/security.md) explains possible attack vectors and security model of the project
+- [`security-model.md`](./docs/security-model.md) explains possible attack vectors and security model of the project
+- [`SECURITY.md`](./SECURITY.md) describes how to report vulnerabilities (disclosure policy)
 - [`development.md`](./docs/development.md) explains how to start developing on Specter
 - [`simulator.md`](./docs/simulator.md) shows how to run a simulator on unix/macOS
 - [`communication.md`](./docs/communication.md) defines communication protocol with the host over QR codes and USB
