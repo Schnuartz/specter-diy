@@ -18,10 +18,10 @@ If you want to encrypt your report (recommended for sensitive findings),
 use the GPG keys of the release signers — the same people who sign the
 firmware releases:
 
-| Person | GPG key | Key location |
-|--------|---------|--------------|
-| k9ert | `28B358A8843B0109` | <https://github.com/k9ert.gpg> |
-| Mike Tolkachev (@miketlk) | `DD5C1264EBD645BE` | <https://github.com/miketlk.gpg> |
+| Person | GPG key fingerprint | Key location |
+|--------|---------------------|--------------|
+| k9ert | `ECC0 B4AB D74E 716F 5ADE 0952 28B3 58A8 843B 0109` | <https://github.com/k9ert.gpg> |
+| Mike Tolkachev (@miketlk) | `F2DB C4C6 14C1 13E2 B15F 879A DD5C 1264 EBD6 45BE` | <https://github.com/miketlk.gpg> |
 
 For non-sensitive issues you can also open a public issue on
 [GitHub](https://github.com/cryptoadvance/specter-diy/issues). Please do
@@ -40,7 +40,7 @@ In scope:
 
 - The Specter-DIY firmware (this repository)
 - The secure bootloader ([specter-bootloader](https://github.com/cryptoadvance/specter-bootloader))
-- The smartcard applets
+- The smartcard applets ([specter-javacard](https://github.com/cryptoadvance/specter-javacard))
 - The build and release pipeline
 
 Out of scope:

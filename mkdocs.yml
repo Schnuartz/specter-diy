@@ -14,7 +14,8 @@ nav:
     - 'Shield': shield.md
   - Software:
     - quickstart.md
-    - multisig-security-tradeoffs.md
+    - security-model.md
+    - data-storage.md
   - Development: 
     - 'Developing': development.md
     - communication.md
