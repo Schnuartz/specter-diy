@@ -89,7 +89,8 @@ The **initial** installation is the trust-critical step, because the
 bootloader is not installed at the factory — you flash it yourself:
 
 1. Verify the PGP signature of `sha256.signed.txt`. Since v1.10.3 the
-   hash file is signed with the **"Specter Signer 2026"** key
+   hash file is signed with the **"Specter Signer 2026"** key,
+   controlled by k9ert
    (fingerprint `9DC3 3CA8 3058 9DE3 B322 5C26 EEF5 756B 2EA4 2349`,
    available from the
    [Ubuntu keyserver](http://keyserver.ubuntu.com/pks/lookup?op=get&search=0x9dc33ca830589de3b3225c26eef5756b2ea42349)).

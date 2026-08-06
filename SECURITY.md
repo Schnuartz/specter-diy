@@ -24,7 +24,7 @@ firmware releases:
 | Mike Tolkachev (@miketlk) | `DD5C1264EBD645BE` | <https://github.com/miketlk.gpg> |
 
 The release hash manifests (`sha256.signed.txt`) are signed with the
-"Specter Signer 2026" key, fingerprint
+"Specter Signer 2026" key, controlled by k9ert, fingerprint
 `9DC3 3CA8 3058 9DE3 B322 5C26 EEF5 756B 2EA4 2349`
 ([Ubuntu keyserver](http://keyserver.ubuntu.com/pks/lookup?op=get&search=0x9dc33ca830589de3b3225c26eef5756b2ea42349)).
 
