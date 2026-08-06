@@ -23,6 +23,12 @@ firmware releases:
 | k9ert | `28B358A8843B0109` | <https://github.com/k9ert.gpg> |
 | Mike Tolkachev (@miketlk) | `DD5C1264EBD645BE` | <https://github.com/miketlk.gpg> |
 
+For non-sensitive issues you can also open a public issue on
+[GitHub](https://github.com/cryptoadvance/specter-diy/issues). Please do
+not disclose vulnerability details there — anything that could put users'
+funds at risk belongs in an (ideally encrypted) e-mail first, until a fix
+is released.
+
 The release hash manifests (`sha256.signed.txt`) are signed with the
 "Specter Signer 2026" key, controlled by k9ert, fingerprint
 `9DC3 3CA8 3058 9DE3 B322 5C26 EEF5 756B 2EA4 2349`
