@@ -17,7 +17,7 @@ from platform import (
     get_flash_read_protection_status,
     get_flash_write_protection_status,
 )
-from hosts import Host, HostError
+from hosts import Host, HostError, QRHost
 from app import BaseApp
 from embit import bip39
 from embit.liquid.networks import NETWORKS
@@ -296,6 +296,23 @@ class Specter:
             print(menuitem, "menu is not implemented yet")
             raise SpecterError("Not implemented")
 
+    async def scan_qr(self):
+        """
+        Trigger a single scan on the device's QR scanner host, reusing the
+        exact same scanning infrastructure as every other QR flow (host
+        selection, progress screen, cancel handling) -- see hosts/qr.py.
+        Returns the raw decoded bytes, or None if there's no QR host or the
+        user cancelled. Never logs or persists what was scanned; the
+        caller is responsible for using the result briefly and dropping it.
+        """
+        host = next((h for h in self.hosts if isinstance(h, QRHost)), None)
+        if host is None:
+            return None
+        stream = await host.get_data()
+        if stream is None:
+            return None
+        return stream.read()
+
     async def import_mnemonic(self):
         host = await self.gui.menu(title="What to use for import?", note="\n",
             buttons=[(host, host.button) for host in self.hosts if host.is_enabled],
@@ -423,7 +440,7 @@ class Specter:
             self.keystore.set_mnemonic(password=pwd)
             self.init_apps()
         elif menuitem == 3:
-            await self.keystore.show_mnemonic()
+            await self.keystore.show_mnemonic(self.scan_qr)
         elif menuitem == 4:
             await self.update_devsettings()
         elif menuitem == 5:

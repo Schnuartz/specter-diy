@@ -112,6 +112,15 @@ class ValidateMatrixTest(TestCase):
         for size in (21, 25, 29):
             self.assertEqual(seedqr.validate_matrix(_fake_matrix(size)), size)
 
+    def test_rejects_matrix_with_invalid_module_values(self):
+        # MODULE_OUTSIDE (or any value other than 0/1) may legitimately
+        # appear in a section extracted for the zoom view, but a full
+        # canonical/scanned matrix must contain only real black/white
+        # modules -- this is what compare_matrices() relies on too.
+        bad = _fake_matrix(21, fill=seedqr.MODULE_OUTSIDE)
+        with self.assertRaises(seedqr.MatrixError):
+            seedqr.validate_matrix(bad)
+
 
 class SectionGeometryTest(TestCase):
     def test_21x21_is_3x3_sections_of_7x7(self):
@@ -339,6 +348,209 @@ class NavigationTest(TestCase):
             seedqr.neighbor_section(0, 0, 25, "sideways")
 
 
+def _flip(matrix, y, x):
+    """Return a copy of `matrix` with module (y, x) flipped 0<->1."""
+    rows = [bytearray(row) for row in matrix]
+    rows[y][x] = 1 - rows[y][x]
+    return tuple(bytes(row) for row in rows)
+
+
+class PayloadVerificationTest(TestCase):
+    """
+    Covers seedqr.verify_payload / seedqr.verify_scanned_payload -- the
+    truthful, payload-only verification actually wired into the GUI (see
+    the "Verification / hardware limitation" note at the top of seedqr.py:
+    today's scanner hardware can't expose module-level data, only the
+    decoded payload).
+    """
+
+    def test_standard_payload_matches_itself(self):
+        payload = DOC_STANDARD_PAYLOAD
+        scanned = payload.encode()
+        self.assertTrue(seedqr.verify_payload(payload, scanned))
+        self.assertEqual(seedqr.verify_scanned_payload(payload, scanned), seedqr.VERIFY_MATCH)
+
+    def test_compact_payload_matches_itself(self):
+        payload = seedqr.compact_payload(DOC_MNEMONIC)
+        scanned = bytes(payload)  # the scanner hands back identical raw bytes
+        self.assertTrue(seedqr.verify_payload(payload, scanned))
+        self.assertEqual(seedqr.verify_scanned_payload(payload, scanned), seedqr.VERIFY_MATCH)
+
+    def test_standard_24_word_payload_matches_itself(self):
+        payload = seedqr.standard_payload(MNEMONIC_24)
+        scanned = payload.encode()
+        self.assertEqual(seedqr.verify_scanned_payload(payload, scanned), seedqr.VERIFY_MATCH)
+
+    def test_compact_24_word_payload_matches_itself(self):
+        payload = seedqr.compact_payload(MNEMONIC_24)
+        self.assertEqual(seedqr.verify_scanned_payload(payload, bytes(payload)), seedqr.VERIFY_MATCH)
+
+    def test_standard_payload_mismatch(self):
+        payload = DOC_STANDARD_PAYLOAD
+        flipped_last_digit = "1" if payload[-1] != "1" else "2"
+        scanned = (payload[:-1] + flipped_last_digit).encode()
+        self.assertFalse(seedqr.verify_payload(payload, scanned))
+        self.assertEqual(seedqr.verify_scanned_payload(payload, scanned), seedqr.VERIFY_MISMATCH)
+
+    def test_compact_payload_mismatch(self):
+        payload = seedqr.compact_payload(DOC_MNEMONIC)
+        other = seedqr.compact_payload(MNEMONIC_24)
+        self.assertFalse(seedqr.verify_payload(payload, other))
+        self.assertEqual(seedqr.verify_scanned_payload(payload, other), seedqr.VERIFY_MISMATCH)
+
+    def test_truncated_standard_payload_is_mismatch(self):
+        payload = DOC_STANDARD_PAYLOAD
+        truncated = payload[:-4].encode()  # missing the last word's digits
+        self.assertFalse(seedqr.verify_payload(payload, truncated))
+        self.assertEqual(seedqr.verify_scanned_payload(payload, truncated), seedqr.VERIFY_MISMATCH)
+
+    def test_truncated_compact_payload_is_mismatch(self):
+        payload = seedqr.compact_payload(DOC_MNEMONIC)
+        truncated = payload[:-1]
+        self.assertFalse(seedqr.verify_payload(payload, truncated))
+        self.assertEqual(seedqr.verify_scanned_payload(payload, truncated), seedqr.VERIFY_MISMATCH)
+
+    def test_compact_payload_never_coerced_through_text_decoding(self):
+        # Compact SeedQR entropy is arbitrary bytes and need not be valid
+        # UTF-8; it must be compared byte-for-byte, never via .decode().
+        payload = bytes(range(16))
+        self.assertTrue(seedqr.verify_payload(payload, bytes(range(16))))
+
+    def test_wrong_type_scan_is_a_mismatch_not_a_crash(self):
+        # A Standard SeedQR is expected (str), but the scan returned bytes
+        # that aren't valid text (e.g. a Compact SeedQR was scanned by
+        # mistake) -- must classify as a mismatch, not raise.
+        payload = DOC_STANDARD_PAYLOAD
+        scanned = bytes([0xFF, 0xFE, 0x00, 0x01])
+        self.assertFalse(seedqr.verify_payload(payload, scanned))
+        self.assertEqual(seedqr.verify_scanned_payload(payload, scanned), seedqr.VERIFY_MISMATCH)
+
+    def test_empty_or_missing_scan_is_unreadable(self):
+        self.assertEqual(
+            seedqr.verify_scanned_payload(DOC_STANDARD_PAYLOAD, b""), seedqr.VERIFY_UNREADABLE
+        )
+        self.assertEqual(
+            seedqr.verify_scanned_payload(DOC_STANDARD_PAYLOAD, None), seedqr.VERIFY_UNREADABLE
+        )
+
+    def test_verify_payload_rejects_non_str_non_bytes_expected(self):
+        with self.assertRaises(TypeError):
+            seedqr.verify_payload(12345, b"12345")
+
+
+class MatrixComparisonTest(TestCase):
+    """
+    Covers seedqr.compare_matrices / mismatch_stats / matrix_diff /
+    diff_grid: true module-level comparison. Nothing in the live GUI flow
+    feeds these a physically-scanned matrix today (see the module
+    docstring), but they're kept fully implemented and tested so a diff
+    view can be wired up the moment scanner hardware exposes raw module
+    data.
+    """
+
+    def test_identical_matrix_has_zero_mismatches(self):
+        matrix = _identifiable_matrix(21)
+        mismatches = seedqr.compare_matrices(matrix, matrix)
+        self.assertEqual(mismatches, ())
+        stats = seedqr.mismatch_stats(mismatches, 21)
+        self.assertEqual(stats, {"count": 0, "total": 441, "percent": 0.0})
+
+    def test_one_missing_module(self):
+        # expected BLACK, observed WHITE -- something the user forgot to draw
+        expected = _fake_matrix(21, fill=seedqr.MODULE_BLACK)
+        observed = _flip(expected, 0, 0)
+        mismatches = seedqr.compare_matrices(expected, observed)
+        self.assertEqual(mismatches, ((0, 0, seedqr.MISMATCH_MISSING),))
+
+    def test_one_extra_module(self):
+        # expected WHITE, observed BLACK -- an extra mark that shouldn't be there
+        expected = _fake_matrix(21, fill=seedqr.MODULE_WHITE)
+        observed = _flip(expected, 3, 4)
+        mismatches = seedqr.compare_matrices(expected, observed)
+        self.assertEqual(mismatches, ((3, 4, seedqr.MISMATCH_EXTRA),))
+
+    def test_multiple_mismatches(self):
+        size = 25
+        expected = _identifiable_matrix(size)
+        observed = expected
+        coords = [(0, 0), (1, 1), (2, 3), (10, 10), (24, 24)]
+        for y, x in coords:
+            observed = _flip(observed, y, x)
+        mismatches = seedqr.compare_matrices(expected, observed)
+        self.assertEqual(len(mismatches), len(coords))
+        self.assertEqual({(y, x) for y, x, _ in mismatches}, set(coords))
+        stats = seedqr.mismatch_stats(mismatches, size)
+        self.assertEqual(stats["count"], len(coords))
+        self.assertEqual(stats["total"], size * size)
+        self.assertAlmostEqual(stats["percent"], len(coords) * 100.0 / (size * size))
+
+    def test_mismatch_percentage_seedsigner_style_example(self):
+        # "7 of 841 modules differ (0.83%)" -- 841 = 29x29
+        stats = seedqr.mismatch_stats([None] * 7, 29)
+        self.assertEqual(stats["total"], 841)
+        self.assertEqual(stats["count"], 7)
+        self.assertAlmostEqual(stats["percent"], 7 * 100.0 / 841, places=6)
+        self.assertEqual("%.2f" % stats["percent"], "0.83")
+
+    def test_matrix_size_mismatch_raises(self):
+        with self.assertRaises(seedqr.MatrixError):
+            seedqr.compare_matrices(_fake_matrix(21), _fake_matrix(25))
+        with self.assertRaises(seedqr.MatrixError):
+            seedqr.diff_grid(_fake_matrix(21), _fake_matrix(25))
+
+    def test_invalid_matrix_input_raises(self):
+        bad = _fake_matrix(21, fill=seedqr.MODULE_OUTSIDE)
+        with self.assertRaises(seedqr.MatrixError):
+            seedqr.compare_matrices(bad, _fake_matrix(21))
+        with self.assertRaises(seedqr.MatrixError):
+            seedqr.compare_matrices(_fake_matrix(21), bad)
+
+    def test_21x21_qr_full_comparison(self):
+        expected = seedqr.generate_matrix(seedqr.compact_payload(DOC_MNEMONIC))
+        self.assertEqual(len(expected), 21)
+        self.assertEqual(seedqr.compare_matrices(expected, expected), ())
+
+    def test_larger_qr_sizes(self):
+        for size in (25, 29):
+            matrix = _identifiable_matrix(size)
+            self.assertEqual(seedqr.compare_matrices(matrix, matrix), ())
+
+    def test_partial_trailing_section_size_29x29(self):
+        # 29x29 has a partial trailing section (see SectionGeometryTest),
+        # but compare_matrices() operates on the full canonical matrix,
+        # which has no MODULE_OUTSIDE cells -- every one of its 841
+        # modules, including ones only reachable through that trailing
+        # section, is real and comparable.
+        size = 29
+        expected = _identifiable_matrix(size)
+        observed = _flip(expected, size - 1, size - 1)
+        mismatches = seedqr.compare_matrices(expected, observed)
+        self.assertEqual(mismatches, ((size - 1, size - 1, mismatches[0][2]),))
+
+    def test_diff_grid_classifies_every_module(self):
+        size = 21
+        expected = _identifiable_matrix(size)
+        observed = _flip(expected, 0, 0)
+        grid = seedqr.diff_grid(expected, observed)
+        self.assertEqual(len(grid), size)
+        self.assertEqual(len(grid[0]), size)
+        self.assertIn(grid[0][0], (seedqr.MISMATCH_MISSING, seedqr.MISMATCH_EXTRA))
+        for y in range(size):
+            for x in range(size):
+                if (y, x) == (0, 0):
+                    continue
+                self.assertIn(grid[y][x], (seedqr.DIFF_CORRECT_BLACK, seedqr.DIFF_CORRECT_WHITE))
+
+    def test_matrix_diff_combines_compare_and_stats(self):
+        size = 21
+        expected = _fake_matrix(size, fill=seedqr.MODULE_BLACK)
+        observed = _flip(expected, 0, 0)
+        mismatches, stats = seedqr.matrix_diff(expected, observed)
+        self.assertEqual(len(mismatches), 1)
+        self.assertEqual(stats["count"], 1)
+        self.assertEqual(stats["total"], size * size)
+
+
 class NoUnconditionalPrintTest(TestCase):
     """
     Regression tests ensuring secret QR content (mnemonic, SeedQR digits,
@@ -399,10 +611,68 @@ class NoUnconditionalPrintTest(TestCase):
             nav = seedqr.ZoomNavigator(size=29, row=0, col=0)
             for direction in ("right", "down", "left", "up"):
                 nav.move(direction)
-            seedqr.compact_payload(DOC_MNEMONIC)
+            payload = seedqr.compact_payload(DOC_MNEMONIC)
+            # Verification helpers, exercised across all three outcomes.
+            seedqr.verify_payload(payload, bytes(payload))
+            seedqr.verify_scanned_payload(payload, bytes(payload))
+            seedqr.verify_scanned_payload(DOC_STANDARD_PAYLOAD, b"not a match")
+            seedqr.verify_scanned_payload(DOC_STANDARD_PAYLOAD, b"")
+            other = _flip(matrix, 0, 0)
+            seedqr.compare_matrices(matrix, other)
+            seedqr.mismatch_stats(seedqr.compare_matrices(matrix, other), len(matrix))
+            seedqr.matrix_diff(matrix, other)
+            seedqr.diff_grid(matrix, other)
         finally:
             builtins.print = original_print
         self.assertEqual(calls, [])
+
+    def _assert_no_unconditional_print_in_functions(self, path, names):
+        """
+        Like _assert_no_unconditional_print, but for named functions
+        anywhere in the module (module-level `async def`s included, not
+        just class methods) -- used for the verification flow, which is
+        driven by module-level coroutines rather than Screen methods.
+        """
+        tree = ast.parse(path.read_text(), filename=str(path))
+        found = {}
+
+        class FuncVisitor(ast.NodeVisitor):
+            def visit_FunctionDef(self, node):
+                if node.name in names:
+                    found[node.name] = node
+                self.generic_visit(node)
+
+            def visit_AsyncFunctionDef(self, node):
+                if node.name in names:
+                    found[node.name] = node
+                self.generic_visit(node)
+
+        FuncVisitor().visit(tree)
+
+        for name in names:
+            self.assertIn(name, found, "%s not found in %s" % (name, path))
+            func = found[name]
+            for stmt in func.body:
+                is_print_expr = (
+                    isinstance(stmt, ast.Expr)
+                    and isinstance(stmt.value, ast.Call)
+                    and isinstance(stmt.value.func, ast.Name)
+                    and stmt.value.func.id == "print"
+                )
+                self.assertFalse(
+                    is_print_expr,
+                    "%s in %s contains an unconditional print() call" % (name, path),
+                )
+
+    def test_verification_flow_has_no_unconditional_print(self):
+        path = SRC_DIR / "gui" / "screens" / "seedqr.py"
+        self._assert_no_unconditional_print_in_functions(
+            path, ["_verify_seedqr", "show_seedqr"],
+        )
+
+    def test_scan_qr_host_has_no_unconditional_print(self):
+        path = SRC_DIR / "specter.py"
+        self._assert_no_unconditional_print_in_functions(path, ["scan_qr"])
 
     def test_ram_keystore_does_not_display_raw_seedqr_payload_as_text(self):
         """
@@ -413,3 +683,14 @@ class NoUnconditionalPrintTest(TestCase):
         path = SRC_DIR / "keystore" / "ram.py"
         src = path.read_text()
         self.assertNotIn("hexlify(qr_msg)", src)
+
+    def test_verify_result_screen_never_embeds_scanned_bytes_as_text(self):
+        """
+        The verification result screens must only ever show the fixed,
+        pre-written outcome copy -- never interpolate the scanned bytes
+        (or the expected payload) into a label.
+        """
+        path = SRC_DIR / "gui" / "screens" / "seedqr.py"
+        src = path.read_text()
+        self.assertNotIn("scanned_bytes)", src)
+        self.assertNotIn("% scanned", src)
