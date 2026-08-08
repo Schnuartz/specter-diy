@@ -558,10 +558,8 @@ class SeedQRVerifyResultScreen(Screen):
     MESSAGES = {
         seedqr.VERIFY_MATCH: (
             "The QR code decodes to the correct SeedQR.\n\n"
-            "The scanner can only check the decoded content, not every "
-            "individual module -- it cannot tell whether error correction "
-            "was needed to read it. If you want full confidence, carefully "
-            "compare each module against the original by eye as well."
+            "The scanner checks the decoded content, not every individual "
+            "module -- it can't tell whether error correction was needed."
         ),
         seedqr.VERIFY_MISMATCH: (
             "The scanned QR does not contain the expected SeedQR.\n\n"
@@ -579,7 +577,6 @@ class SeedQRVerifyResultScreen(Screen):
     }
     #: largest square area (in px) the confirmation grid is allowed to occupy
     MAX_GRID_PX = 260
-    GRID_TOP = 220
 
     def __init__(self, outcome, matrix=None):
         super().__init__()
@@ -600,8 +597,10 @@ class SeedQRVerifyResultScreen(Screen):
             module_px = seedqr.fit_module_pixels(size, min(self.MAX_GRID_PX, grid_area))
             self.grid, self.cells = _build_grid(self, size, size, module_px)
             _paint_cells(self.cells, self.matrix, grid_lines=False, color_fn=_success_module_color)
-            grid_x = (HOR_RES - size * module_px) // 2
-            self.grid.set_pos(grid_x, self.GRID_TOP)
+            # Anchored below the message (rather than a fixed y) so the
+            # grid never overlaps it, however many lines the message wraps
+            # to.
+            self.grid.align(self.message, lv.ALIGN.OUT_BOTTOM_MID, 0, 20)
 
         if outcome == seedqr.VERIFY_MATCH:
             self.secondary_button, self.primary_button = add_button_pair(

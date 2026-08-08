@@ -305,7 +305,11 @@ class Specter:
         user cancelled. Never logs or persists what was scanned; the
         caller is responsible for using the result briefly and dropping it.
         """
-        host = next((h for h in self.hosts if isinstance(h, QRHost)), None)
+        host = None
+        for h in self.hosts:
+            if isinstance(h, QRHost):
+                host = h
+                break
         if host is None:
             return None
         stream = await host.get_data()
