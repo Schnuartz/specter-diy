@@ -1,6 +1,6 @@
 """
 Pure logic for the SeedQR transcription viewer: canonical QR module matrix
-generation plus zone/section geometry.
+generation, zone/section geometry, and transcription verification.
 
 Deliberately free of any lvgl / hardware dependency (only ``math`` at import
 time; ``qrcode`` -- the native usermod -- is imported lazily inside
@@ -11,6 +11,32 @@ Section geometry mirrors SeedSigner's SeedQR transcription workflow
 (https://github.com/SeedSigner/seedsigner/blob/dev/docs/seed_qr/README.md):
 a 21x21 QR is grouped into 7x7-module sections (a 3x3 section grid); every
 larger SeedQR size is grouped into 5x5-module sections.
+
+Verification / hardware limitation
+-----------------------------------
+Specter DIY's QR scanner hardware (see ``hosts/qr.py``: a GM65 or M3Y
+barcode-scanner module talking over UART) only ever exposes the *decoded
+payload* of a scanned code. It does not expose the raw camera image or the
+detected module grid, so there is no way to compare the physically drawn
+QR against the expected one module-by-module -- only whether it decodes to
+the right content.
+
+Because QR codes carry error correction, "decodes to the right content" is
+a strictly weaker guarantee than "every module was drawn correctly": a
+transcription with a handful of wrong modules can still decode perfectly.
+``verify_scanned_payload`` below reflects exactly this weaker guarantee and
+nothing more -- it must never be presented to the user as proof that the
+drawing itself is pixel-perfect.
+
+``compare_matrices``/``mismatch_stats``/``matrix_diff``/``diff_grid`` *do*
+implement true module-level comparison, so that a real diff view can be
+wired up the moment scanner hardware/firmware exposes raw module data.
+Today nothing calls them with a physically-scanned matrix -- doing so would
+require regenerating a matrix from the decoded payload, which would just
+reproduce the *expected* matrix and silently hide any drawing error that
+error correction happened to paper over. They are exercised only with
+directly-supplied matrices (e.g. in tests, or a future raw-capable
+scanner).
 """
 import math
 
@@ -64,7 +90,8 @@ def parse_matrix(raw):
 def validate_matrix(matrix):
     """
     Raise MatrixError if ``matrix`` isn't a square, standards-compliant QR
-    module grid (size = 21 + 4*(version-1), version 1..40). Returns the size.
+    module grid (size = 21 + 4*(version-1), version 1..40) containing only
+    real MODULE_WHITE/MODULE_BLACK values. Returns the size.
     """
     size = len(matrix)
     if size == 0:
@@ -72,9 +99,156 @@ def validate_matrix(matrix):
     for row in matrix:
         if len(row) != size:
             raise MatrixError("QR matrix must be square")
+        for value in row:
+            if value not in (MODULE_WHITE, MODULE_BLACK):
+                raise MatrixError("Invalid module value: %r" % (value,))
     if size < 21 or size > 177 or (size - 21) % 4 != 0:
         raise MatrixError("Not a valid QR module count: %d" % size)
     return size
+
+
+# Module-level diff classification. MISMATCH_MISSING/MISMATCH_EXTRA are also
+# used as compare_matrices() mismatch kinds; DIFF_CORRECT_* only appear in
+# diff_grid()'s full-grid output.
+MISMATCH_MISSING = "missing"  # expected BLACK, observed WHITE
+MISMATCH_EXTRA = "extra"      # expected WHITE, observed BLACK
+DIFF_CORRECT_BLACK = "correct_black"
+DIFF_CORRECT_WHITE = "correct_white"
+
+
+def compare_matrices(expected, observed):
+    """
+    Compare two same-size canonical QR module matrices (as returned by
+    generate_matrix/parse_matrix) module-by-module.
+
+    Returns a tuple of ``(y, x, kind)`` for every module that differs,
+    where ``kind`` is MISMATCH_MISSING (expected BLACK, observed WHITE --
+    something the user was supposed to draw is missing) or MISMATCH_EXTRA
+    (expected WHITE, observed BLACK -- an extra mark that shouldn't be
+    there).
+
+    Raises MatrixError if either matrix is invalid, or if they aren't the
+    same size (there's nothing meaningful to compare module-by-module
+    otherwise).
+    """
+    validate_matrix(expected)
+    validate_matrix(observed)
+    if len(expected) != len(observed):
+        raise MatrixError(
+            "Matrix size mismatch: expected %dx%d, observed %dx%d"
+            % (len(expected), len(expected), len(observed), len(observed))
+        )
+    mismatches = []
+    for y, (erow, orow) in enumerate(zip(expected, observed)):
+        for x, (e, o) in enumerate(zip(erow, orow)):
+            if e == o:
+                continue
+            kind = MISMATCH_MISSING if e == MODULE_BLACK else MISMATCH_EXTRA
+            mismatches.append((y, x, kind))
+    return tuple(mismatches)
+
+
+def mismatch_stats(mismatches, size):
+    """
+    Summarize a compare_matrices() result for a ``size`` x ``size`` matrix:
+    mismatch count, total module count, and mismatch percentage
+    (0.0-100.0), e.g. for a "7 of 841 modules differ (0.83%)" message.
+    """
+    total = size * size
+    count = len(mismatches)
+    percent = (count * 100.0 / total) if total else 0.0
+    return {"count": count, "total": total, "percent": percent}
+
+
+def matrix_diff(expected, observed):
+    """Convenience wrapper: compare_matrices() + mismatch_stats() in one call."""
+    mismatches = compare_matrices(expected, observed)
+    stats = mismatch_stats(mismatches, len(expected))
+    return mismatches, stats
+
+
+def diff_grid(expected, observed):
+    """
+    Build a full ``size`` x ``size`` grid classifying every module for
+    rendering an error-diff view: each cell is one of DIFF_CORRECT_BLACK,
+    DIFF_CORRECT_WHITE, MISMATCH_MISSING, or MISMATCH_EXTRA. Pure data --
+    no lvgl -- a GUI layer decides how to color each class.
+
+    Raises the same errors as compare_matrices().
+    """
+    validate_matrix(expected)
+    validate_matrix(observed)
+    if len(expected) != len(observed):
+        raise MatrixError(
+            "Matrix size mismatch: expected %dx%d, observed %dx%d"
+            % (len(expected), len(expected), len(observed), len(observed))
+        )
+    rows = []
+    for erow, orow in zip(expected, observed):
+        row = []
+        for e, o in zip(erow, orow):
+            if e == MODULE_BLACK:
+                row.append(DIFF_CORRECT_BLACK if o == MODULE_BLACK else MISMATCH_MISSING)
+            else:
+                row.append(DIFF_CORRECT_WHITE if o == MODULE_WHITE else MISMATCH_EXTRA)
+        rows.append(tuple(row))
+    return tuple(rows)
+
+
+# Outcomes of verify_scanned_payload(): the only three states the current
+# (payload-only) scanner hardware can truthfully distinguish.
+VERIFY_MATCH = "match"
+VERIFY_MISMATCH = "mismatch"
+VERIFY_UNREADABLE = "unreadable"
+
+
+def verify_payload(expected_payload, scanned_bytes):
+    """
+    True if ``scanned_bytes`` -- the raw bytes read back from the QR
+    scanner -- represent the same SeedQR payload as ``expected_payload``
+    (the same value that was passed to generate_matrix()).
+
+    ``expected_payload`` is either a Standard SeedQR digit string (str) or
+    a Compact SeedQR's raw entropy (bytes); ``scanned_bytes`` is always
+    bytes. A Standard payload is matched by decoding ``scanned_bytes`` as
+    text; a Compact payload is matched against the raw bytes directly --
+    it is never hex-encoded or otherwise string-converted, so a Compact
+    SeedQR's binary payload can never be confused with a Standard one.
+    """
+    if isinstance(expected_payload, bytes):
+        return scanned_bytes == expected_payload
+    if isinstance(expected_payload, str):
+        if not scanned_bytes:
+            return False
+        try:
+            decoded = bytes(scanned_bytes).decode()
+        except UnicodeError:
+            return False
+        return decoded == expected_payload
+    raise TypeError("expected_payload must be str or bytes")
+
+
+def verify_scanned_payload(expected_payload, scanned_bytes):
+    """
+    Classify a scan of a manually-copied SeedQR against the expected
+    payload, using only what the scanner hardware exposes (see the module
+    docstring): the decoded payload, nothing about individual modules.
+
+    Returns one of:
+      - VERIFY_MATCH: the scan decoded to exactly the expected payload.
+        This proves the copy is *readable and correct* -- it does NOT
+        prove every module was drawn identically; error correction can
+        mask drawing mistakes.
+      - VERIFY_MISMATCH: the scanner decoded something, but it doesn't
+        match -- a hard failure, this backup must not be trusted.
+      - VERIFY_UNREADABLE: the scanner produced no data at all (nothing
+        decoded, or the user cancelled the scan).
+    """
+    if not scanned_bytes:
+        return VERIFY_UNREADABLE
+    if verify_payload(expected_payload, scanned_bytes):
+        return VERIFY_MATCH
+    return VERIFY_MISMATCH
 
 
 def modules_per_section(size):

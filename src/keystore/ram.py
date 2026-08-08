@@ -365,7 +365,7 @@ class RAMKeyStore(KeyStore):
             Alert("Success!", "PIN code is successfully changed!", button_text="OK")
         )
 
-    async def show_mnemonic(self):
+    async def show_mnemonic(self, scan_qr=None):
         if not await self.show(Prompt("Warning",
                                   "You need to confirm your PIN code "
                                   "to display your recovery phrase.\n\n"
@@ -387,12 +387,12 @@ class RAMKeyStore(KeyStore):
                 elif v == 1:
                     await show_seedqr(
                         self.show, seedqr.standard_payload(self.mnemonic),
-                        "Standard SeedQR (digits)",
+                        "Standard SeedQR (digits)", scan_qr=scan_qr,
                     )
                 elif v == 2:
                     await show_seedqr(
                         self.show, seedqr.compact_payload(self.mnemonic),
-                        "Compact SeedQR (binary)",
+                        "Compact SeedQR (binary)", scan_qr=scan_qr,
                     )
                 elif v == 3:
                     await self.show(QRAlert(

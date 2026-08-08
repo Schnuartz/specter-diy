@@ -21,6 +21,7 @@ import lvgl as lv
 import seedqr
 from .screen import Screen
 from .alert import Alert
+from .prompt import Prompt
 from ..common import add_label, add_button, add_button_pair, HOR_RES
 from ..decorators import on_release, cb_with_args, feed_touch
 
@@ -37,6 +38,13 @@ GRID_LINE_COLOR = 0x808080
 #: with the bolder section-boundary overlay
 OVERVIEW_GRID_LINE_COLOR = 0xB0B0B0
 OVERVIEW_GRID_LINE_OPA = 90
+
+# Verification result colors/icons -- kept visually distinct from the
+# neutral black/white module colors above so a result screen is
+# unmistakable at a glance.
+SUCCESS_COLOR = 0x1FC161
+ERROR_COLOR = 0xE0402A
+SUCCESS_MODULE_COLOR = 0x1FC161
 
 
 def _new_style():
@@ -131,17 +139,22 @@ def _build_grid(parent, rows, cols, module_px):
     return container, cells
 
 
-def _paint_cells(cells, matrix_rows, grid_lines, grid_color=GRID_LINE_COLOR, grid_opa=255):
+def _paint_cells(cells, matrix_rows, grid_lines, grid_color=GRID_LINE_COLOR, grid_opa=255,
+                  color_fn=_module_color):
     border_width = 1 if grid_lines else 0
     style_cache = {}
     for y, row in enumerate(matrix_rows):
         for x, value in enumerate(row):
-            color = _module_color(value)
+            color = color_fn(value)
             style = style_cache.get(color)
             if style is None:
                 style = _flat_cell_style(color, border_width, grid_color, grid_opa)
                 style_cache[color] = style
             cells[y][x].set_style(style)
+
+
+def _success_module_color(value):
+    return SUCCESS_MODULE_COLOR if value == seedqr.MODULE_BLACK else MODULE_WHITE_COLOR
 
 
 def _build_header_cell(scr, x, y, w, h, text, box_style, text_style):
@@ -244,7 +257,7 @@ class SeedQROverviewScreen(Screen):
     GRID_TOP = 140
     AXIS_COLOR = 0x808A9C
 
-    def __init__(self, matrix, format_label, initial_section=None):
+    def __init__(self, matrix, format_label, initial_section=None, can_verify=False):
         super().__init__()
         self.matrix = matrix
         self.size = len(matrix)
@@ -282,9 +295,19 @@ class SeedQROverviewScreen(Screen):
         )
         self.instruction.align(self.grid, lv.ALIGN.OUT_BOTTOM_MID, 0, 20)
 
-        self.close_button = add_button(
-            lv.SYMBOL.CLOSE + " Close", on_release(self.close), scr=self
-        )
+        if can_verify:
+            self.verify_button, self.close_button = add_button_pair(
+                lv.SYMBOL.OK + " Done",
+                on_release(self.verify),
+                lv.SYMBOL.CLOSE + " Close",
+                on_release(self.close),
+                scr=self,
+            )
+        else:
+            self.verify_button = None
+            self.close_button = add_button(
+                lv.SYMBOL.CLOSE + " Close", on_release(self.close), scr=self
+            )
 
         self.set_event_cb(self.cb)
 
@@ -371,6 +394,9 @@ class SeedQROverviewScreen(Screen):
 
     def close(self):
         self.set_value(None)
+
+    def verify(self):
+        self.set_value("verify")
 
 
 class SeedQRZoomScreen(Screen):
@@ -504,14 +530,159 @@ class SeedQRZoomScreen(Screen):
         self.set_value(("close", self.navigator.section))
 
 
-async def show_seedqr(show, payload, format_label):
+class SeedQRVerifyResultScreen(Screen):
     """
-    Drives the SeedQR transcription overview <-> zoom navigation loop.
+    Shows the outcome of scanning a manually-copied SeedQR back in.
+
+    Today's QR scanner hardware only ever exposes the *decoded payload* of
+    a scan (see the "Verification / hardware limitation" note in
+    seedqr.py), so there are exactly three possible outcomes:
+      - seedqr.VERIFY_MATCH: the scan decoded to the correct SeedQR. Shown
+        as a clear green success state -- worded carefully to claim only
+        what's actually known (the content is right), not that every
+        module was drawn perfectly.
+      - seedqr.VERIFY_MISMATCH: the scan decoded to something else. Hard
+        failure -- this backup must not be trusted.
+      - seedqr.VERIFY_UNREADABLE: nothing decoded (unreadable QR, or the
+        user cancelled the scan).
+
+    Returns "rescan" (try scanning again), "redraw" (go back to the
+    transcription viewer), or "done" (finish verifying).
+    """
+
+    TITLES = {
+        seedqr.VERIFY_MATCH: lv.SYMBOL.OK + " SeedQR contents verified",
+        seedqr.VERIFY_MISMATCH: lv.SYMBOL.WARNING + " SeedQR does not match",
+        seedqr.VERIFY_UNREADABLE: lv.SYMBOL.WARNING + " QR could not be read",
+    }
+    MESSAGES = {
+        seedqr.VERIFY_MATCH: (
+            "The QR code decodes to the correct SeedQR.\n\n"
+            "The scanner can only check the decoded content, not every "
+            "individual module -- it cannot tell whether error correction "
+            "was needed to read it. If you want full confidence, carefully "
+            "compare each module against the original by eye as well."
+        ),
+        seedqr.VERIFY_MISMATCH: (
+            "The scanned QR does not contain the expected SeedQR.\n\n"
+            "Do not use this backup."
+        ),
+        seedqr.VERIFY_UNREADABLE: (
+            "The QR code could not be read.\n\n"
+            "Check the transcription and try again."
+        ),
+    }
+    COLORS = {
+        seedqr.VERIFY_MATCH: SUCCESS_COLOR,
+        seedqr.VERIFY_MISMATCH: ERROR_COLOR,
+        seedqr.VERIFY_UNREADABLE: ERROR_COLOR,
+    }
+    #: largest square area (in px) the confirmation grid is allowed to occupy
+    MAX_GRID_PX = 260
+    GRID_TOP = 220
+
+    def __init__(self, outcome, matrix=None):
+        super().__init__()
+        self.outcome = outcome
+        # Only the MATCH state has any use for the matrix (a green
+        # "this is the verified SeedQR" display); drop the reference
+        # immediately otherwise so this screen never holds it needlessly.
+        self.matrix = matrix if outcome == seedqr.VERIFY_MATCH else None
+
+        self.title = add_label(self.TITLES[outcome], scr=self, style="title")
+        self.title.set_style(0, _axis_label_style(self.COLORS[outcome], lv.font_roboto_28))
+        self.message = add_label(self.MESSAGES[outcome], y=70, scr=self)
+
+        self.grid = self.cells = None
+        if self.matrix is not None:
+            size = len(self.matrix)
+            grid_area = HOR_RES - 2 * 20
+            module_px = seedqr.fit_module_pixels(size, min(self.MAX_GRID_PX, grid_area))
+            self.grid, self.cells = _build_grid(self, size, size, module_px)
+            _paint_cells(self.cells, self.matrix, grid_lines=False, color_fn=_success_module_color)
+            grid_x = (HOR_RES - size * module_px) // 2
+            self.grid.set_pos(grid_x, self.GRID_TOP)
+
+        if outcome == seedqr.VERIFY_MATCH:
+            self.secondary_button, self.primary_button = add_button_pair(
+                lv.SYMBOL.LEFT + " Back to QR", on_release(cb_with_args(self.set_value, "redraw")),
+                lv.SYMBOL.OK + " Done", on_release(cb_with_args(self.set_value, "done")),
+                scr=self,
+            )
+        elif outcome == seedqr.VERIFY_MISMATCH:
+            self.primary_button, self.secondary_button = add_button_pair(
+                "Redraw / Try again", on_release(cb_with_args(self.set_value, "redraw")),
+                lv.SYMBOL.CLOSE + " Close", on_release(cb_with_args(self.set_value, "done")),
+                scr=self,
+            )
+        else:  # VERIFY_UNREADABLE
+            self.primary_button, self.secondary_button = add_button_pair(
+                "Try again", on_release(cb_with_args(self.set_value, "rescan")),
+                lv.SYMBOL.LEFT + " Back to QR", on_release(cb_with_args(self.set_value, "redraw")),
+                scr=self,
+            )
+
+        self.set_event_cb(self.cb)
+
+    def cb(self, obj, event):
+        if event == lv.EVENT.DELETE:
+            # Drop references to the secret matrix as soon as this screen
+            # is torn down.
+            self.matrix = None
+            self.cells = None
+
+
+async def _verify_seedqr(show, payload, matrix, scan_qr):
+    """
+    Drives the "scan the copy back in" verification loop: explains what's
+    about to happen, triggers a scan via the app's existing QR scanner
+    infrastructure (`scan_qr`, e.g. Specter.scan_qr -- this never
+    reimplements scanning), shows the result, and lets the user retry the
+    scan or go back to the transcription viewer.
+
+    The raw scan result is only ever held long enough to classify it (via
+    seedqr.verify_scanned_payload) and is never logged, displayed as text,
+    or persisted.
+
+    Returns "done" once the user is finished verifying, or "redraw" to
+    reopen the transcription viewer.
+    """
+    proceed = await show(Prompt(
+        "Verify your SeedQR",
+        "Scan the QR code you just created.",
+        confirm_text="Scan",
+        cancel_text=lv.SYMBOL.LEFT + " Back",
+    ))
+    if not proceed:
+        return "redraw"
+
+    outcome = seedqr.verify_scanned_payload(payload, await scan_qr())
+    while True:
+        result = SeedQRVerifyResultScreen(outcome, matrix)
+        action = await show(result)
+        if action == "rescan":
+            outcome = seedqr.verify_scanned_payload(payload, await scan_qr())
+            continue
+        return action  # "redraw" or "done"
+
+
+async def show_seedqr(show, payload, format_label, scan_qr=None):
+    """
+    Drives the SeedQR transcription overview <-> zoom navigation loop, plus
+    -- if `scan_qr` is provided -- the "Done" transcription-verification
+    flow: View/copy QR -> Done -> Scan copied QR -> Verification result.
 
     `show` is the app's async show_screen callable (e.g. RAMKeyStore.show):
-    takes a Screen instance, displays it, and returns its result. Returns
-    once the user closes the viewer (from either the overview or a zoomed
-    section).
+    takes a Screen instance, displays it, and returns its result.
+
+    `scan_qr` is an optional async callable, taking no arguments, that
+    triggers a single scan on the app's existing QR scanner host and
+    returns the raw decoded bytes (or None/empty if nothing was scanned).
+    When it's None, the transcription viewer works exactly as before --
+    no "Done"/verify button is shown, only Close.
+
+    Returns once the user closes the viewer (from the overview, a zoomed
+    section, or after finishing verification).
     """
     try:
         matrix = seedqr.generate_matrix(payload)
@@ -521,14 +692,23 @@ async def show_seedqr(show, payload, format_label):
         await show(Alert("Error", "Could not build a SeedQR from this recovery phrase."))
         return
 
+    can_verify = scan_qr is not None
     selected = None
     while True:
-        overview = SeedQROverviewScreen(matrix, format_label, initial_section=selected)
-        section = await show(overview)
-        if section is None:
+        overview = SeedQROverviewScreen(
+            matrix, format_label, initial_section=selected, can_verify=can_verify,
+        )
+        action = await show(overview)
+        if action is None:
             return
-        zoom = SeedQRZoomScreen(matrix, *section)
-        action, selected = await show(zoom)
-        if action == "close":
+        if action == "verify":
+            outcome = await _verify_seedqr(show, payload, matrix, scan_qr)
+            if outcome == "done":
+                return
+            # outcome == "redraw": loop back, reopening the overview
+            continue
+        zoom = SeedQRZoomScreen(matrix, *action)
+        zoom_action, selected = await show(zoom)
+        if zoom_action == "close":
             return
-        # action == "overview": loop back, reopening the overview at `selected`
+        # zoom_action == "overview": loop back, reopening the overview at `selected`

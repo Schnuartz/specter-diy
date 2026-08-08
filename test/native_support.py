@@ -105,6 +105,7 @@ def setup_native_stubs():
         "DevSettings",
         "SeedQROverviewScreen",
         "SeedQRZoomScreen",
+        "SeedQRVerifyResultScreen",
     ]:
         if not hasattr(screens, _name):
             setattr(screens, _name, type(_name, (), {}))
