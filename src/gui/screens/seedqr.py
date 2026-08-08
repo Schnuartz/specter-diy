@@ -254,7 +254,7 @@ class SeedQROverviewScreen(Screen):
     AXIS_SIZE = 30
     AXIS_GAP = 4
     LEFT_MARGIN = 20
-    GRID_TOP = 140
+    GRID_TOP = 175
     AXIS_COLOR = 0x808A9C
 
     def __init__(self, matrix, format_label, initial_section=None, can_verify=False):
@@ -273,6 +273,19 @@ class SeedQROverviewScreen(Screen):
             "%dx%d modules" % (self.size, self.size),
             y=55, scr=self, style="hint",
         )
+        # generate_matrix() returns the bare module grid, with no quiet
+        # zone (unlike the padded bitmap qrcode_encode() produces for
+        # every other on-screen QR code) -- callers who only copy what's
+        # drawn here would end up with a physical code missing its
+        # required blank border, which a real scanner may then fail to
+        # detect at all. Remind the user explicitly, anchored below the
+        # subtitle (rather than a fixed y) so it can never collide with
+        # the grid/axis header below it, however many lines it wraps to.
+        self.quiet_zone_hint = add_label(
+            "Leave a blank quiet zone (4+ modules) around the QR you draw",
+            y=0, scr=self, style="hint",
+        )
+        self.quiet_zone_hint.align(self.subtitle, lv.ALIGN.OUT_BOTTOM_MID, 0, 8)
 
         self.grid, self.cells = _build_grid(self, self.size, self.size, self.module_px)
         _paint_cells(
