@@ -44,7 +44,6 @@ OVERVIEW_GRID_LINE_OPA = 90
 # unmistakable at a glance.
 SUCCESS_COLOR = 0x1FC161
 ERROR_COLOR = 0xE0402A
-SUCCESS_MODULE_COLOR = 0x1FC161
 
 
 def _new_style():
@@ -139,22 +138,17 @@ def _build_grid(parent, rows, cols, module_px):
     return container, cells
 
 
-def _paint_cells(cells, matrix_rows, grid_lines, grid_color=GRID_LINE_COLOR, grid_opa=255,
-                  color_fn=_module_color):
+def _paint_cells(cells, matrix_rows, grid_lines, grid_color=GRID_LINE_COLOR, grid_opa=255):
     border_width = 1 if grid_lines else 0
     style_cache = {}
     for y, row in enumerate(matrix_rows):
         for x, value in enumerate(row):
-            color = color_fn(value)
+            color = _module_color(value)
             style = style_cache.get(color)
             if style is None:
                 style = _flat_cell_style(color, border_width, grid_color, grid_opa)
                 style_cache[color] = style
             cells[y][x].set_style(style)
-
-
-def _success_module_color(value):
-    return SUCCESS_MODULE_COLOR if value == seedqr.MODULE_BLACK else MODULE_WHITE_COLOR
 
 
 def _build_header_cell(scr, x, y, w, h, text, box_style, text_style):
@@ -588,32 +582,14 @@ class SeedQRVerifyResultScreen(Screen):
         seedqr.VERIFY_MISMATCH: ERROR_COLOR,
         seedqr.VERIFY_UNREADABLE: ERROR_COLOR,
     }
-    #: largest square area (in px) the confirmation grid is allowed to occupy
-    MAX_GRID_PX = 260
 
-    def __init__(self, outcome, matrix=None):
+    def __init__(self, outcome):
         super().__init__()
         self.outcome = outcome
-        # Only the MATCH state has any use for the matrix (a green
-        # "this is the verified SeedQR" display); drop the reference
-        # immediately otherwise so this screen never holds it needlessly.
-        self.matrix = matrix if outcome == seedqr.VERIFY_MATCH else None
 
         self.title = add_label(self.TITLES[outcome], scr=self, style="title")
         self.title.set_style(0, _axis_label_style(self.COLORS[outcome], lv.font_roboto_28))
         self.message = add_label(self.MESSAGES[outcome], y=70, scr=self)
-
-        self.grid = self.cells = None
-        if self.matrix is not None:
-            size = len(self.matrix)
-            grid_area = HOR_RES - 2 * 20
-            module_px = seedqr.fit_module_pixels(size, min(self.MAX_GRID_PX, grid_area))
-            self.grid, self.cells = _build_grid(self, size, size, module_px)
-            _paint_cells(self.cells, self.matrix, grid_lines=False, color_fn=_success_module_color)
-            # Anchored below the message (rather than a fixed y) so the
-            # grid never overlaps it, however many lines the message wraps
-            # to.
-            self.grid.align(self.message, lv.ALIGN.OUT_BOTTOM_MID, 0, 20)
 
         if outcome == seedqr.VERIFY_MATCH:
             self.secondary_button, self.primary_button = add_button_pair(
@@ -634,17 +610,8 @@ class SeedQRVerifyResultScreen(Screen):
                 scr=self,
             )
 
-        self.set_event_cb(self.cb)
 
-    def cb(self, obj, event):
-        if event == lv.EVENT.DELETE:
-            # Drop references to the secret matrix as soon as this screen
-            # is torn down.
-            self.matrix = None
-            self.cells = None
-
-
-async def _verify_seedqr(show, payload, matrix, scan_qr):
+async def _verify_seedqr(show, payload, scan_qr):
     """
     Drives the "scan the copy back in" verification loop: explains what's
     about to happen, triggers a scan via the app's existing QR scanner
@@ -670,7 +637,7 @@ async def _verify_seedqr(show, payload, matrix, scan_qr):
 
     outcome = seedqr.verify_scanned_payload(payload, await scan_qr())
     while True:
-        result = SeedQRVerifyResultScreen(outcome, matrix)
+        result = SeedQRVerifyResultScreen(outcome)
         action = await show(result)
         if action == "rescan":
             outcome = seedqr.verify_scanned_payload(payload, await scan_qr())
@@ -714,7 +681,7 @@ async def show_seedqr(show, payload, format_label, scan_qr=None):
         if action is None:
             return
         if action == "verify":
-            outcome = await _verify_seedqr(show, payload, matrix, scan_qr)
+            outcome = await _verify_seedqr(show, payload, scan_qr)
             if outcome == "done":
                 return
             # outcome == "redraw": loop back, reopening the overview
