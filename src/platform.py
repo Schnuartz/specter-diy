@@ -3,6 +3,7 @@ import sys
 import os
 import pyb
 import gc
+import asyncio
 
 simulator = (sys.platform in ["linux", "darwin"])
 
@@ -112,6 +113,59 @@ class SDCard:
 
     def __exit__(self, *args, **kwargs):
         self.unmount()
+
+    async def erase_and_format(self, progress_cb=None):
+        """
+        Securely erases the SD card - overwrites every block with random
+        data, the same approach platform.wipe() uses for the internal
+        flash - and then creates a fresh, empty FAT filesystem on it.
+
+        This is irreversible and destroys EVERYTHING on the card, not
+        just files Specter-DIY created. There is no cancelling partway
+        through: like platform.wipe(), once started it must run to
+        completion or the card is left in a half-overwritten, unusable
+        state.
+
+        progress_cb(fraction), if given, is awaited after every chunk
+        with the fraction (0..1) of blocks written so far, so a caller
+        can drive a progress screen without blocking the event loop for
+        the whole operation. Without it, this still yields periodically
+        via asyncio.sleep_ms(0).
+        """
+        if not self.is_present:
+            raise RuntimeError("SD card is not present")
+        self.unmount()
+        if self._sd is None:
+            # simulator: no real block device to overwrite - just clear
+            # out the directory that stands in for the card.
+            delete_recursively(fpath("/sd"))
+            if progress_cb is not None:
+                await progress_cb(1.0)
+            return
+        if self._led is not None:
+            self._led.on()
+        self._sd.power(True)
+        try:
+            block_size = self._sd.ioctl(5, None)
+            block_count = self._sd.ioctl(4, None)
+            # 1 MB per write call: a full-card wipe can be tens of
+            # thousands of chunks even at this size, so this balances
+            # write/gc.collect() overhead against keeping a single
+            # os.urandom() buffer (and GUI-tick latency) reasonable.
+            chunk_blocks = max(1, (1024 * 1024) // block_size)
+            for start in range(0, block_count, chunk_blocks):
+                n = min(chunk_blocks, block_count - start)
+                self._sd.writeblocks(start, os.urandom(block_size * n))
+                gc.collect()
+                if progress_cb is not None:
+                    await progress_cb((start + n) / block_count)
+                else:
+                    await asyncio.sleep_ms(0)
+            os.VfsFat.mkfs(self._sd)
+        finally:
+            self._sd.power(False)
+            if self._led is not None:
+                self._led.off()
 
 
 def fpath(fname):

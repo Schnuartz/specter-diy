@@ -24,7 +24,7 @@ from embit import bip39
 from embit.liquid.networks import NETWORKS
 from gui.screens.settings import HostSettings
 from gui.screens.mnemonic import MnemonicPrompt
-from gui.screens import Prompt
+from gui.screens import Prompt, Progress
 
 # bitbox_backup / bitbox_sd are imported lazily inside the BitBox import
 # flow so they (and their embit.bip39 dependency) only occupy RAM when a
@@ -880,6 +880,7 @@ class Specter:
             buttons.extend([(777, "Change PIN code")])
         buttons += [
             (456, "Reboot"),
+            (789, "Format SD card", platform.sdcard.is_present, 0x951E2D),
             (123, "Wipe the device", True, 0x951E2D),
         ]
         while True:
@@ -909,6 +910,9 @@ class Specter:
                 ):
                     self.wipe()
                 return
+            elif menuitem == 789:
+                await self.format_sdcard()
+                return
             elif menuitem == 777:
                 await self.keystore.change_pin()
                 return
@@ -929,6 +933,57 @@ class Specter:
         # TODO: wipe the smartcard as well?
         # platform.wipe
         wipe()
+
+    async def format_sdcard(self):
+        """
+        Securely erases and reformats the SD card: every block is
+        overwritten with random data (so recovering anything afterwards
+        is far harder than after a normal delete) and a fresh, empty
+        filesystem is created. Destroys everything on the card, not just
+        files Specter-DIY created, and cannot be undone.
+        """
+        if not platform.sdcard.is_present:
+            await self.gui.alert("No SD card", "There is no SD card inserted.")
+            return
+        if not await self.gui.prompt(
+            "Format the SD card?",
+            "\n\nThis erases EVERYTHING on the SD card - not just files "
+            "Specter-DIY created, all of it - and cannot be undone.\n\n"
+            "Every block is overwritten with random data before the "
+            "card is reformatted, which makes recovering anything from "
+            "it far harder than a normal delete.\n\n"
+            "This can take a long time depending on the card's size and "
+            "speed. Do not remove the card or power off the device "
+            "while it's running.\n\n"
+            "Are you sure?",
+        ):
+            return
+        if not await self.gui.prompt(
+            "Last chance",
+            "\n\nThis cannot be undone.\n\nFormat the SD card now?",
+        ):
+            return
+
+        scr = Progress(
+            "Formatting SD card",
+            "Overwriting and reformatting - please wait.\n"
+            "Do not remove the card or power off the device.",
+            button_text=None,
+        )
+        await self.gui.load_screen(scr)
+
+        async def update_progress(fraction):
+            scr.set_progress(fraction)
+            scr.tick(5)
+
+        try:
+            await platform.sdcard.erase_and_format(progress_cb=update_progress)
+        except Exception as e:
+            await self.gui.alert("Format failed", "%s" % e)
+            return
+        await self.gui.alert(
+            "Success!", "The SD card has been erased and reformatted."
+        )
 
     async def lock(self):
         # lock the keystore
