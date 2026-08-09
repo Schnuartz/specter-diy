@@ -63,6 +63,11 @@ class SDKeyStore(FlashKeyStore):
         )
         if path is None:
             return
+
+        medium = "the SD card" if path == self.sdpath else "the internal flash"
+        if not await self._confirm_encrypted_storage(medium):
+            return
+
         filename = await self.get_input(suggestion=self.mnemonic.split()[0])
         if filename is None:
             return
