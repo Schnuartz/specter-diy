@@ -135,6 +135,71 @@ class BitboxBackupFlowTestBase(TestCase):
         self.assertEqual(self.keystore.fingerprint, self.original_fingerprint)
 
 
+class ImportMenuGatingTest(BitboxBackupFlowTestBase):
+    """The "BitBox microSD backup" entry in the "Import recovery phrase"
+    menu must only be offered when a backup can plausibly be found -
+    showing it unconditionally (regardless of whether anything is on the
+    card) is confusing, since picking it would just fail immediately.
+
+    The presence check is deliberately name-based only (does a directory
+    matching the 64-hex-character backup-id pattern exist under
+    bitbox02/?), not a full read+parse+checksum - that heavier
+    verification already happens, with well-tested error handling, once
+    the user actually picks the entry. A directory that looks right but
+    whose contents turn out to be invalid is still offered; it just fails
+    with the normal "could not be verified" error after selection.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.sp.hosts = []
+
+    def _import_menu_labels(self):
+        self.sp.gui = FakeGui([255])  # back out of the menu immediately
+        _run(self.sp.import_mnemonic())
+        buttons = self.sp.gui.menu_calls[0]["buttons"]
+        return [text for _value, text in buttons]
+
+    def test_hidden_when_no_bitbox02_directory(self):
+        self.assertNotIn("BitBox microSD backup", self._import_menu_labels())
+
+    def test_shown_when_valid_backup_present(self):
+        self._write_backup(ENTROPY_16)
+        self.assertIn("BitBox microSD backup", self._import_menu_labels())
+
+    def test_shown_even_if_backup_content_is_invalid(self):
+        # Name-based presence check only, by design - see class docstring.
+        dir_id = backup_id_for(ENTROPY_16)
+        dirpath = self.sd_root + "/" + dir_id
+        os.mkdir(dirpath)
+        for i in range(3):
+            with open(dirpath + "/backup_%d.bin" % i, "wb") as f:
+                f.write(b"\x00" * 10)
+        self.assertIn("BitBox microSD backup", self._import_menu_labels())
+
+    def test_hidden_when_no_sd_card(self):
+        class _NoCard:
+            is_present = False
+
+        real_sdcard = platform.sdcard
+        platform.sdcard = _NoCard()
+        try:
+            labels = self._import_menu_labels()
+        finally:
+            platform.sdcard = real_sdcard
+        self.assertNotIn("BitBox microSD backup", labels)
+
+    def test_hidden_when_directory_name_is_not_hex(self):
+        os.mkdir(self.sd_root + "/" + "not_a_backup")
+        self.assertNotIn("BitBox microSD backup", self._import_menu_labels())
+
+    def test_presence_check_does_not_write_to_the_card(self):
+        self._write_backup(ENTROPY_16)
+        before = self._hash_sd_tree()
+        self._import_menu_labels()
+        self.assertEqual(before, self._hash_sd_tree())
+
+
 class AbortSafetyTest(BitboxBackupFlowTestBase):
     def test_abort_at_initial_warning(self):
         self._write_backup()

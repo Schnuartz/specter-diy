@@ -307,9 +307,33 @@ class Specter:
     # menu below - not a real Host instance, handled as a special case.
     BITBOX_BACKUP = "bitbox_backup"
 
+    @staticmethod
+    def _bitbox_backup_dirs_or_none():
+        """Best-effort presence check: returns the list of candidate BitBox
+        backup directory names found on the card, or None if there is no
+        card, it can't be read, or it has no bitbox02/ directory.
+
+        Used only to decide whether "BitBox microSD backup" is worth
+        offering as an import source at all - offering it unconditionally
+        makes no sense if there's nothing to import, and this way the
+        "not encrypted" warning is only ever shown once a backup has
+        actually been found, not speculatively. Never raises: any reason
+        the card can't be read here just means the option isn't offered;
+        the real read (with real error messages) happens if the user picks
+        it, in import_bitbox_backup().
+        """
+        import bitbox_sd
+
+        try:
+            dir_names = Specter._read_sd(bitbox_sd.list_backup_dirs)
+        except SpecterError:
+            return None
+        return dir_names or None
+
     async def import_mnemonic(self):
         buttons = [(host, host.button) for host in self.hosts if host.is_enabled]
-        buttons.append((self.BITBOX_BACKUP, "BitBox microSD backup"))
+        if self._bitbox_backup_dirs_or_none():
+            buttons.append((self.BITBOX_BACKUP, "BitBox microSD backup"))
         host = await self.gui.menu(title="What to use for import?", note="\n",
             buttons=buttons,
             last=(255, None))
