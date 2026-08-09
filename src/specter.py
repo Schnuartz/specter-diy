@@ -387,10 +387,53 @@ class Specter:
         return self.mainmenu
 
     @staticmethod
-    def _truncate_backup_id(dir_name):
-        # ASCII ellipsis on purpose - matches hosts/sd.py::truncate() and
-        # avoids depending on U+2026 being present in the LVGL font.
-        return dir_name[:12] + "..."
+    def _split_backup_id(dir_name):
+        """Full 64-character backup id, wrapped onto two lines - too wide
+        for a single line pretty much anywhere in this UI."""
+        half = len(dir_name) // 2
+        return "%s\n%s" % (dir_name[:half], dir_name[half:])
+
+    def _peek_backup_name(self, dir_name):
+        """
+        Best-effort read of just the `name` metadata field of one backup
+        copy, so the selection menu (phase 2 of import_bitbox_backup, run
+        before any copy has been checksum/id-verified) can show something
+        more meaningful than the raw backup id.
+
+        Deliberately uses parse_backup() (structural parse only) rather
+        than the full validate_backup()/load_backup(): a cosmetic label
+        doesn't need checksum or majority-vote resolution, and this must
+        never reject a directory just because one copy happens to be
+        damaged - that's still handled properly in phase 3.
+
+        Never raises: any problem (unreadable card, corrupt/foreign file,
+        no name set) just means no label is available, and the caller
+        falls back to showing the id instead. Reads real backup file
+        contents to get there - same read-only guarantee as the rest of
+        this flow (nothing is ever written) - and zeroizes everything
+        before returning, including the unused, unverified seed bytes
+        that parse_backup() also returns.
+        """
+        import bitbox_backup
+        import bitbox_sd
+
+        try:
+            raw_files = self._read_sd(lambda: bitbox_sd.read_backup_files(dir_name))
+        except Exception:
+            return None
+        fields = None
+        try:
+            try:
+                fields = bitbox_backup.parse_backup(raw_files[0])
+            except Exception:
+                return None
+            name = fields.get("name") or ""
+            return name if name else None
+        finally:
+            if fields is not None:
+                bitbox_backup.zeroize(fields.get("seed"))
+            for buf in raw_files:
+                bitbox_backup.zeroize(buf)
 
     @staticmethod
     def _read_sd(fn):
@@ -427,7 +470,13 @@ class Specter:
     @staticmethod
     def _format_backup_timestamp(timestamp):
         if not timestamp:
-            return "unknown"
+            # Never show 1970-01-01 for this - a missing/zero timestamp
+            # means "not recorded", not "recorded as the Unix epoch".
+            # Specter-DIY itself always writes 0 here (see
+            # RAMKeyStore._write_bitbox_backup): the device is airgapped
+            # and has no RTC, so it has no real date to write and must
+            # not fabricate one.
+            return "unknown (no clock)"
         try:
             y, mo, d, h, mi, s = conv_time(timestamp)[:6]
             return "%04d-%02d-%02d %02d:%02d UTC" % (y, mo, d, h, mi)
@@ -493,7 +542,13 @@ class Specter:
             return
 
         # Phase 2: let the user choose, with the card already unmounted.
-        buttons = [(name, self._truncate_backup_id(name)) for name in dir_names]
+        # Prefer showing each backup's own name (peeked from one copy,
+        # unverified - see _peek_backup_name) over its raw id, since the
+        # id alone is not something a user can recognize their backup by.
+        buttons = [
+            (name, self._peek_backup_name(name) or self._split_backup_id(name))
+            for name in dir_names
+        ]
         selected = await self.gui.menu(
             buttons, title="Select a BitBox backup", last=(255, None)
         )
@@ -540,7 +595,7 @@ class Specter:
                 self._format_backup_timestamp(parsed.timestamp),
                 word_count,
                 parsed.generator or "(unknown)",
-                self._truncate_backup_id(selected),
+                self._split_backup_id(selected),
                 valid_copies_text,
             )
             if used_majority:
