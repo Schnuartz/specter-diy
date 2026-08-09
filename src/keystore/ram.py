@@ -8,9 +8,14 @@ from embit.liquid import slip77
 from embit.transaction import SIGHASH
 from helpers import aead_encrypt, aead_decrypt, tagged_hash
 import secp256k1
-from gui.screens import Alert, PinScreen, Prompt, Menu, QRAlert
+from gui.screens import Alert, PinScreen, Prompt, Menu, QRAlert, InputScreen
 from gui.screens.mnemonic import ExportMnemonicScreen
 from binascii import hexlify
+
+# formats offered when exporting a recovery phrase to the SD card
+SD_EXPORT_PLAIN = "plain"
+SD_EXPORT_BITBOX = "bitbox"
+SD_EXPORT_ENCRYPTED = "enc"
 
 class RAMKeyStore(KeyStore):
     """
@@ -395,17 +400,143 @@ class RAMKeyStore(KeyStore):
                     msg = self.mnemonic
                 await self.show(QRAlert(title="Your mnemonic as QR code", message=msg, qr_message=qr_msg, transcribe=True))
             elif v == ExportMnemonicScreen.SD:
-                if not platform.sdcard.is_present:
-                    raise KeyStoreError("SD card is not present")
-                if await self.show(Prompt("Are you sure?", message="Your mnemonic will be saved as a simple plaintext file.\n\nAnyone with access to it will be able to read your key.\n\nContinue?")):
-                    with platform.sdcard as sd:
-                        fname = "%s.txt" % self.mnemonic.split()[0]
-                        if sd.file_exists(fname):
-                            confirm = await self.show(Prompt("Overwrite?", message="File %s already exists on the SD card. Overwrite?" % fname))
-                            if not confirm:
-                                return
-                        with sd.open(fname, "w") as f:
-                            f.write(self.mnemonic)
-                    await self.show(Alert(title="Mnemonic is saved!", message="You mnemonic is saved in plaintext to\n\n%s\n\nPlease keep it safe." % fname))
+                await self.export_mnemonic_to_sd()
             else:
                 return
+
+    @property
+    def can_encrypt_for_sd(self):
+        """
+        Whether this keystore can encrypt SD card backups with a secret
+        unique to this device. Only true for SDKeyStore - a smartcard
+        keystore has no such device-bound secret to use for this.
+        """
+        return hasattr(self, "sdpath")
+
+    async def export_mnemonic_to_sd(self):
+        """
+        Saves the currently loaded mnemonic to the SD card, letting the
+        user choose between two unencrypted, portable formats and - when
+        this keystore supports it - a copy encrypted with this device's
+        own secret.
+        """
+        if not platform.sdcard.is_present:
+            raise KeyStoreError("SD card is not present")
+
+        can_encrypt = self.can_encrypt_for_sd
+        buttons = [
+            (None, "Choose a format"),
+            (SD_EXPORT_PLAIN, "Plain text (Specter format)"),
+            (SD_EXPORT_BITBOX, "Bitbox format"),
+            (
+                SD_EXPORT_ENCRYPTED,
+                "Encrypted (this device only)",
+                can_encrypt,
+            ),
+        ]
+        note = None
+        if not can_encrypt:
+            note = (
+                "Encrypted storage needs \"Flash & SD card storage\" mode - "
+                "restart the device with the smartcard removed to use it."
+            )
+        fmt = await self.show(
+            Menu(
+                buttons,
+                title="Save recovery phrase to SD card",
+                note=note,
+                last=(None, "Cancel"),
+            )
+        )
+        if fmt is None:
+            return
+
+        if fmt == SD_EXPORT_ENCRYPTED:
+            confirmed = await self.show(
+                Prompt(
+                    "Encrypted with this device",
+                    "\n\nThis copy will be encrypted with a secret unique to "
+                    "this device - only this exact device will be able to "
+                    "read it back.\n\n"
+                    "That's more convenient than plain text, but still not "
+                    "as safe as keeping your key on a PIN-protected "
+                    "smartcard (Secure Element): if this device is lost, "
+                    "damaged or wiped, this backup alone won't protect "
+                    "your funds.\n\n"
+                    "Continue?",
+                )
+            )
+        else:
+            confirmed = await self.show(
+                Prompt(
+                    "This will NOT be encrypted!",
+                    "\n\nAnyone who gets hold of this SD card will have "
+                    "full access to your funds.\n\n"
+                    "Store and protect it exactly as carefully as a "
+                    "handwritten recovery phrase, and never plug it into a "
+                    "computer or any other untrusted device.\n\n"
+                    "Continue?",
+                    warning="Recovery phrase will be stored unencrypted",
+                )
+            )
+        if not confirmed:
+            return
+
+        filename = await self.get_input(suggestion=self.mnemonic.split()[0])
+        if filename is None:
+            return
+
+        sdpath = platform.fpath("/sd")
+        if fmt == SD_EXPORT_ENCRYPTED:
+            fullpath = "%s/%s.%s" % (sdpath, self.fileprefix(sdpath), filename)
+        else:
+            tag = "bitbox" if fmt == SD_EXPORT_BITBOX else "specter"
+            fullpath = "%s/%s.%s.txt" % (sdpath, filename, tag)
+
+        platform.sdcard.mount()
+        try:
+            if platform.file_exists(fullpath):
+                confirm = await self.show(
+                    Prompt(
+                        "\n\nFile already exists: %s\n" % fullpath.split("/")[-1],
+                        "Would you like to overwrite this file?",
+                    )
+                )
+                if not confirm:
+                    return
+            if fmt == SD_EXPORT_ENCRYPTED:
+                self.save_aead(
+                    fullpath, plaintext=self.mnemonic.encode(), key=self.enc_secret
+                )
+                _, check = self.load_aead(fullpath, self.enc_secret)
+                verified = check.decode() == self.mnemonic
+            else:
+                with open(fullpath, "w") as f:
+                    f.write(self.mnemonic)
+                with open(fullpath, "r") as f:
+                    verified = f.read() == self.mnemonic
+            if not verified:
+                raise KeyStoreError(
+                    "Failed to verify the file that was just saved"
+                )
+        finally:
+            platform.sdcard.unmount()
+
+        await self.show(
+            Alert(
+                "Success!",
+                "Your recovery phrase is saved to\n\n%s\n\nPlease keep it safe."
+                % fullpath.split("/")[-1],
+            )
+        )
+
+    async def get_input(
+            self,
+            title="Enter a name for this seed",
+            note="Naming your seeds allows you to store multiple.\n"
+                 "Give each seed a unique name!",
+            suggestion="",
+    ):
+        scr = InputScreen(title, note, suggestion, min_length=1, strip=True)
+        await self.show(scr)
+        return scr.get_value()

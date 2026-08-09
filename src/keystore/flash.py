@@ -12,7 +12,7 @@ from binascii import hexlify, unhexlify
 from rng import get_random_bytes
 from embit import ec, bip39, bip32
 from helpers import tagged_hash
-from gui.screens import Alert, PinScreen, Menu, MnemonicScreen, InputScreen
+from gui.screens import Alert, PinScreen, Menu, MnemonicScreen
 
 # prefix of filenames used to store recovery phrases
 # encrypted with the device's internal secret, on
@@ -309,18 +309,6 @@ class FlashKeyStore(RAMKeyStore):
             raise KeyStoreError("Failed to delete file '%s'" % file)
         finally:
             return True
-
-    async def get_input(
-            self,
-            title="Enter a name for this seed",
-            note="Naming your seeds allows you to store multiple.\n"
-                 "Give each seed a unique name!",
-            suggestion="",
-    ):
-        scr = InputScreen(title, note, suggestion, min_length=1, strip=True)
-        await self.show(scr)
-        return scr.get_value()
-
 
     async def storage_menu(self, title="Manage keys on internal flash"):
         """Manage storage, return True if new key was loaded"""
