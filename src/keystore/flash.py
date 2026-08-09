@@ -12,7 +12,7 @@ from binascii import hexlify, unhexlify
 from rng import get_random_bytes
 from embit import ec, bip39, bip32
 from helpers import tagged_hash
-from gui.screens import Alert, PinScreen, Menu, MnemonicScreen
+from gui.screens import Alert, PinScreen, Menu, MnemonicScreen, Prompt
 
 # prefix of filenames used to store recovery phrases
 # encrypted with the device's internal secret, on
@@ -218,11 +218,38 @@ class FlashKeyStore(RAMKeyStore):
         return "%s%s" % (SD_FILE_PREFIX, hexid)
 
 
+    async def _confirm_encrypted_storage(self, medium):
+        """Makes the encryption status and residual risk of storing the key
+        on this device explicit and requires a deliberate confirmation,
+        rather than silently encrypting and saving. See "Secret storage
+        modes" in docs/security-model.md for the full picture this is
+        summarizing."""
+        return await self.show(
+            Prompt(
+                "Store key encrypted?",
+                "Your recovery phrase will be stored ENCRYPTED (AES, with "
+                "a key derived from your PIN) on %s.\n\n"
+                "This is not the recommended way to protect real funds: "
+                "the main microcontroller is not a secure element, so "
+                "anyone with physical access to the device and the right "
+                "equipment should be considered able to extract the key "
+                "without knowing your PIN.\n\n"
+                "For meaningful amounts, use the smartcard storage mode "
+                "instead, or don't store the key on the device at all."
+                % medium,
+                confirm_text="I accept the risk",
+                warning="Not the recommended storage!",
+            )
+        )
+
     async def save_mnemonic(self):
         if self.is_locked:
             raise KeyStoreError("Keystore is locked")
         if self.mnemonic is None:
             raise KeyStoreError("Recovery phrase is not loaded")
+
+        if not await self._confirm_encrypted_storage("the internal flash"):
+            return
 
         path = self.flashpath
         filename = await self.get_input(suggestion=self.mnemonic.split()[0])

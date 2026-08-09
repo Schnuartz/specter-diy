@@ -63,14 +63,22 @@ class SDKeyStore(FlashKeyStore):
         )
         if path is None:
             return
+
+        if path == self.sdpath:
+            # lets the user choose a format (plain text / Bitbox / encrypted)
+            # and shows the warning that matches whichever one is picked -
+            # it has its own confirmation, so nothing further to do here.
+            await self.export_mnemonic_to_sd()
+            return
+
+        if not await self._confirm_encrypted_storage("the internal flash"):
+            return
+
         filename = await self.get_input(suggestion=self.mnemonic.split()[0])
         if filename is None:
             return
 
         fullpath = "%s/%s.%s" % (path, self.fileprefix(path), filename)
-
-        if fullpath.startswith(self.sdpath):
-            platform.sdcard.mount()
 
         if platform.file_exists(fullpath):
             scr = Prompt(
@@ -79,18 +87,13 @@ class SDKeyStore(FlashKeyStore):
             )
             res = await self.show(scr)
             if res is False:
-                if fullpath.startswith(self.sdpath):
-                    platform.sdcard.unmount()
                 return
 
         self.save_aead(fullpath, plaintext=self.mnemonic.encode(),
                        key=self.enc_secret)
-        if fullpath.startswith(self.sdpath):
-            platform.sdcard.unmount()
         # check it's ok
         await self.load_mnemonic(fullpath)
-        # return the full file name incl. prefix if saved to SD card, just the name if on flash
-        return fullpath.split("/")[-1] if fullpath.startswith(self.sdpath) else filename
+        return filename
 
     @property
     def is_key_saved(self):
