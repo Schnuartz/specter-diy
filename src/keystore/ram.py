@@ -466,6 +466,22 @@ class RAMKeyStore(KeyStore):
                     "Continue?",
                 )
             )
+        elif fmt == SD_EXPORT_BITBOX:
+            confirmed = await self.show(
+                Prompt(
+                    "This will NOT be encrypted!",
+                    "\n\nThis writes a native BitBox02-format backup (three "
+                    "redundant copies) to the SD card, exactly like a real "
+                    "BitBox02 would.\n\n"
+                    "Anyone who gets hold of this SD card will have full "
+                    "access to your funds.\n\n"
+                    "Store and protect it exactly as carefully as a "
+                    "handwritten recovery phrase, and never plug it into a "
+                    "computer or any other untrusted device.\n\n"
+                    "Continue?",
+                    warning="Recovery phrase will be stored unencrypted",
+                )
+            )
         else:
             confirmed = await self.show(
                 Prompt(
@@ -482,39 +498,44 @@ class RAMKeyStore(KeyStore):
         if not confirmed:
             return
 
-        filename = await self.get_input(suggestion=self.mnemonic.split()[0])
-        if filename is None:
+        label = await self.get_input(suggestion=self.mnemonic.split()[0])
+        if label is None:
             return
-
-        sdpath = platform.fpath("/sd")
-        if fmt == SD_EXPORT_ENCRYPTED:
-            fullpath = "%s/%s.%s" % (sdpath, self.fileprefix(sdpath), filename)
-        else:
-            tag = "bitbox" if fmt == SD_EXPORT_BITBOX else "specter"
-            fullpath = "%s/%s.%s.txt" % (sdpath, filename, tag)
 
         platform.sdcard.mount()
         try:
-            if platform.file_exists(fullpath):
-                confirm = await self.show(
-                    Prompt(
-                        "\n\nFile already exists: %s\n" % fullpath.split("/")[-1],
-                        "Would you like to overwrite this file?",
-                    )
-                )
-                if not confirm:
-                    return
-            if fmt == SD_EXPORT_ENCRYPTED:
-                self.save_aead(
-                    fullpath, plaintext=self.mnemonic.encode(), key=self.enc_secret
-                )
-                _, check = self.load_aead(fullpath, self.enc_secret)
-                verified = check.decode() == self.mnemonic
+            if fmt == SD_EXPORT_BITBOX:
+                display_name, verified = self._write_bitbox_backup(label)
             else:
-                with open(fullpath, "w") as f:
-                    f.write(self.mnemonic)
-                with open(fullpath, "r") as f:
-                    verified = f.read() == self.mnemonic
+                sdpath = platform.fpath("/sd")
+                if fmt == SD_EXPORT_ENCRYPTED:
+                    fullpath = "%s/%s.%s" % (sdpath, self.fileprefix(sdpath), label)
+                else:
+                    fullpath = "%s/%s.specter.txt" % (sdpath, label)
+
+                if platform.file_exists(fullpath):
+                    confirm = await self.show(
+                        Prompt(
+                            "\n\nFile already exists: %s\n" % fullpath.split("/")[-1],
+                            "Would you like to overwrite this file?",
+                        )
+                    )
+                    if not confirm:
+                        return
+
+                if fmt == SD_EXPORT_ENCRYPTED:
+                    self.save_aead(
+                        fullpath, plaintext=self.mnemonic.encode(), key=self.enc_secret
+                    )
+                    _, check = self.load_aead(fullpath, self.enc_secret)
+                    verified = check.decode() == self.mnemonic
+                else:
+                    with open(fullpath, "w") as f:
+                        f.write(self.mnemonic)
+                    with open(fullpath, "r") as f:
+                        verified = f.read() == self.mnemonic
+                display_name = fullpath.split("/")[-1]
+
             if not verified:
                 raise KeyStoreError(
                     "Failed to verify the file that was just saved"
@@ -526,9 +547,50 @@ class RAMKeyStore(KeyStore):
             Alert(
                 "Success!",
                 "Your recovery phrase is saved to\n\n%s\n\nPlease keep it safe."
-                % fullpath.split("/")[-1],
+                % display_name,
             )
         )
+
+    def _write_bitbox_backup(self, label):
+        """
+        Encodes the current mnemonic as a native BitBox02 microSD backup
+        (bitbox_backup.build_backup) and writes it as three redundant
+        copies under bitbox02/<backup id>/ on the SD card, the same
+        layout a real BitBox02 device uses - readable both by this
+        device's own "BitBox microSD backup" import and, in principle, by
+        a real BitBox02 (untested on real hardware, see docs/security-model.md).
+
+        The SD card must already be mounted by the caller. Returns
+        (display_path, verified), where verified confirms the written
+        copies parse back (via bitbox_backup/bitbox_sd, the same code the
+        import path uses) to the exact mnemonic that was just encoded.
+        """
+        import bitbox_backup
+        import bitbox_sd
+
+        entropy = bip39.mnemonic_to_bytes(self.mnemonic)
+        backup_id, encoded = bitbox_backup.build_backup(entropy, name=label)
+
+        bitbox_root = "%s/%s" % (platform.fpath("/sd"), bitbox_sd.BITBOX_ROOT_DIRNAME)
+        dir_path = "%s/%s" % (bitbox_root, backup_id)
+        platform.maybe_mkdir(bitbox_root)
+        platform.maybe_mkdir(dir_path)
+        for i in range(bitbox_sd.EXPECTED_FILE_COUNT):
+            with open("%s/%d.bin" % (dir_path, i), "wb") as f:
+                f.write(encoded)
+
+        raw_files = bitbox_sd.read_backup_files(backup_id)
+        try:
+            parsed, _, _ = bitbox_backup.load_backup(backup_id, raw_files)
+            try:
+                verified = parsed.mnemonic() == self.mnemonic
+            finally:
+                parsed.zeroize()
+        finally:
+            for buf in raw_files:
+                bitbox_backup.zeroize(buf)
+
+        return "%s/%s/" % (bitbox_sd.BITBOX_ROOT_DIRNAME, backup_id), verified
 
     async def get_input(
             self,

@@ -724,3 +724,112 @@ def load_backup(dir_name_hex, raw_files):
     finally:
         zeroize(recovered)
     return parsed, 0, True
+
+
+# ---------------------------------------------------------------------------
+# Writer (the encoding counterpart of the parser above)
+#
+# Used only when Specter-DIY itself creates a new BitBox-format backup (see
+# keystore/ram.py::export_mnemonic_to_sd), never by the import path above.
+# Every encoder here mirrors the corresponding decoder one-to-one (same
+# field numbers, same wire types, same preimage layout in compute_checksum),
+# so build_backup()'s output is required to round-trip unchanged through
+# parse_backup()/validate_backup() - this is exercised in the test suite.
+# ---------------------------------------------------------------------------
+
+def _encode_varint(value):
+    """Encodes a non-negative integer as a canonical protobuf varint - the
+    exact inverse of _read_varint()."""
+    if value < 0 or value > _U64_MAX:
+        raise BitboxParseError("varint value out of range")
+    out = bytearray()
+    v = value
+    while True:
+        b = v & 0x7F
+        v >>= 7
+        if v:
+            out.append(b | 0x80)
+        else:
+            out.append(b)
+            break
+    return bytes(out)
+
+
+def _encode_tag(field_number, wire_type):
+    return _encode_varint((field_number << 3) | wire_type)
+
+
+def _encode_varint_field(field_number, value):
+    return _encode_tag(field_number, WIRE_VARINT) + _encode_varint(value)
+
+
+def _encode_length_delimited_field(field_number, data):
+    return (
+        _encode_tag(field_number, WIRE_LENGTH_DELIMITED)
+        + _encode_varint(len(data))
+        + bytes(data)
+    )
+
+
+def build_backup(entropy, name="", generator="specter-diy", timestamp=0, birthdate=0):
+    """Encodes `entropy` (16/24/32 raw BIP-39 entropy bytes, NOT the 32-byte
+    zero-padded seed field) as a single native BitBox02 backup message -
+    the on-disk content of one of the three redundant copies a real backup
+    consists of.
+
+    `length` is always encoded as 0: every backup this writes is in the
+    current format (see the module docstring's note on the historical,
+    non-zero `length` some old real-device backups carry, which
+    parse_backup() also still accepts).
+
+    Returns (backup_id_hex, encoded_bytes). Does not write anything to
+    disk or duplicate the copy three times - see bitbox_sd.write_backup_files
+    for that. Raises BitboxParseError if entropy has an unsupported length
+    or name/generator exceed their byte limits.
+    """
+    if len(entropy) not in VALID_SEED_LENGTHS:
+        raise BitboxParseError(
+            "entropy must be 16, 24 or 32 bytes (got %d)" % len(entropy)
+        )
+    seed_length = len(entropy)
+    seed32 = bytes(entropy) + bytes(SEED_FIELD_SIZE - seed_length)
+    mode = BACKUP_MODE_PLAINTEXT
+    length = 0
+
+    name_raw = name.encode("utf-8")
+    if len(name_raw) > NAME_MAX_BYTES:
+        raise BitboxParseError("name exceeds %d byte limit" % NAME_MAX_BYTES)
+    generator_raw = generator.encode("utf-8")
+    if len(generator_raw) > GENERATOR_MAX_BYTES:
+        raise BitboxParseError("generator exceeds %d byte limit" % GENERATOR_MAX_BYTES)
+
+    checksum = compute_checksum(
+        timestamp, mode, name_raw, seed_length, seed32, birthdate, generator_raw, length
+    )
+
+    metadata_bytes = (
+        _encode_varint_field(1, timestamp)
+        + _encode_length_delimited_field(2, name_raw)
+        + _encode_varint_field(3, mode)
+    )
+    data_bytes = (
+        _encode_varint_field(1, seed_length)
+        + _encode_length_delimited_field(2, seed32)
+        + _encode_varint_field(3, birthdate)
+        + _encode_length_delimited_field(4, generator_raw)
+    )
+    content_bytes = (
+        _encode_length_delimited_field(1, checksum)
+        + _encode_length_delimited_field(2, metadata_bytes)
+        + _encode_varint_field(3, length)
+        + _encode_length_delimited_field(4, data_bytes)
+    )
+    backup_v1_bytes = _encode_length_delimited_field(1, content_bytes)
+    backup_bytes = _encode_length_delimited_field(1, backup_v1_bytes)
+
+    if len(backup_bytes) > MAX_FILE_SIZE:
+        raise BitboxParseError(
+            "encoded backup exceeds %d byte limit" % MAX_FILE_SIZE
+        )
+
+    return compute_backup_id(entropy), backup_bytes
