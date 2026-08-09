@@ -4,6 +4,7 @@ import json
 from io import BytesIO
 import asyncio
 
+import platform
 from platform import (
     CriticalErrorWipeImmediately,
     reboot,
@@ -23,9 +24,15 @@ from embit import bip39
 from embit.liquid.networks import NETWORKS
 from gui.screens.settings import HostSettings
 from gui.screens.mnemonic import MnemonicPrompt
+from gui.screens import Prompt
+
+# bitbox_backup / bitbox_sd are imported lazily inside the BitBox import
+# flow so they (and their embit.bip39 dependency) only occupy RAM when a
+# BitBox backup is actually being imported - same pattern as the lazy
+# qrencoder import in hosts/sd.py.
 
 # small helper functions
-from helpers import gen_mnemonic, fix_mnemonic
+from helpers import gen_mnemonic, fix_mnemonic, conv_time
 from errors import BaseError
 
 
@@ -296,12 +303,20 @@ class Specter:
             print(menuitem, "menu is not implemented yet")
             raise SpecterError("Not implemented")
 
+    # sentinel value for the BitBox microSD backup entry in the import
+    # menu below - not a real Host instance, handled as a special case.
+    BITBOX_BACKUP = "bitbox_backup"
+
     async def import_mnemonic(self):
+        buttons = [(host, host.button) for host in self.hosts if host.is_enabled]
+        buttons.append((self.BITBOX_BACKUP, "BitBox microSD backup"))
         host = await self.gui.menu(title="What to use for import?", note="\n",
-            buttons=[(host, host.button) for host in self.hosts if host.is_enabled],
+            buttons=buttons,
             last=(255, None))
         if host == 255:
             return
+        if host == self.BITBOX_BACKUP:
+            return await self.import_bitbox_backup()
         stream = await host.get_data()
         if not stream:
             return
@@ -319,6 +334,22 @@ class Specter:
             mnemonic = mnemonic.split("\r")[0].split("\n")[0]
             if not bip39.mnemonic_is_valid(mnemonic):
                 raise SpecterError("Invalid data: %r" % mnemonic)
+        return await self.confirm_and_set_mnemonic(mnemonic)
+
+    async def confirm_and_set_mnemonic(self, mnemonic):
+        """
+        Shows the standard mnemonic confirmation screen and, if the user
+        confirms, loads the mnemonic through the normal Specter key flow.
+
+        This is the single tail shared by every source that produces a
+        recovery phrase for the "Import recovery phrase" menu (host data
+        via QR/SD/USB, and BitBox microSD backups). Once a source has a
+        valid mnemonic string it must call this and nothing else - no
+        caller may re-implement the confirmation, the set_mnemonic call, or
+        any follow-up state change.
+
+        Returns the next menu on success, or None if the user cancelled.
+        """
         scr = MnemonicPrompt(title="Imported mnemonic:", mnemonic=mnemonic)
         # confirm mnemonic
         if not await self.gui.show_screen()(scr):
@@ -330,6 +361,200 @@ class Specter:
         self.init_apps()
         self.current_menu = self.mainmenu
         return self.mainmenu
+
+    @staticmethod
+    def _truncate_backup_id(dir_name):
+        # ASCII ellipsis on purpose - matches hosts/sd.py::truncate() and
+        # avoids depending on U+2026 being present in the LVGL font.
+        return dir_name[:12] + "..."
+
+    @staticmethod
+    def _read_sd(fn):
+        """Runs one synchronous, read-only SD-card operation with the card
+        mounted for the shortest possible window, and returns its result.
+
+        The card is deliberately never left mounted across a GUI await: the
+        user may spend minutes on a confirmation screen or typing a
+        passphrase, and the rest of Specter (see hosts/sd.py::get_data)
+        follows the same mount -> read -> unmount-before-GUI pattern.
+        """
+        import bitbox_sd
+
+        if not platform.sdcard.is_present:
+            raise SpecterError("SD card is not inserted")
+        try:
+            platform.sdcard.mount()
+        except Exception as e:
+            raise SpecterError("Could not mount the SD card:\n\n%s" % e)
+        try:
+            return fn()
+        except bitbox_sd.BitboxSdError as e:
+            raise SpecterError("Could not read the SD card:\n\n%s" % e)
+        finally:
+            try:
+                platform.sdcard.unmount()
+            except Exception:
+                # The card may have been pulled mid-read. We never write to
+                # it, so there is nothing to lose here - and swallowing this
+                # must not hide the real outcome of fn(), which either
+                # returned or raised already.
+                pass
+
+    @staticmethod
+    def _format_backup_timestamp(timestamp):
+        if not timestamp:
+            return "unknown"
+        try:
+            y, mo, d, h, mi, s = conv_time(timestamp)[:6]
+            return "%04d-%02d-%02d %02d:%02d UTC" % (y, mo, d, h, mi)
+        except Exception:
+            # helpers.conv_time() should always succeed for a valid u32
+            # timestamp, but never let a display-formatting problem turn
+            # into an import failure - fall back to the raw value.
+            return "%d (unix time, UTC)" % timestamp
+
+    async def import_bitbox_backup(self):
+        """
+        Recovers a BIP-39 recovery phrase from a native, unencrypted
+        BitBox02 microSD backup.
+
+        This method's responsibility is strictly limited to the BitBox
+        specific part: find the backup directory, read the three files
+        read-only, decode the protobuf, verify the checksum and the backup
+        id, resolve redundancy (including majority recovery), extract the
+        BIP-39 entropy and turn it into a mnemonic. It then hands that
+        mnemonic to confirm_and_set_mnemonic() - the same tail every other
+        import source uses - and adds nothing of its own afterwards.
+
+        Consequently there is deliberately no BitBox specific handling of
+        BIP-39 passphrases, PIN, storage or app state: a passphrase can be
+        applied later through Specter's normal existing passphrase menu,
+        exactly as after any other recovery phrase import.
+
+        Reads the SD card read-only and never writes, renames or deletes
+        anything on it. On any abort or error the currently loaded key (if
+        any) is left completely untouched.
+        """
+        import bitbox_backup
+        import bitbox_sd
+
+        proceed = await self.gui.show_screen()(
+            Prompt(
+                "BitBox microSD backup",
+                "BitBox microSD backups are stored as plain, unencrypted "
+                "data.\n\n"
+                "Anyone with access to this card can recover the wallet "
+                "from it.\n\n"
+                "This import does not need the BitBox device password - "
+                "that password protects the BitBox's internal storage, "
+                "not this SD card backup.\n\n"
+                "Continue?",
+                warning="Not encrypted!",
+            )
+        )
+        if not proceed:
+            return
+
+        # Phase 1: discover backups. Card is mounted only for the listing.
+        try:
+            dir_names = self._read_sd(bitbox_sd.list_backup_dirs)
+            if not dir_names:
+                raise SpecterError(
+                    "No BitBox microSD backup was found.\n\n"
+                    "Backups live in a 'bitbox02' folder at the root of "
+                    "the SD card."
+                )
+        except SpecterError as e:
+            await self.gui.alert("BitBox import failed", "%s" % e)
+            return
+
+        # Phase 2: let the user choose, with the card already unmounted.
+        buttons = [(name, self._truncate_backup_id(name)) for name in dir_names]
+        selected = await self.gui.menu(
+            buttons, title="Select a BitBox backup", last=(255, None)
+        )
+        if selected == 255 or selected is None:
+            return
+
+        # Phase 3: read + fully validate, then unmount before any further GUI.
+        raw_files = None
+        parsed = None
+        try:
+            raw_files = self._read_sd(
+                lambda: bitbox_sd.read_backup_files(selected)
+            )
+            try:
+                parsed, valid_copies, used_majority = bitbox_backup.load_backup(
+                    selected, raw_files
+                )
+            except bitbox_backup.BitboxBackupError as e:
+                raise SpecterError(
+                    "This BitBox backup could not be verified:\n\n%s" % e
+                )
+            finally:
+                # The raw file images are no longer needed once parsed; wipe
+                # them before we start waiting on the user.
+                for buf in raw_files:
+                    bitbox_backup.zeroize(buf)
+                raw_files = None
+
+            # From here on the card is unmounted and `parsed` is the only
+            # structure holding secret material.
+            word_count = {16: 12, 24: 18, 32: 24}[parsed.seed_length]
+            valid_copies_text = "%d of 3" % valid_copies
+            if used_majority:
+                valid_copies_text += " (recovered via majority vote)"
+            info = (
+                "Name: %s\n"
+                "Created: %s\n"
+                "Seed: %d words\n"
+                "Generator: %s\n"
+                "Backup ID: %s\n"
+                "Valid copies: %s"
+            ) % (
+                parsed.name or "(none)",
+                self._format_backup_timestamp(parsed.timestamp),
+                word_count,
+                parsed.generator or "(unknown)",
+                self._truncate_backup_id(selected),
+                valid_copies_text,
+            )
+            if used_majority:
+                info += (
+                    "\n\nAll individual backup copies were damaged.\n"
+                    "The wallet was reconstructed using bitwise majority "
+                    "recovery.\n"
+                    "Verify the recovery phrase carefully."
+                )
+
+            confirmed = await self.gui.show_screen()(
+                Prompt(
+                    "BitBox backup",
+                    info,
+                    warning="Majority recovery used!" if used_majority else None,
+                )
+            )
+            if not confirmed:
+                return
+
+            # `mnemonic` is a Python str and therefore cannot be zeroized -
+            # an unavoidable limitation shared with every other recovery
+            # phrase path in Specter (see docs/security-model.md).
+            mnemonic = parsed.mnemonic()
+
+            # BitBox-specific responsibility ends here: from this point on
+            # this is just a normal BIP-39 recovery phrase, handed to the
+            # exact same flow every other import source uses.
+            return await self.confirm_and_set_mnemonic(mnemonic)
+        except SpecterError as e:
+            await self.gui.alert("BitBox import failed", "%s" % e)
+            return
+        finally:
+            if raw_files:
+                for buf in raw_files:
+                    bitbox_backup.zeroize(buf)
+            if parsed is not None:
+                parsed.zeroize()
 
     async def mainmenu(self):
         # interactive hosts are enabled later
