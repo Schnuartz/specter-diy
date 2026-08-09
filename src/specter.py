@@ -1,4 +1,5 @@
 import sys
+import os
 import gc
 import json
 from io import BytesIO
@@ -25,6 +26,7 @@ from embit.liquid.networks import NETWORKS
 from gui.screens.settings import HostSettings
 from gui.screens.mnemonic import MnemonicPrompt
 from gui.screens import Prompt, Progress
+from keystore.flash import SD_FILE_PREFIX
 
 # bitbox_backup / bitbox_sd are imported lazily inside the BitBox import
 # flow so they (and their embit.bip39 dependency) only occupy RAM when a
@@ -880,7 +882,7 @@ class Specter:
             buttons.extend([(777, "Change PIN code")])
         buttons += [
             (456, "Reboot"),
-            (789, "Format SD card", platform.sdcard.is_present, 0x951E2D),
+            (789, "SD card", platform.sdcard.is_present),
             (123, "Wipe the device", True, 0x951E2D),
         ]
         while True:
@@ -911,7 +913,7 @@ class Specter:
                     self.wipe()
                 return
             elif menuitem == 789:
-                await self.format_sdcard()
+                await self.sdcard_menu()
                 return
             elif menuitem == 777:
                 await self.keystore.change_pin()
@@ -933,6 +935,141 @@ class Specter:
         # TODO: wipe the smartcard as well?
         # platform.wipe
         wipe()
+
+    def _list_sdcard_items(self):
+        """
+        Scans the SD card root for the Specter-related items this menu
+        knows how to describe and securely delete: device-encrypted key
+        files (from any device, not just this one - see hosts/sd.py's
+        similar hint for why they matter even when unreadable here),
+        plaintext recovery-phrase exports, and BitBox backup
+        directories.
+
+        Deliberately doesn't enumerate anything else that might be on
+        the card (PSBTs, unrelated files) - "Format entire SD card" in
+        _sdcard_delete_menu() is the tool for wiping everything
+        indiscriminately.
+
+        Returns a list of (kind, identifier, label) tuples. `identifier`
+        is a full file path for "enc"/"plain" items, or a bare BitBox
+        backup id for "bitbox" items (whose actual files live one level
+        deeper, inside bitbox02/<id>/).
+        """
+        sdpath = platform.fpath("/sd")
+        items = []
+        platform.sdcard.mount()
+        try:
+            for entry in os.ilistdir(sdpath):
+                name, entry_type = entry[0], entry[1]
+                if name in (".", ".."):
+                    continue
+                if entry_type != 0x8000:  # not a regular file
+                    continue
+                lname = name.lower()
+                if lname.startswith(SD_FILE_PREFIX):
+                    label = name.split(".", 1)[1] if "." in name else name
+                    items.append(("enc", "%s/%s" % (sdpath, name), label))
+                elif lname.endswith(".specter.txt"):
+                    items.append(("plain", "%s/%s" % (sdpath, name), name[: -len(".specter.txt")]))
+            try:
+                import bitbox_sd
+                for dir_name in bitbox_sd.list_backup_dirs():
+                    label = self._peek_backup_name(dir_name) or dir_name
+                    items.append(("bitbox", dir_name, label))
+            except Exception:
+                # no bitbox02/ directory, or it couldn't be listed - not
+                # having any BitBox backups is not an error here.
+                pass
+        finally:
+            platform.sdcard.unmount()
+        return items
+
+    @staticmethod
+    def _sdcard_item_label(item):
+        kind, _ident, label = item
+        prefix = {"enc": "Encrypted: ", "plain": "Plaintext: ", "bitbox": "BitBox: "}[kind]
+        return prefix + label
+
+    async def sdcard_menu(self):
+        """
+        Entry point for managing what's stored on the SD card: shows how
+        much Specter-related data is on it, and offers "Delete data" to
+        either securely erase one item or format the whole card.
+        """
+        if not platform.sdcard.is_present:
+            await self.gui.alert("No SD card", "There is no SD card inserted.")
+            return
+        while True:
+            items = self._list_sdcard_items()
+            note = (
+                "%d Specter item(s) found on the card" % len(items)
+                if items
+                else "No Specter data found on the card"
+            )
+            menuitem = await self.gui.menu(
+                [
+                    (None, "SD card"),
+                    ("delete", "Delete data", True, 0x951E2D),
+                ],
+                title="SD card",
+                note=note,
+                last=(255, None),
+            )
+            if menuitem == 255:
+                return
+            if menuitem == "delete":
+                await self._sdcard_delete_menu(items)
+
+    async def _sdcard_delete_menu(self, items):
+        buttons = [(None, "What do you want to delete?")]
+        for item in items:
+            buttons.append((item, self._sdcard_item_label(item)))
+        buttons.append(("format", "Format entire SD card", True, 0x951E2D))
+        choice = await self.gui.menu(
+            buttons, title="Delete data", last=(255, None)
+        )
+        if choice == 255 or choice is None:
+            return
+        if choice == "format":
+            await self.format_sdcard()
+            return
+        await self._delete_sdcard_item(choice)
+
+    async def _delete_sdcard_item(self, item):
+        kind, ident, label = item
+        kind_desc = {
+            "enc": "an encrypted recovery phrase",
+            "plain": "a plaintext recovery phrase",
+            "bitbox": "a BitBox backup",
+        }[kind]
+        if not await self.gui.prompt(
+            "Delete this item?",
+            "\n\n%s\n\nThis is %s.\n\n"
+            "It will be overwritten with fresh random data several "
+            "times before being deleted - the same overwrite-then-"
+            "delete principle BitBox itself uses for its own backups, "
+            "just more thoroughly. Much harder to recover than a "
+            "normal delete, though still not as thorough as formatting "
+            "the whole card.\n\n"
+            "Continue?" % (label, kind_desc),
+        ):
+            return
+        platform.sdcard.mount()
+        try:
+            if kind == "bitbox":
+                import bitbox_sd
+                dir_path = "%s/%s/%s" % (
+                    platform.fpath("/sd"), bitbox_sd.BITBOX_ROOT_DIRNAME, ident
+                )
+                platform.secure_delete_tree(dir_path)
+            else:
+                platform.secure_delete_file(ident)
+        except Exception as e:
+            await self.gui.alert("Delete failed", "%s" % e)
+            return
+        finally:
+            platform.sdcard.unmount()
+        await self.gui.alert("Deleted", "The item has been securely deleted.")
 
     async def format_sdcard(self):
         """

@@ -366,6 +366,54 @@ def delete_recursively(path, include_self=False):
     raise RuntimeError("Failed to delete folder %s" % path)
 
 
+def secure_delete_file(path, passes=3):
+    """
+    Overwrites a file's contents with fresh random data `passes` times,
+    syncing after each pass, before deleting it - the same
+    overwrite-then-unlink principle BitBox02's firmware uses when it
+    replaces a backup file (_delete_file() / sd_erase_file_in_subdir() in
+    bitbox02-firmware/src/sd.c), except that overwrites once with a fixed
+    byte (0xAC); this uses fresh random data on every one of several
+    passes instead.
+
+    A plain os.remove() only unlinks the directory entry - the file's
+    old bytes are still physically on the card until that space happens
+    to be reused, and can often be recovered with an undelete tool in
+    the meantime. This closes that gap for individual files (see
+    SDCard.erase_and_format() for the equivalent whole-card operation).
+    """
+    size = os.stat(path)[6]
+    for _ in range(passes):
+        with open(path, "r+b") as f:
+            f.seek(0)
+            remaining = size
+            while remaining > 0:
+                chunk = min(remaining, 4096)
+                f.write(os.urandom(chunk))
+                remaining -= chunk
+        sync()
+    os.remove(path)
+
+
+def secure_delete_tree(path, passes=3):
+    """
+    Recursively secure_delete_file()s every regular file under `path`
+    (see its docstring), then removes the now-empty directories,
+    including `path` itself. Used for multi-file items such as a BitBox
+    backup directory, where each of the redundant copies must be
+    overwritten, not just unlinked.
+    """
+    for name, entry_type, *_rest in os.ilistdir(path):
+        if name in (".", ".."):
+            continue
+        full = "%s/%s" % (path, name)
+        if entry_type == 0x8000:
+            secure_delete_file(full, passes=passes)
+        elif entry_type == 0x4000:
+            secure_delete_tree(full, passes=passes)
+    os.rmdir(path)
+
+
 if not simulator:
     stlk = pyb.UART("YB", 9600)
 

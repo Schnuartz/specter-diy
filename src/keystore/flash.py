@@ -330,7 +330,7 @@ class FlashKeyStore(RAMKeyStore):
         if not platform.file_exists(file):
             raise KeyStoreError("File not found.")
         try:
-            os.remove(file)
+            platform.secure_delete_file(file)
         except Exception as e:
             print(e)
             raise KeyStoreError("Failed to delete file '%s'" % file)
