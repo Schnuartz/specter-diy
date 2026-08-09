@@ -1,5 +1,5 @@
 from .core import KeyStoreError
-from .flash import FlashKeyStore
+from .flash import FlashKeyStore, SD_FILE_PREFIX
 import platform
 from gui.screens import Menu, Prompt
 from helpers import tagged_hash
@@ -34,7 +34,7 @@ class SDKeyStore(FlashKeyStore):
             return 'reckless'
 
         hexid = hexlify(tagged_hash("sdid", self.secret)[:4]).decode()
-        return "specterdiy%s" % hexid
+        return "%s%s" % (SD_FILE_PREFIX, hexid)
 
     async def get_keypath(self, title="Select media", only_if_exist=True, **kwargs):
         # enable / disable buttons

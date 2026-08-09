@@ -14,6 +14,11 @@ from embit import ec, bip39, bip32
 from helpers import tagged_hash
 from gui.screens import Alert, PinScreen, Menu, MnemonicScreen, InputScreen
 
+# prefix of filenames used to store recovery phrases
+# encrypted with the device's internal secret, on
+# internal flash or an external SD card
+SD_FILE_PREFIX = "specterdiy"
+
 
 class FlashKeyStore(RAMKeyStore):
     """
@@ -210,7 +215,7 @@ class FlashKeyStore(RAMKeyStore):
             return 'reckless'
 
         hexid = hexlify(tagged_hash("sdid", self.secret)[:4]).decode()
-        return "specterdiy%s" % hexid
+        return "%s%s" % (SD_FILE_PREFIX, hexid)
 
 
     async def save_mnemonic(self):

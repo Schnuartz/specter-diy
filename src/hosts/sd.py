@@ -4,6 +4,7 @@ import os
 import platform
 from binascii import hexlify
 from helpers import a2b_base64_stream
+from keystore.flash import SD_FILE_PREFIX
 
 class SDHost(Host):
     """
@@ -68,7 +69,35 @@ class SDHost(Host):
             return fname
         return fname[:18]+"..."+fname[-12:]
 
+    async def warn_about_encrypted_files(self):
+        """
+        Recovery phrases saved via "Flash & SD card storage" are encrypted
+        with the device's internal secret and don't show up in this file
+        list. If the current keystore already is SDKeyStore, those files
+        are reachable from its own "Load key" menu, so there is nothing to
+        warn about - only warn when they'd otherwise be invisible, e.g.
+        when a smartcard is currently in use.
+        """
+        keystore = self.parent.keystore if self.parent is not None else None
+        if keystore is not None and hasattr(keystore, "sdpath"):
+            return
+        found = any(
+            f[0].lower().startswith(SD_FILE_PREFIX) and f[1] == 0x8000
+            for f in os.ilistdir(self.sdpath)
+        )
+        if found:
+            await self.manager.gui.alert(
+                "Encrypted recovery phrase found",
+                "\n\nThis SD card also contains a recovery phrase encrypted "
+                "by this device's \"Flash & SD card storage\" mode.\n\n"
+                "It won't show up in this file list. To open it, restart "
+                "the device with the smartcard removed, then use "
+                "\"Load key\" from the Flash & SD card storage menu.",
+            )
+
     async def select_file(self, extensions):
+        await self.warn_about_encrypted_files()
+
         files = sum([
             [
                 f[0] for f in os.ilistdir(self.sdpath)
@@ -76,7 +105,7 @@ class SDHost(Host):
                 and f[1] == 0x8000
             ] for ext in extensions
         ], [])
-        
+
         if len(files) == 0:
             raise HostError("\n\nNo matching files found on the SD card\nAllowed: %s" % ", ".join(extensions))
         # elif len(files) == 1:
