@@ -162,7 +162,12 @@ class SDKeyStore(FlashKeyStore):
         finally:
             if platform.sdcard.is_present and file.startswith(self.sdpath):
                 platform.sdcard.unmount()
-            return True
+        # NOTE: this return must stay OUTSIDE the finally block - a return
+        # inside finally executes while an exception is propagating and
+        # silently discards it, so a failed delete would still report
+        # success. The unmount above belongs to the finally (it must run
+        # on every path); the success return does not.
+        return True
 
     async def storage_menu(self):
         """Manage storage, return True if new key was loaded"""
