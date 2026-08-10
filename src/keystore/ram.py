@@ -1,6 +1,7 @@
 from .core import KeyStore, KeyStoreError
 from platform import CriticalErrorWipeImmediately
 import platform
+import os
 from rng import get_random_bytes
 import hmac
 from embit import ec, bip39, bip32
@@ -501,6 +502,8 @@ class RAMKeyStore(KeyStore):
         label = await self.get_input(suggestion=self.mnemonic.split()[0])
         if label is None:
             return
+        if not await self.check_label(label):
+            return
 
         platform.sdcard.mount()
         try:
@@ -560,6 +563,14 @@ class RAMKeyStore(KeyStore):
         device's own "BitBox microSD backup" import and, in principle, by
         a real BitBox02 (untested on real hardware, see docs/security-model.md).
 
+        Refuses to write if the backup directory already exists and
+        contains anything: mixing our three copies with files already
+        there (e.g. the timestamped files a real BitBox02 writes for the
+        same seed) would leave more than three files in the directory,
+        and both this device and real BitBox02 firmware only ever load a
+        backup directory containing exactly three files - so "merging"
+        would silently corrupt the backup for both.
+
         The SD card must already be mounted by the caller. Returns
         (display_path, verified), where verified confirms the written
         copies parse back (via bitbox_backup/bitbox_sd, the same code the
@@ -568,27 +579,47 @@ class RAMKeyStore(KeyStore):
         import bitbox_backup
         import bitbox_sd
 
+        # NOTE: mnemonic_to_bytes() returns immutable bytes - that one
+        # copy of the entropy cannot be zeroized (same documented limit
+        # as the mnemonic string itself). Everything derived from it here
+        # stays in wipeable bytearrays instead.
         entropy = bip39.mnemonic_to_bytes(self.mnemonic)
         backup_id, encoded = bitbox_backup.build_backup(entropy, name=label)
-
-        bitbox_root = "%s/%s" % (platform.fpath("/sd"), bitbox_sd.BITBOX_ROOT_DIRNAME)
-        dir_path = "%s/%s" % (bitbox_root, backup_id)
-        platform.maybe_mkdir(bitbox_root)
-        platform.maybe_mkdir(dir_path)
-        for i in range(bitbox_sd.EXPECTED_FILE_COUNT):
-            with open("%s/%d.bin" % (dir_path, i), "wb") as f:
-                f.write(encoded)
-
-        raw_files = bitbox_sd.read_backup_files(backup_id)
         try:
-            parsed, _, _ = bitbox_backup.load_backup(backup_id, raw_files)
+            bitbox_root = "%s/%s" % (platform.fpath("/sd"), bitbox_sd.BITBOX_ROOT_DIRNAME)
+            dir_path = "%s/%s" % (bitbox_root, backup_id)
             try:
-                verified = parsed.mnemonic() == self.mnemonic
+                existing = [
+                    e for e in os.ilistdir(dir_path)
+                    if e[0] not in (".", "..")
+                ]
+            except OSError:
+                # directory doesn't exist yet - the normal case
+                existing = []
+            if existing:
+                raise KeyStoreError(
+                    "A BitBox backup of this key already exists on the "
+                    "card.\n\nDelete it first (Device settings -> SD card "
+                    "-> Delete data) if you want to replace it."
+                )
+            platform.maybe_mkdir(bitbox_root)
+            platform.maybe_mkdir(dir_path)
+            for i in range(bitbox_sd.EXPECTED_FILE_COUNT):
+                with open("%s/%d.bin" % (dir_path, i), "wb") as f:
+                    f.write(encoded)
+
+            raw_files = bitbox_sd.read_backup_files(backup_id)
+            try:
+                parsed, _, _ = bitbox_backup.load_backup(backup_id, raw_files)
+                try:
+                    verified = parsed.mnemonic() == self.mnemonic
+                finally:
+                    parsed.zeroize()
             finally:
-                parsed.zeroize()
+                for buf in raw_files:
+                    bitbox_backup.zeroize(buf)
         finally:
-            for buf in raw_files:
-                bitbox_backup.zeroize(buf)
+            bitbox_backup.zeroize(encoded)
 
         return "%s/%s/" % (bitbox_sd.BITBOX_ROOT_DIRNAME, backup_id), verified
 
@@ -602,3 +633,28 @@ class RAMKeyStore(KeyStore):
         scr = InputScreen(title, note, suggestion, min_length=1, strip=True)
         await self.show(scr)
         return scr.get_value()
+
+    # Characters a user-typed label must not contain when it is used as
+    # (part of) a file name: path separators would let it escape the
+    # intended directory (traversal), the rest are invalid in FAT file
+    # names anyway. Control characters are rejected as well.
+    _LABEL_FORBIDDEN_CHARS = '/\\:*?"<>|'
+
+    async def check_label(self, label):
+        """Validates a user-typed label before it becomes part of a file
+        name on flash or SD card. Shows an error screen and returns False
+        if the label can't be used; returns True otherwise."""
+        ok = bool(label) and not any(
+            (c in self._LABEL_FORBIDDEN_CHARS) or (ord(c) < 32) or (ord(c) == 127)
+            for c in label
+        )
+        if not ok:
+            await self.show(Alert(
+                "Invalid name",
+                "The name is empty or contains characters that are not "
+                "allowed in file names.\n\n"
+                "Not allowed: / \\ : * ? \" < > | and control characters.\n\n"
+                "Please choose a different name.",
+                button_text="OK",
+            ))
+        return ok

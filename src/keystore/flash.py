@@ -255,6 +255,8 @@ class FlashKeyStore(RAMKeyStore):
         filename = await self.get_input(suggestion=self.mnemonic.split()[0])
         if filename is None:
             return
+        if not await self.check_label(filename):
+            return
 
         fullpath = "%s/%s.%s" % (path, self.fileprefix(path), filename)
 

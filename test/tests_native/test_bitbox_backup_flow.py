@@ -12,11 +12,15 @@ if sys.implementation.name != "micropython":
 
 import hashlib
 import os
+import types
 from unittest import TestCase
 
 import platform
 import specter as specter_module
 import bitbox_sd as sd
+import bitbox_backup as bb
+from embit import bip39
+from keystore.core import KeyStoreError
 from tests.util import get_keystore, clear_testdir
 from tests_native.bitbox_test_helpers import (
     OFFICIAL_VECTOR_MNEMONIC,
@@ -882,3 +886,315 @@ class ConfirmAndSetMnemonicPurityTest(TestCase):
             inspect.signature(specter_module.Specter.confirm_and_set_mnemonic).parameters
         )
         self.assertEqual(params, ["self", "mnemonic"])
+
+
+class BitboxExportTest(BitboxBackupFlowTestBase):
+    """RAMKeyStore._write_bitbox_backup(): writing a native BitBox02-format
+    backup of the currently loaded key to the SD card."""
+
+    def _dir_id(self):
+        return backup_id_for(bip39.mnemonic_to_bytes(ORIGINAL_MNEMONIC))
+
+    def test_writes_three_copies_and_verifies(self):
+        path, verified = self.keystore._write_bitbox_backup("label")
+        self.assertTrue(verified)
+        self.assertEqual(path, "bitbox02/%s/" % self._dir_id())
+        dirpath = self.sd_root + "/" + self._dir_id()
+        self.assertEqual(sorted(os.listdir(dirpath)), ["0.bin", "1.bin", "2.bin"])
+        # all three copies are identical and decode back to the same phrase
+        with open(dirpath + "/0.bin", "rb") as f:
+            data = f.read()
+        parsed = bb.validate_backup(data, self._dir_id())
+        try:
+            self.assertEqual(parsed.mnemonic(), ORIGINAL_MNEMONIC)
+            self.assertEqual(parsed.name, "label")
+        finally:
+            parsed.zeroize()
+
+    def test_refuses_to_merge_into_existing_backup_dir(self):
+        """A real BitBox02 backup of the SAME key lives in the same
+        directory name (the id depends only on the seed) but with
+        timestamped filenames. Adding our 0/1/2.bin would leave six files,
+        which both this device and real BitBox02 firmware then refuse to
+        load at all (exactly-three-files rule) - so the write must be
+        refused up front instead, leaving the existing backup untouched."""
+        dir_id = self._dir_id()
+        dirpath = self.sd_root + "/" + dir_id
+        os.mkdir(dirpath)
+        buf = make_valid_backup_bytes(
+            bip39.mnemonic_to_bytes(ORIGINAL_MNEMONIC), name="real bitbox"
+        )
+        names = ["backup_Mon_2020-09-28T08-30-09Z_%d.bin" % i for i in range(3)]
+        for name in names:
+            with open(dirpath + "/" + name, "wb") as f:
+                f.write(buf)
+
+        with self.assertRaises(KeyStoreError) as ctx:
+            self.keystore._write_bitbox_backup("label")
+        self.assertIn("already exists", str(ctx.exception))
+        # nothing was added, removed or modified
+        self.assertEqual(sorted(os.listdir(dirpath)), sorted(names))
+        for name in names:
+            with open(dirpath + "/" + name, "rb") as f:
+                self.assertEqual(f.read(), buf)
+
+    def test_refuses_reexport_of_same_key(self):
+        """Re-exporting the same key targets the same (now populated)
+        directory - same refusal, no silent overwrite."""
+        path, verified = self.keystore._write_bitbox_backup("label")
+        self.assertTrue(verified)
+        with self.assertRaises(KeyStoreError):
+            self.keystore._write_bitbox_backup("another label")
+
+    def test_encoded_buffer_is_zeroized_after_write(self):
+        """The encoded backup holds the plaintext seed; the writer must
+        wipe its buffer once the files are written (the on-disk copies are
+        the intended plaintext, the in-RAM one is not)."""
+        real_build_backup = bb.build_backup
+        captured = {}
+
+        def spy(entropy, **kwargs):
+            backup_id, encoded = real_build_backup(entropy, **kwargs)
+            captured["encoded"] = encoded
+            return backup_id, encoded
+
+        bb.build_backup = spy
+        try:
+            path, verified = self.keystore._write_bitbox_backup("label")
+        finally:
+            bb.build_backup = real_build_backup
+        self.assertTrue(verified)
+        self.assertIsInstance(captured["encoded"], bytearray)
+        self.assertTrue(all(b == 0 for b in captured["encoded"]))
+
+
+class _ScriptedShow:
+    """Stand-in for keystore.show: consumes one scripted result per screen
+    shown, in order, and records every screen for assertions."""
+
+    def __init__(self, results):
+        self._results = list(results)
+        self.screens = []
+
+    async def __call__(self, scr):
+        self.screens.append(scr)
+        if not self._results:
+            raise AssertionError("unexpected extra screen: %r" % (scr,))
+        return self._results.pop(0)
+
+
+class LabelValidationTest(BitboxBackupFlowTestBase):
+    """User-typed labels become file names - they must not contain path
+    separators, traversal, FAT-invalid or control characters."""
+
+    def test_accepts_normal_names(self):
+        for label in ("my backup", "backup-01", "seed_2", "Müller", "a.b.c"):
+            show = _ScriptedShow([])
+            self.keystore.show = show
+            self.assertTrue(_run(self.keystore.check_label(label)), label)
+            self.assertEqual(show.screens, [])  # no error screen
+
+    def test_rejects_hostile_names(self):
+        for label in (
+            "", "../evil", "a/b", "a\\b", "sub/../x", "x:y", "a*b",
+            "a?b", 'a"b', "a<b", "a>b", "a|b", "nul\x00byte", "del\x7f",
+        ):
+            show = _ScriptedShow([True])
+            self.keystore.show = show
+            self.assertFalse(_run(self.keystore.check_label(label)), repr(label))
+            self.assertEqual(len(show.screens), 1)  # error screen shown
+
+    def test_export_aborts_on_hostile_label(self):
+        async def fake_get_input(**kwargs):
+            return "../evil"
+        self.keystore.get_input = fake_get_input
+        # menu (format choice) -> prompt (unencrypted warning) -> alert
+        self.keystore.show = _ScriptedShow(["plain", True, True])
+        sd_root = platform.fpath("/sd")
+        before = set(os.listdir(sd_root))
+        _run(self.keystore.export_mnemonic_to_sd())
+        self.assertEqual(set(os.listdir(sd_root)), before)
+
+    def test_export_plaintext_writes_verified_file(self):
+        async def fake_get_input(**kwargs):
+            return "mybackup"
+        self.keystore.get_input = fake_get_input
+        # menu (format choice) -> prompt (unencrypted warning) -> success alert
+        self.keystore.show = _ScriptedShow(["plain", True, True])
+        fpath = platform.fpath("/sd") + "/mybackup.specter.txt"
+        try:
+            _run(self.keystore.export_mnemonic_to_sd())
+            with open(fpath, "r") as f:
+                self.assertEqual(f.read(), ORIGINAL_MNEMONIC)
+        finally:
+            if platform.file_exists(fpath):
+                os.remove(fpath)
+
+
+class _FakeSDImportHost:
+    """Stands in for SDHost in the import menu: provides the
+    encrypted-files warning hook and records how often it fires."""
+
+    button = "Open SD card file"
+    is_enabled = True
+
+    def __init__(self):
+        self.warn_calls = 0
+        self.get_data_calls = 0
+
+    async def warn_about_encrypted_files(self):
+        self.warn_calls += 1
+
+    async def get_data(self, *args, **kwargs):
+        self.get_data_calls += 1
+        return None
+
+
+class _FakeOtherImportHost:
+    """A host without the warning hook (like QRHost/USBHost)."""
+
+    button = "Scan QR code"
+    is_enabled = True
+
+    def __init__(self):
+        self.get_data_calls = 0
+
+    async def get_data(self, *args, **kwargs):
+        self.get_data_calls += 1
+        return None
+
+
+class ImportEncryptedHintTest(BitboxBackupFlowTestBase):
+    """The "encrypted recovery phrase on this card" hint must fire exactly
+    when the user picks the SD host in the import-mnemonic flow - not
+    implicitly on every SD file selection (PSBTs, descriptors, ...)."""
+
+    def setUp(self):
+        super().setUp()
+        self.sp.hosts = []
+
+    def test_hint_fires_when_sd_host_picked_for_import(self):
+        host = _FakeSDImportHost()
+        self.sp.hosts = [host]
+        self.sp.gui = FakeGui([host])  # pick the host in the menu
+        _run(self.sp.import_mnemonic())
+        self.assertEqual(host.warn_calls, 1)
+        self.assertEqual(host.get_data_calls, 1)
+
+    def test_hosts_without_hint_hook_still_work(self):
+        host = _FakeOtherImportHost()
+        self.sp.hosts = [host]
+        self.sp.gui = FakeGui([host])
+        _run(self.sp.import_mnemonic())
+        self.assertEqual(host.get_data_calls, 1)
+
+    def test_select_file_does_not_fire_the_hint(self):
+        """Regression guard: the generic SD file picker must stay silent
+        even when device-encrypted key files are present on the card."""
+        from hosts.sd import SDHost
+
+        host = SDHost("testdir/sdhost-data")
+        gui = FakeGui([None])  # cancel the file picker
+        host.manager = types.SimpleNamespace(gui=gui)
+        sd_root = platform.fpath("/sd")
+        enc = sd_root + "/specterdiy00112233.somekey"
+        txt = sd_root + "/note.txt"
+        with open(enc, "wb") as f:
+            f.write(b"x")
+        with open(txt, "w") as f:
+            f.write("hello")
+        try:
+            res = _run(host.select_file([".txt"]))
+        finally:
+            os.remove(enc)
+            os.remove(txt)
+        self.assertIsNone(res)
+        self.assertEqual(gui.alerts, [])
+
+
+class _StrictSdCard:
+    """platform.sdcard stand-in with real-hardware mount semantics:
+    mounting an already-mounted card raises, like os.mount() on a busy
+    mount point does on device. The simulator's own SDCard is a no-op
+    mount, which is exactly why the nested-mount bug this guards against
+    was invisible in every native test."""
+
+    def __init__(self):
+        self._mounted = False
+
+    @property
+    def is_present(self):
+        return True
+
+    def mount(self):
+        if self._mounted:
+            raise OSError("mount point already in use")
+        self._mounted = True
+
+    def unmount(self):
+        self._mounted = False
+
+    def __enter__(self):
+        self.mount()
+        return self
+
+    def __exit__(self, *args):
+        self.unmount()
+
+
+class SdCardItemsTest(BitboxBackupFlowTestBase):
+    """Specter._list_sdcard_items(): the delete menu's scan of the card."""
+
+    def test_bitbox_item_shows_backup_name(self):
+        self._write_backup(name="my bitbox name")
+        items = self.sp._list_sdcard_items()
+        bitbox_items = [i for i in items if i[0] == "bitbox"]
+        self.assertEqual(len(bitbox_items), 1)
+        self.assertEqual(bitbox_items[0][2], "my bitbox name")
+
+    def test_bitbox_name_peeked_within_a_single_mount(self):
+        """Regression guard for the nested-mount bug: _list_sdcard_items
+        holds its own mount window, and the name peek must reuse it. On
+        hardware a second os.mount() on the mounted path raises - with
+        the bug, every BitBox label silently fell back to the raw id."""
+        self._write_backup(name="my bitbox name")
+        real_sdcard = platform.sdcard
+        platform.sdcard = _StrictSdCard()
+        try:
+            items = self.sp._list_sdcard_items()
+        finally:
+            platform.sdcard = real_sdcard
+        bitbox_items = [i for i in items if i[0] == "bitbox"]
+        self.assertEqual(len(bitbox_items), 1)
+        # the peeked name, not the raw 64-hex id fallback
+        self.assertEqual(bitbox_items[0][2], "my bitbox name")
+
+    def test_card_is_unmounted_after_scan(self):
+        self._write_backup(name="my bitbox name")
+        real_sdcard = platform.sdcard
+        strict = _StrictSdCard()
+        platform.sdcard = strict
+        try:
+            self.sp._list_sdcard_items()
+        finally:
+            platform.sdcard = real_sdcard
+        self.assertFalse(strict._mounted)
+
+    def test_enc_and_plain_items_are_classified(self):
+        sd_root = platform.fpath("/sd")
+        enc = sd_root + "/specterdiy00112233.mykey"
+        plain = sd_root + "/paperbackup.specter.txt"
+        with open(enc, "wb") as f:
+            f.write(b"x")
+        with open(plain, "w") as f:
+            f.write("word " * 11 + "word")
+        try:
+            items = self.sp._list_sdcard_items()
+        finally:
+            os.remove(enc)
+            os.remove(plain)
+        by_kind = {}
+        for kind, ident, label in items:
+            by_kind.setdefault(kind, []).append(label)
+        self.assertEqual(by_kind.get("enc"), ["mykey"])
+        self.assertEqual(by_kind.get("plain"), ["paperbackup"])

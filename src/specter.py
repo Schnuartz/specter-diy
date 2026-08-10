@@ -343,6 +343,15 @@ class Specter:
             return
         if host == self.BITBOX_BACKUP:
             return await self.import_bitbox_backup()
+        # If the SD host was picked, warn once about device-encrypted
+        # recovery phrases on the card that the active keystore can't see
+        # (they don't match the import file filter). Deliberately scoped
+        # to this import flow - not run on every SD file pick elsewhere
+        # (PSBTs, descriptors), where the same hint would just be noise.
+        # Only SDHost provides this method.
+        warn = getattr(host, "warn_about_encrypted_files", None)
+        if warn is not None:
+            await warn()
         stream = await host.get_data()
         if not stream:
             return
@@ -395,7 +404,7 @@ class Specter:
         half = len(dir_name) // 2
         return "%s\n%s" % (dir_name[:half], dir_name[half:])
 
-    def _peek_backup_name(self, dir_name):
+    def _peek_backup_name(self, dir_name, mounted=False):
         """
         Best-effort read of just the `name` metadata field of one backup
         copy, so the selection menu (phase 2 of import_bitbox_backup, run
@@ -415,12 +424,22 @@ class Specter:
         this flow (nothing is ever written) - and zeroizes everything
         before returning, including the unused, unverified seed bytes
         that parse_backup() also returns.
+
+        Pass mounted=True when the caller already holds the SD mount
+        window (as _list_sdcard_items does): this must NOT open a second
+        one via _read_sd(), because on real hardware os.mount() on an
+        already-mounted path raises - which would silently turn every
+        label here into the raw-id fallback. (Invisible in the simulator,
+        where mount() is a no-op.)
         """
         import bitbox_backup
         import bitbox_sd
 
         try:
-            raw_files = self._read_sd(lambda: bitbox_sd.read_backup_files(dir_name))
+            if mounted:
+                raw_files = bitbox_sd.read_backup_files(dir_name)
+            else:
+                raw_files = self._read_sd(lambda: bitbox_sd.read_backup_files(dir_name))
         except Exception:
             return None
         fields = None
@@ -974,7 +993,9 @@ class Specter:
             try:
                 import bitbox_sd
                 for dir_name in bitbox_sd.list_backup_dirs():
-                    label = self._peek_backup_name(dir_name) or dir_name
+                    # the card is already mounted here - a nested mount
+                    # would fail on hardware, so peek within this window
+                    label = self._peek_backup_name(dir_name, mounted=True) or dir_name
                     items.append(("bitbox", dir_name, label))
             except Exception:
                 # no bitbox02/ directory, or it couldn't be listed - not

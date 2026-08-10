@@ -432,7 +432,10 @@ def compute_checksum(timestamp, mode, name_raw, seed_length, seed32, birthdate, 
     h.update(bytes((mode & 0xFF,)))
     h.update(_right_pad(name_raw, NAME_MAX_BYTES))
     h.update(_u32_le(seed_length))
-    h.update(bytes(seed32))
+    # hashlib.update() accepts any bytes-like object - passing seed32
+    # directly (it's a bytearray on the paths that own and later wipe it)
+    # avoids leaving an extra immutable bytes copy of the seed on the heap.
+    h.update(seed32)
     h.update(_u32_le(birthdate))
     h.update(_right_pad(generator_raw, GENERATOR_MAX_BYTES))
     h.update(_u32_le(length))
@@ -448,12 +451,21 @@ def compute_backup_id(entropy):
 
 
 def _backup_id_bytes(entropy):
-    padded = bytes(entropy) + bytes(SEED_FIELD_SIZE - len(entropy))
-    # digestmod must be the *name* "sha256", not hashlib.sha256: MicroPython's
-    # hmac only accepts the string form (CPython accepts both, which is why
-    # this only shows up on the device / in the unix port). Same convention as
-    # helpers.py, keystore/flash.py and keystore/ram.py.
-    return hmac.new(b"backup", padded, digestmod="sha256").digest()
+    # The padded buffer holds the plaintext seed, so keep it in a mutable
+    # bytearray and wipe it after use instead of leaving an immutable
+    # bytes copy on the heap. hmac.new() accepts any bytes-like object as
+    # msg, so no intermediate bytes(entropy)+bytes(...) concatenation copy
+    # is needed.
+    padded = bytearray(SEED_FIELD_SIZE)
+    padded[:len(entropy)] = entropy
+    try:
+        # digestmod must be the *name* "sha256", not hashlib.sha256: MicroPython's
+        # hmac only accepts the string form (CPython accepts both, which is why
+        # this only shows up on the device / in the unix port). Same convention as
+        # helpers.py, keystore/flash.py and keystore/ram.py.
+        return hmac.new(b"backup", padded, digestmod="sha256").digest()
+    finally:
+        zeroize(padded)
 
 
 def _id_matches(entropy, dir_name_hex):
@@ -737,12 +749,17 @@ def load_backup(dir_name_hex, raw_files):
 # parse_backup()/validate_backup() - this is exercised in the test suite.
 # ---------------------------------------------------------------------------
 
-def _encode_varint(value):
-    """Encodes a non-negative integer as a canonical protobuf varint - the
-    exact inverse of _read_varint()."""
+def _encode_varint_into(out, value):
+    """Appends a non-negative integer to `out` (a bytearray) as a canonical
+    protobuf varint - the exact inverse of _read_varint().
+
+    Appending in place, rather than returning a fresh bytes object, lets
+    the caller keep everything in buffers it can zeroize() afterwards -
+    the encoding of a backup contains the plaintext seed, so every
+    intermediate holding it must stay wipeable (see zeroize()).
+    """
     if value < 0 or value > _U64_MAX:
         raise BitboxParseError("varint value out of range")
-    out = bytearray()
     v = value
     while True:
         b = v & 0x7F
@@ -752,23 +769,17 @@ def _encode_varint(value):
         else:
             out.append(b)
             break
-    return bytes(out)
 
 
-def _encode_tag(field_number, wire_type):
-    return _encode_varint((field_number << 3) | wire_type)
+def _encode_varint_field_into(out, field_number, value):
+    _encode_varint_into(out, (field_number << 3) | WIRE_VARINT)
+    _encode_varint_into(out, value)
 
 
-def _encode_varint_field(field_number, value):
-    return _encode_tag(field_number, WIRE_VARINT) + _encode_varint(value)
-
-
-def _encode_length_delimited_field(field_number, data):
-    return (
-        _encode_tag(field_number, WIRE_LENGTH_DELIMITED)
-        + _encode_varint(len(data))
-        + bytes(data)
-    )
+def _encode_length_delimited_field_into(out, field_number, data):
+    _encode_varint_into(out, (field_number << 3) | WIRE_LENGTH_DELIMITED)
+    _encode_varint_into(out, len(data))
+    out.extend(data)
 
 
 def build_backup(entropy, name="", generator="specter-diy", timestamp=0, birthdate=0):
@@ -782,8 +793,12 @@ def build_backup(entropy, name="", generator="specter-diy", timestamp=0, birthda
     non-zero `length` some old real-device backups carry, which
     parse_backup() also still accepts).
 
-    Returns (backup_id_hex, encoded_bytes). Does not write anything to
-    disk or duplicate the copy three times - see bitbox_sd.write_backup_files
+    Returns (backup_id_hex, encoded), where encoded is a **bytearray**:
+    it carries the plaintext seed, so it is deliberately mutable - the
+    caller owns it and must zeroize() it once it has been written out.
+    All intermediate buffers holding seed material are zeroized here on
+    every path, success or failure. Does not write anything to disk or
+    duplicate the copy three times - see RAMKeyStore._write_bitbox_backup
     for that. Raises BitboxParseError if entropy has an unsupported length
     or name/generator exceed their byte limits.
     """
@@ -792,7 +807,6 @@ def build_backup(entropy, name="", generator="specter-diy", timestamp=0, birthda
             "entropy must be 16, 24 or 32 bytes (got %d)" % len(entropy)
         )
     seed_length = len(entropy)
-    seed32 = bytes(entropy) + bytes(SEED_FIELD_SIZE - seed_length)
     mode = BACKUP_MODE_PLAINTEXT
     length = 0
 
@@ -803,33 +817,53 @@ def build_backup(entropy, name="", generator="specter-diy", timestamp=0, birthda
     if len(generator_raw) > GENERATOR_MAX_BYTES:
         raise BitboxParseError("generator exceeds %d byte limit" % GENERATOR_MAX_BYTES)
 
-    checksum = compute_checksum(
-        timestamp, mode, name_raw, seed_length, seed32, birthdate, generator_raw, length
-    )
-
-    metadata_bytes = (
-        _encode_varint_field(1, timestamp)
-        + _encode_length_delimited_field(2, name_raw)
-        + _encode_varint_field(3, mode)
-    )
-    data_bytes = (
-        _encode_varint_field(1, seed_length)
-        + _encode_length_delimited_field(2, seed32)
-        + _encode_varint_field(3, birthdate)
-        + _encode_length_delimited_field(4, generator_raw)
-    )
-    content_bytes = (
-        _encode_length_delimited_field(1, checksum)
-        + _encode_length_delimited_field(2, metadata_bytes)
-        + _encode_varint_field(3, length)
-        + _encode_length_delimited_field(4, data_bytes)
-    )
-    backup_v1_bytes = _encode_length_delimited_field(1, content_bytes)
-    backup_bytes = _encode_length_delimited_field(1, backup_v1_bytes)
-
-    if len(backup_bytes) > MAX_FILE_SIZE:
-        raise BitboxParseError(
-            "encoded backup exceeds %d byte limit" % MAX_FILE_SIZE
+    # `data` embeds seed32; `content` embeds `data`; `v1` embeds `content`;
+    # `out` embeds `v1` - so every one of these buffers ends up holding the
+    # plaintext seed. All are bytearrays and all are wiped in the finally
+    # block. `metadata` holds no secret (timestamp/name/mode only).
+    seed32 = bytearray(SEED_FIELD_SIZE)
+    seed32[:seed_length] = entropy
+    data = bytearray()
+    content = bytearray()
+    v1 = bytearray()
+    out = bytearray()
+    try:
+        checksum = compute_checksum(
+            timestamp, mode, name_raw, seed_length, seed32, birthdate,
+            generator_raw, length,
         )
 
-    return compute_backup_id(entropy), backup_bytes
+        _encode_varint_field_into(data, 1, seed_length)
+        _encode_length_delimited_field_into(data, 2, seed32)
+        _encode_varint_field_into(data, 3, birthdate)
+        _encode_length_delimited_field_into(data, 4, generator_raw)
+
+        metadata = bytearray()
+        _encode_varint_field_into(metadata, 1, timestamp)
+        _encode_length_delimited_field_into(metadata, 2, name_raw)
+        _encode_varint_field_into(metadata, 3, mode)
+
+        _encode_length_delimited_field_into(content, 1, checksum)
+        _encode_length_delimited_field_into(content, 2, metadata)
+        _encode_varint_field_into(content, 3, length)
+        _encode_length_delimited_field_into(content, 4, data)
+
+        _encode_length_delimited_field_into(v1, 1, content)
+        _encode_length_delimited_field_into(out, 1, v1)
+
+        if len(out) > MAX_FILE_SIZE:
+            raise BitboxParseError(
+                "encoded backup exceeds %d byte limit" % MAX_FILE_SIZE
+            )
+
+        result = out
+        # ownership of the encoded backup passes to the caller - exempt it
+        # from the wipe below (the caller must zeroize() it once written)
+        out = None
+        return compute_backup_id(entropy), result
+    finally:
+        zeroize(seed32)
+        zeroize(data)
+        zeroize(content)
+        zeroize(v1)
+        zeroize(out)

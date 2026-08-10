@@ -129,8 +129,11 @@ class SDCard:
         progress_cb(fraction), if given, is awaited after every chunk
         with the fraction (0..1) of blocks written so far, so a caller
         can drive a progress screen without blocking the event loop for
-        the whole operation. Without it, this still yields periodically
-        via asyncio.sleep_ms(0).
+        the whole operation. The event loop is allowed to run after every
+        chunk either way (asyncio.sleep_ms(0)) - also when a progress_cb
+        is given, since a callback that never awaits anything itself
+        (like a simple screen redraw) would otherwise starve the GUI's
+        update loop for the entire operation.
         """
         if not self.is_present:
             raise RuntimeError("SD card is not present")
@@ -159,8 +162,12 @@ class SDCard:
                 gc.collect()
                 if progress_cb is not None:
                     await progress_cb((start + n) / block_count)
-                else:
-                    await asyncio.sleep_ms(0)
+                # Always yield to the event loop, even with a progress_cb:
+                # a callback that never awaits (e.g. one that only redraws
+                # a progress bar) runs synchronously and would otherwise
+                # keep every other task - including the GUI update loop -
+                # from running until the whole card is overwritten.
+                await asyncio.sleep_ms(0)
             os.VfsFat.mkfs(self._sd)
         finally:
             self._sd.power(False)

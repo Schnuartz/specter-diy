@@ -271,8 +271,8 @@ computer is not.
   — and the card itself as sensitive: mnemonic backups written by the
   device (`specterdiy<hex-id>.<name>`) are encrypted and only readable by
   this device, but anything you explicitly export — plain mnemonic
-  `.txt` files, BIP-85-derived keys, xpub files — is written
-  **unencrypted** (and only when you choose that export).
+  `.txt` files, BitBox02-format backups, BIP-85-derived keys, xpub files —
+  is written **unencrypted** (and only when you choose that export).
 
 Regardless of the channel, the host software (Specter Desktop, Bitcoin
 Core, etc.) is considered untrusted: it can withhold transactions or show
@@ -361,8 +361,10 @@ don't apply to this format:
    - if none of that succeeds, the import is rejected.
 7. Only after all of the above passes does Specter show the backup's
    metadata (name, creation time in UTC, word count, generator/firmware
-   string, truncated backup id, and whether majority recovery was used) and
-   the recovered recovery phrase, using the existing recovery-phrase
+   string, the full backup id wrapped onto two lines - so it can be
+   compared character-for-character against what the BitBox App or a real
+   BitBox02 shows - and whether majority recovery was used) and the
+   recovered recovery phrase, using the existing recovery-phrase
    confirmation screen. Nothing is loaded into the keystore until the user
    explicitly confirms the phrase.
 
@@ -443,6 +445,77 @@ destination.
 - Inserting any SD card increases the main MCU's attack surface, exactly as
   already noted above under "Hardware" - this applies to a BitBox backup
   card exactly as it does to any other SD card content Specter reads.
+
+## Exporting a recovery phrase to the SD card
+
+When you ask Specter to save the loaded recovery phrase to the SD card
+(`Show recovery phrase` -> `Save to SD card`, or `Flash & SD card storage`
+-> `Save key` -> `SD card`), it offers a choice of formats and tells you
+plainly what each one means before anything is written:
+
+- **Plain text (Specter format)** writes the phrase as a plaintext
+  `<name>.specter.txt` file. **Anyone holding the card gets full access to
+  the funds** - the confirmation dialog says exactly that and tells you to
+  treat the card like a handwritten paper backup and never plug it into an
+  untrusted computer.
+- **Bitbox format** writes a native BitBox02 microSD backup: three
+  redundant copies under `bitbox02/<backup id>/`, the same layout a real
+  BitBox02 produces, so the card can in principle be restored by a real
+  BitBox02 as well (untested on real hardware). The same "not encrypted"
+  warning applies - the BitBox microSD format stores the entropy in the
+  clear, as described in the import section above. Two deliberate
+  differences from real-device output: Specter-DIY has no real-time clock,
+  so it writes `timestamp = 0` ("unknown (no clock)" on import) rather
+  than fabricating a date, and names the files `0.bin`, `1.bin`, `2.bin`
+  instead of timestamped names (the firmware loader ignores file names -
+  only the exactly-three-files rule matters). Because the backup id
+  depends only on the seed, each recovery phrase has exactly one backup
+  directory; the writer refuses to write into a directory that already
+  contains files rather than merging into it, since a directory with
+  other than exactly three files is rejected by both implementations.
+  The written copies are verified immediately by reading them back
+  through the same parser the import uses.
+- **Encrypted (this device only)** is available when the active keystore
+  is `Flash & SD card storage` (SDKeyStore): the phrase is written with
+  the same AEAD scheme and device-bound secret as internal-flash storage
+  (`specterdiy<hex-id>.<name>`), readable only by this exact device. The
+  warning spells out the residual risk: more convenient than plaintext,
+  but still a software-only barrier - not comparable to a PIN-protected
+  smartcard. With a smartcard keystore active the option is shown but
+  disabled, since there is no device-bound secret to encrypt with.
+
+User-chosen backup names are validated before they become file names
+(path separators, FAT-invalid and control characters are rejected), and
+overwriting an existing file always requires an explicit confirmation.
+
+## Erasing data from the SD card
+
+`Device settings` -> `SD card` shows how many Specter-related items the
+card holds (device-encrypted key files, plaintext phrase exports, BitBox
+backup directories) and offers **Delete data**, which can erase a single
+item or format the whole card:
+
+- **Deleting one item** overwrites the file contents with fresh random
+  data several times, syncing after each pass, before unlinking - the
+  same overwrite-then-unlink principle BitBox02's own firmware uses when
+  it replaces a backup (theirs overwrites once with a fixed byte), except
+  with multiple random passes. A plain delete only removes the directory
+  entry and leaves the old bytes recoverable until the space is reused.
+- **Format entire SD card** overwrites *every block* on the card with
+  random data before creating a fresh FAT filesystem - the same approach
+  `platform.wipe()` uses for the internal flash - and requires two
+  confirmations, since it destroys everything on the card, not just
+  Specter's files.
+
+One honest limit, stated in the format confirmation as well: SD cards do
+their own wear leveling, so a logically overwritten block may still exist
+physically in controller-managed space the host can never reach.
+MicroPython's SD driver exposes no hardware erase command (CMD38) that
+could close that gap. The random-overwrite passes and the full-card wipe
+are the strongest erase Specter-DIY can perform in software and are a
+large improvement over plain deletion - but against a well-equipped
+forensic attacker, physical destruction is the only certain way to
+sanitize any SD card.
 
 ## Known limitations and open work
 
