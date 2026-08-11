@@ -302,8 +302,10 @@ class FlashKeyStore(RAMKeyStore):
         except Exception as e:
             print(e)
             raise KeyStoreError("Failed to delete file '%s'" % file)
-        finally:
-            return True
+        # NOTE: no `return` in a `finally` block here - a return inside
+        # finally executes while an exception is propagating and silently
+        # discards it, so a failed delete would still report success.
+        return True
 
     async def get_input(
             self,
