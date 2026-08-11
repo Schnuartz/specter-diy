@@ -158,7 +158,16 @@ class SDCard:
             chunk_blocks = max(1, (1024 * 1024) // block_size)
             for start in range(0, block_count, chunk_blocks):
                 n = min(chunk_blocks, block_count - start)
-                self._sd.writeblocks(start, os.urandom(block_size * n))
+                try:
+                    self._sd.writeblocks(start, os.urandom(block_size * n))
+                except OSError as e:
+                    raise RuntimeError(
+                        "Could not write to the SD card during secure erase "
+                        "(card may have been removed):\n\n%s\n\n"
+                        "The card is now in a half-overwritten, unusable "
+                        "state and must be reformatted before it can be "
+                        "used again." % e
+                    ) from e
                 gc.collect()
                 if progress_cb is not None:
                     await progress_cb((start + n) / block_count)
@@ -168,7 +177,15 @@ class SDCard:
                 # keep every other task - including the GUI update loop -
                 # from running until the whole card is overwritten.
                 await asyncio.sleep_ms(0)
-            os.VfsFat.mkfs(self._sd)
+            try:
+                os.VfsFat.mkfs(self._sd)
+            except OSError as e:
+                raise RuntimeError(
+                    "Overwrite completed, but creating a fresh filesystem "
+                    "failed:\n\n%s\n\nThe card's old data has been wiped, "
+                    "but it has no valid filesystem and must be reformatted "
+                    "on a computer before it can be used." % e
+                ) from e
         finally:
             self._sd.power(False)
             if self._led is not None:
@@ -388,17 +405,25 @@ def secure_delete_file(path, passes=3):
     to be reused, and can often be recovered with an undelete tool in
     the meantime. This closes that gap for individual files (see
     SDCard.erase_and_format() for the equivalent whole-card operation).
+
+    The file is opened once and kept open across all passes, rather than
+    stat-then-open per pass: a stat/open gap would let an attacker with
+    write access swap the path (e.g. via a hardlink on FAT variants that
+    support them) between the size check and the overwrite, causing us
+    to wipe the wrong file. The size is read from the same handle via
+    seek(0, 2)/tell(), and that handle is used for every overwrite pass.
     """
-    size = os.stat(path)[6]
-    for _ in range(passes):
-        with open(path, "r+b") as f:
+    with open(path, "r+b") as f:
+        f.seek(0, 2)  # seek to end
+        size = f.tell()
+        for _ in range(passes):
             f.seek(0)
             remaining = size
             while remaining > 0:
                 chunk = min(remaining, 4096)
                 f.write(os.urandom(chunk))
                 remaining -= chunk
-        sync()
+            sync()
     os.remove(path)
 
 

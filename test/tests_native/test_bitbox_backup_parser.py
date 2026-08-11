@@ -330,8 +330,8 @@ class FormatTest(TestCase):
 
     def test_single_checksum_byte_flip_rejected(self):
         good_checksum = bb.compute_checksum(
-            1601281809, 0, b"test name", 16, padded_seed(ENTROPY_16), 1601249409,
-            b"v9.13.0", 0,
+            1601281809, 0, b"test name", 16, bytearray(padded_seed(ENTROPY_16)),
+            1601249409, b"v9.13.0", 0,
         )
         bad_checksum = bytearray(good_checksum)
         bad_checksum[0] ^= 0x01
@@ -345,8 +345,8 @@ class FormatTest(TestCase):
         # the on-wire timestamp only - simulate by rebuilding with wrong
         # timestamp but the checksum computed for the original one.
         good_checksum = bb.compute_checksum(
-            1601281809, 0, b"test name", 16, padded_seed(ENTROPY_16), 1601249409,
-            b"v9.13.0", 0,
+            1601281809, 0, b"test name", 16, bytearray(padded_seed(ENTROPY_16)),
+            1601249409, b"v9.13.0", 0,
         )
         buf = self._build(timestamp=1601281810, checksum_override=good_checksum)
         with self.assertRaises(bb.BitboxChecksumError):
@@ -354,8 +354,8 @@ class FormatTest(TestCase):
 
     def test_tampered_name_rejected(self):
         good_checksum = bb.compute_checksum(
-            1601281809, 0, b"test name", 16, padded_seed(ENTROPY_16), 1601249409,
-            b"v9.13.0", 0,
+            1601281809, 0, b"test name", 16, bytearray(padded_seed(ENTROPY_16)),
+            1601249409, b"v9.13.0", 0,
         )
         buf = self._build(name="different name", checksum_override=good_checksum)
         with self.assertRaises(bb.BitboxChecksumError):
@@ -363,8 +363,8 @@ class FormatTest(TestCase):
 
     def test_tampered_generator_rejected(self):
         good_checksum = bb.compute_checksum(
-            1601281809, 0, b"test name", 16, padded_seed(ENTROPY_16), 1601249409,
-            b"v9.13.0", 0,
+            1601281809, 0, b"test name", 16, bytearray(padded_seed(ENTROPY_16)),
+            1601249409, b"v9.13.0", 0,
         )
         buf = self._build(generator="v9.99.0", checksum_override=good_checksum)
         with self.assertRaises(bb.BitboxChecksumError):

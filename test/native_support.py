@@ -88,16 +88,42 @@ def setup_native_stubs():
         gui.__path__ = []
 
     class _StubScreen:
-        """Permissive stand-in for a real lvgl-backed Screen class: accepts
-        any positional/keyword args (mirroring the flexible constructors
-        real screens have) and exposes the keyword args as attributes so
-        tests can inspect what a screen was constructed with."""
+        """Stand-in for a real lvgl-backed Screen class: accepts the same
+        positional/keyword args the flexible real constructors take, and
+        exposes the kwargs as attributes so tests can inspect what a screen
+        was constructed with.
+
+        Deliberately permissive about *what* it accepts (real screen
+        constructors vary widely, and this one stub covers many of them),
+        but records the full construction call in __repr__ so a test that
+        passes the wrong args to a screen can be diagnosed from a failure
+        message instead of silently producing an opaque <_StubScreen obj>.
+        Also rejects container types (list/dict/set) as positional args,
+        which no real screen constructor in this codebase accepts - those
+        almost always indicate a test wiring bug rather than a screen that
+        happens to take a list of titles."""
 
         def __init__(self, *args, **kwargs):
+            for a in args:
+                if isinstance(a, (list, dict, set)):
+                    raise TypeError(
+                        "%s: positional arg %r is a %s, which no real screen "
+                        "constructor accepts - likely a test wiring bug"
+                        % (type(self).__name__, a, type(a).__name__)
+                    )
             self.args = args
             self.kwargs = kwargs
             for _k, _v in kwargs.items():
                 setattr(self, _k, _v)
+
+        def __repr__(self):
+            cls = type(self).__name__
+            args_repr = ", ".join(repr(a) for a in self.args)
+            kwargs_repr = ", ".join(
+                "%s=%r" % (k, v) for k, v in self.kwargs.items()
+            )
+            all_args = ", ".join(x for x in [args_repr, kwargs_repr] if x)
+            return "%s(%s)" % (cls, all_args)
 
     screens = _ensure_module("gui.screens")
     if not hasattr(screens, "__path__"):

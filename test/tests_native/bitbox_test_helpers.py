@@ -171,7 +171,7 @@ def make_valid_backup_bytes(
         checksum = checksum_override
     else:
         checksum = bb.compute_checksum(
-            timestamp, mode, name_raw, seed_length, bytes(seed32), birthdate,
+            timestamp, mode, name_raw, seed_length, seed32, birthdate,
             generator_raw, length,
         )
 

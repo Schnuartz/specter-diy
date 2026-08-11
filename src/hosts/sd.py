@@ -89,6 +89,7 @@ class SDHost(Host):
             return
         if not platform.sdcard.is_present:
             return
+        found = False
         try:
             platform.sdcard.mount()
             try:
@@ -98,7 +99,13 @@ class SDHost(Host):
                 )
             finally:
                 platform.sdcard.unmount()
-        except Exception:
+        except OSError:
+            # Card unreadable, not present, or the SD root directory
+            # doesn't exist - no hint to show. The actual file load in
+            # get_data() reports real errors; this best-effort hint must
+            # never mask them. Only OSError is expected here (mount,
+            # ilistdir and unmount all raise OSError subclasses); any
+            # other exception indicates a bug and should propagate.
             return
         if found:
             await self.manager.gui.alert(

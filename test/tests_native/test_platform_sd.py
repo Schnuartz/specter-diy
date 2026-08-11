@@ -164,8 +164,12 @@ class EraseAndFormatTest(TestCase):
         sd = platform.SDCard(sd=dev)
 
         async def main():
-            with self.assertRaises(OSError):
+            # writeblocks failure is re-raised as RuntimeError with a
+            # clearer message, but the original OSError is chained via
+            # `from e` so __cause__ still points at it.
+            with self.assertRaises(RuntimeError) as ctx:
                 await sd.erase_and_format()
+            self.assertIsInstance(ctx.exception.__cause__, OSError)
 
         _run(main())
         self.assertEqual(dev.power_states, [True, False])

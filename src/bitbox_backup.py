@@ -424,7 +424,19 @@ def compute_checksum(timestamp, mode, name_raw, seed_length, seed32, birthdate, 
         u32le(timestamp) || u8(mode) || name padded to 64 bytes ||
         u32le(seed_length) || seed (32 bytes) || u32le(birthdate) ||
         generator padded to 20 bytes || u32le(length)
+
+    `seed32` must be a bytearray (not bytes): it carries the plaintext
+    seed, and the checksum preimage is computed by feeding it straight to
+    hashlib.update() precisely so the caller can zeroize it afterwards.
+    Passing an immutable bytes defeats that - the seed would live on the
+    heap with no handle to wipe it. This is enforced as a TypeError so a
+    future caller can't silently regress the zeroization promise.
     """
+    if not isinstance(seed32, bytearray):
+        raise TypeError(
+            "seed32 must be a bytearray so the caller can zeroize it, "
+            "not %s" % type(seed32).__name__
+        )
     if len(seed32) != SEED_FIELD_SIZE:
         raise BitboxParseError("seed must be exactly %d bytes for checksum" % SEED_FIELD_SIZE)
     h = hashlib.sha256()

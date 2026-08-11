@@ -585,6 +585,8 @@ class RAMKeyStore(KeyStore):
         # stays in wipeable bytearrays instead.
         entropy = bip39.mnemonic_to_bytes(self.mnemonic)
         backup_id, encoded = bitbox_backup.build_backup(entropy, name=label)
+        written_files = []
+        dir_path = None
         try:
             bitbox_root = "%s/%s" % (platform.fpath("/sd"), bitbox_sd.BITBOX_ROOT_DIRNAME)
             dir_path = "%s/%s" % (bitbox_root, backup_id)
@@ -605,8 +607,10 @@ class RAMKeyStore(KeyStore):
             platform.maybe_mkdir(bitbox_root)
             platform.maybe_mkdir(dir_path)
             for i in range(bitbox_sd.EXPECTED_FILE_COUNT):
-                with open("%s/%d.bin" % (dir_path, i), "wb") as f:
+                fname = "%s/%d.bin" % (dir_path, i)
+                with open(fname, "wb") as f:
                     f.write(encoded)
+                written_files.append(fname)
 
             raw_files = bitbox_sd.read_backup_files(backup_id)
             try:
@@ -618,6 +622,27 @@ class RAMKeyStore(KeyStore):
             finally:
                 for buf in raw_files:
                     bitbox_backup.zeroize(buf)
+        except Exception:
+            # Rollback: a failed write (card pulled mid-backup, write
+            # error, verification failure, ...) must not leave a partial
+            # backup directory on the card. A directory with fewer or
+            # more than exactly 3 files is rejected by both this device
+            # and real BitBox02 firmware, and the already-written copies
+            # contain the plaintext seed - so remove them and the now-
+            # empty directory. rmdir only succeeds on empty dirs, so it
+            # is safe even if the directory pre-existed (an empty
+            # pre-existing dir is harmless to remove here).
+            for fname in written_files:
+                try:
+                    os.remove(fname)
+                except OSError:
+                    pass
+            if dir_path is not None:
+                try:
+                    os.rmdir(dir_path)
+                except OSError:
+                    pass
+            raise
         finally:
             bitbox_backup.zeroize(encoded)
 
