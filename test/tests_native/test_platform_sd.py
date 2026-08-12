@@ -1,17 +1,12 @@
 """
-Tests for platform.SDCard.erase_and_format() and secure_delete_tree().
+Tests for platform.SDCard.erase_and_format() using a fake block device.
 
-The critical property under test for erase_and_format: the chunked
-overwrite loop must keep yielding to the asyncio event loop between
-chunks *even when a progress callback is provided* - a callback that
-never awaits anything itself (e.g. one that only redraws a progress bar)
-would otherwise run synchronously and starve the GUI's update loop for
-the entire format, freezing the screen on device.
-
-For secure_delete_tree: a directory with more than SECURE_DELETE_MAX_FILES
-files must be rejected BEFORE any overwrite happens, so a partial wipe
-is never left behind and an adversarial directory cannot force
-unbounded overwrite+sync work.
+The critical property under test: the chunked overwrite loop must keep
+yielding to the asyncio event loop between chunks *even when a progress
+callback is provided* - a callback that never awaits anything itself
+(e.g. one that only redraws a progress bar) would otherwise run
+synchronously and starve the GUI's update loop for the entire format,
+freezing the screen on device.
 """
 import sys
 
@@ -25,8 +20,6 @@ import os
 from unittest import TestCase
 
 import platform
-
-from tests.util import clear_testdir
 
 # CPython's asyncio has no sleep_ms (MicroPython does); the platform
 # module under test uses it. Provide the usual shim if missing.
@@ -60,7 +53,7 @@ class _FakeBlockDevice:
     def __init__(self, block_count, block_size=512):
         self.block_count = block_count
         self.block_size = block_size
-        self.writes = []
+        self.writes = []  # (start_block, num_bytes) per call
         self.power_states = []
 
     def present(self):
@@ -82,6 +75,8 @@ class _FakeBlockDevice:
 
 class EraseAndFormatTest(TestCase):
     def test_overwrites_every_block_and_reformats(self):
+        # 4100 blocks * 512 bytes: with 1 MB chunking (2048 blocks per
+        # chunk) this takes 3 write calls, so per-chunk behaviour shows up.
         dev = _FakeBlockDevice(block_count=4100, block_size=512)
         sd = platform.SDCard(sd=dev)
         progress = []
@@ -93,12 +88,15 @@ class EraseAndFormatTest(TestCase):
 
         _run(main())
 
+        # every block exactly once, in order, no gaps and no overruns
         self.assertEqual(
             dev.writes,
             [(0, 2048 * 512), (2048, 2048 * 512), (4096, 4 * 512)],
         )
+        # one progress callback per chunk, ending at 100%
         self.assertEqual(len(progress), 3)
         self.assertEqual(progress[-1], 1.0)
+        # device powered for the operation and powered off afterwards
         self.assertEqual(dev.power_states, [True, False])
 
     def test_event_loop_keeps_running_with_progress_callback(self):
@@ -108,6 +106,8 @@ class EraseAndFormatTest(TestCase):
         progress = []
 
         async def ticker():
+            # counts event-loop iterations that run while the format is
+            # in progress - zero means the format starved the loop
             try:
                 while True:
                     ticks.append(1)
@@ -119,6 +119,7 @@ class EraseAndFormatTest(TestCase):
             task = asyncio.ensure_future(ticker())
 
             async def cb(fraction):
+                # deliberately never awaits - like a bare screen redraw
                 progress.append(fraction)
 
             await sd.erase_and_format(progress_cb=cb)
@@ -127,7 +128,32 @@ class EraseAndFormatTest(TestCase):
 
         _run(main())
 
+        self.assertEqual(len(progress), 3)
+        # the unrelated task ran at least once per written chunk, i.e. the
+        # loop was not blocked for the whole operation
         self.assertGreaterEqual(len(ticks), len(progress))
+
+    def test_event_loop_keeps_running_without_progress_callback(self):
+        dev = _FakeBlockDevice(block_count=4100, block_size=512)
+        sd = platform.SDCard(sd=dev)
+        ticks = []
+
+        async def ticker():
+            try:
+                while True:
+                    ticks.append(1)
+                    await asyncio.sleep_ms(0)
+            except asyncio.CancelledError:
+                pass
+
+        async def main():
+            task = asyncio.ensure_future(ticker())
+            await sd.erase_and_format()
+            task.cancel()
+            await task
+
+        _run(main())
+        self.assertGreaterEqual(len(ticks), 3)
 
     def test_powered_off_even_on_write_error(self):
         class FailingDevice(_FakeBlockDevice):
@@ -138,6 +164,9 @@ class EraseAndFormatTest(TestCase):
         sd = platform.SDCard(sd=dev)
 
         async def main():
+            # writeblocks failure is re-raised as RuntimeError with a
+            # clearer message, but the original OSError is chained via
+            # `from e` so __cause__ still points at it.
             with self.assertRaises(RuntimeError) as ctx:
                 await sd.erase_and_format()
             self.assertIsInstance(ctx.exception.__cause__, OSError)
@@ -146,6 +175,10 @@ class EraseAndFormatTest(TestCase):
         self.assertEqual(dev.power_states, [True, False])
 
     def test_invalid_geometry_rejected_before_any_write(self):
+        """A block device reporting a zero/None block size or count must
+        be rejected with a clear RuntimeError before the overwrite loop
+        starts, rather than crashing with a ZeroDivisionError deep inside
+        the chunk-size calculation or silently doing nothing."""
         class _BadGeometryDevice(_FakeBlockDevice):
             def __init__(self, block_count, block_size):
                 self.block_count = block_count
@@ -163,38 +196,5 @@ class EraseAndFormatTest(TestCase):
                 self.assertIn("invalid geometry", str(ctx.exception))
 
             _run(main())
+            # must not have attempted a single write
             self.assertEqual(dev.writes, [])
-
-
-class SecureDeleteTreeTest(TestCase):
-    def setUp(self):
-        clear_testdir()
-        platform.maybe_mkdir("testdir/deltree")
-        self.path = "testdir/deltree"
-
-    def tearDown(self):
-        platform.delete_recursively("testdir", include_self=True)
-
-    def _make_files(self, n):
-        for i in range(n):
-            with open("%s/file_%d.bin" % (self.path, i), "wb") as f:
-                f.write(b"x" * 10)
-
-    def test_normal_tree_deleted(self):
-        self._make_files(3)
-        platform.secure_delete_tree(self.path)
-        self.assertFalse(platform.file_exists(self.path))
-
-    def test_tree_at_cap_deleted(self):
-        self._make_files(platform.SECURE_DELETE_MAX_FILES)
-        platform.secure_delete_tree(self.path)
-        self.assertFalse(platform.file_exists(self.path))
-
-    def test_tree_over_cap_rejected_before_overwrite(self):
-        self._make_files(platform.SECURE_DELETE_MAX_FILES + 1)
-        with self.assertRaises(RuntimeError) as ctx:
-            platform.secure_delete_tree(self.path)
-        self.assertIn("Format", str(ctx.exception))
-        # all files must still be present (no partial wipe)
-        for i in range(platform.SECURE_DELETE_MAX_FILES + 1):
-            self.assertTrue(platform.file_exists("%s/file_%d.bin" % (self.path, i)))

@@ -151,7 +151,12 @@ class SDCard:
         try:
             block_size = self._sd.ioctl(5, None)
             block_count = self._sd.ioctl(4, None)
-            if not block_size or not block_count:
+            if (
+                not isinstance(block_size, int)
+                or not isinstance(block_count, int)
+                or block_size <= 0
+                or block_count <= 0
+            ):
                 raise RuntimeError(
                     "SD card reported invalid geometry "
                     "(block size %r, block count %r) - cannot erase."
