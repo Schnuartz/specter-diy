@@ -173,3 +173,28 @@ class EraseAndFormatTest(TestCase):
 
         _run(main())
         self.assertEqual(dev.power_states, [True, False])
+
+    def test_invalid_geometry_rejected_before_any_write(self):
+        """A block device reporting a zero/None block size or count must
+        be rejected with a clear RuntimeError before the overwrite loop
+        starts, rather than crashing with a ZeroDivisionError deep inside
+        the chunk-size calculation or silently doing nothing."""
+        class _BadGeometryDevice(_FakeBlockDevice):
+            def __init__(self, block_count, block_size):
+                self.block_count = block_count
+                self.block_size = block_size
+                self.writes = []
+                self.power_states = []
+
+        for bad_size, bad_count in [(0, 4100), (512, 0), (None, 4100), (512, None)]:
+            dev = _BadGeometryDevice(block_count=bad_count, block_size=bad_size)
+            sd = platform.SDCard(sd=dev)
+
+            async def main():
+                with self.assertRaises(RuntimeError) as ctx:
+                    await sd.erase_and_format()
+                self.assertIn("invalid geometry", str(ctx.exception))
+
+            _run(main())
+            # must not have attempted a single write
+            self.assertEqual(dev.writes, [])

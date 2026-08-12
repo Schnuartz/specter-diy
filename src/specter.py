@@ -308,6 +308,12 @@ class Specter:
     # sentinel value for the BitBox microSD backup entry in the import
     # menu below - not a real Host instance, handled as a special case.
     BITBOX_BACKUP = "bitbox_backup"
+    # Same cap as bitbox_sd.MAX_LIST_ENTRIES: an adversarial card could
+    # put thousands of entries at the SD root, and enumerating all of
+    # them would cause unbounded memory use. The "Format entire SD card"
+    # option in _sdcard_delete_menu() is the tool for wiping everything
+    # indiscriminately, so silently stopping after this many is fine.
+    _SDCARD_LIST_MAX_ENTRIES = 200
 
     @staticmethod
     def _bitbox_backup_dirs_or_none():
@@ -566,8 +572,23 @@ class Specter:
         # Prefer showing each backup's own name (peeked from one copy,
         # unverified - see _peek_backup_name) over its raw id, since the
         # id alone is not something a user can recognize their backup by.
+        # All peeks are batched into a single mount window: doing them
+        # individually would mount/unmount the card once per backup, which
+        # is slow and does the same work N times. If the card is pulled
+        # between phase 1 and phase 2, fall back to raw ids for all
+        # entries - the actual read in phase 3 will report the real error.
+        def _peek_all():
+            return {
+                name: self._peek_backup_name(name, mounted=True)
+                for name in dir_names
+            }
+
+        try:
+            peeked = self._read_sd(_peek_all)
+        except SpecterError:
+            peeked = {name: None for name in dir_names}
         buttons = [
-            (name, self._peek_backup_name(name) or self._split_backup_id(name))
+            (name, peeked[name] or self._split_backup_id(name))
             for name in dir_names
         ]
         selected = await self.gui.menu(
@@ -978,10 +999,14 @@ class Specter:
         items = []
         platform.sdcard.mount()
         try:
+            enumerated = 0
             for entry in os.ilistdir(sdpath):
                 name, entry_type = entry[0], entry[1]
                 if name in (".", ".."):
                     continue
+                enumerated += 1
+                if enumerated > self._SDCARD_LIST_MAX_ENTRIES:
+                    break
                 if entry_type != 0x8000:  # not a regular file
                     continue
                 lname = name.lower()

@@ -151,6 +151,12 @@ class SDCard:
         try:
             block_size = self._sd.ioctl(5, None)
             block_count = self._sd.ioctl(4, None)
+            if not block_size or not block_count:
+                raise RuntimeError(
+                    "SD card reported invalid geometry "
+                    "(block size %r, block count %r) - cannot erase."
+                    % (block_size, block_count)
+                )
             # 1 MB per write call: a full-card wipe can be tens of
             # thousands of chunks even at this size, so this balances
             # write/gc.collect() overhead against keeping a single

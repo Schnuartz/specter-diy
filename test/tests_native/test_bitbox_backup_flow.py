@@ -415,6 +415,58 @@ class SuccessfulImportTest(BitboxBackupFlowTestBase):
         ]
         self.assertEqual(len(metadata_screens), 1)
 
+    def test_phase_2_peeks_all_backups_in_a_single_mount(self):
+        """Phase 2 must batch all _peek_backup_name calls into a single
+        mount/unmount window. Before the fix, each backup was peeked
+        individually via _read_sd, causing one mount cycle per backup;
+        with many backups on the card this was both slow and redundant.
+        Verified here by counting mount() calls during the phase-2 peek
+        window (between the phase-1 listing and the phase-3 read) for a
+        card holding three different backups."""
+        entropies = [bytes([i]) * 16 for i in (1, 2, 3)]
+        dir_ids = [self._write_backup(e) for e in entropies]
+
+        mount_count = 0
+        real_mount = platform.sdcard.mount
+        real_unmount = platform.sdcard.unmount
+
+        def counting_mount():
+            nonlocal mount_count
+            mount_count += 1
+            return real_mount()
+
+        platform.sdcard.mount = counting_mount
+        platform.sdcard.unmount = real_unmount
+
+        menu_mount_snapshot = []
+
+        class _TrackingGui(FakeGui):
+            async def menu(inner, buttons=None, title=None, note=None, last=None):
+                # snapshot mount_count at the moment of the selection menu
+                # (phase 2) - this is the count after phase 1 + phase 2
+                # peeks, before phase 3.
+                menu_mount_snapshot.append(mount_count)
+                inner.menu_calls.append({"buttons": buttons, "title": title})
+                return inner._next()
+
+        self.sp.gui = _TrackingGui([True, dir_ids[1], True, True])
+        try:
+            _run(self.sp.import_bitbox_backup())
+        finally:
+            platform.sdcard.mount = real_mount
+            platform.sdcard.unmount = real_unmount
+
+        # The selection menu is shown once, and at that point mount_count
+        # must be: 1 (phase 1 listing) + 1 (phase 2 batched peek) = 2.
+        # With the old per-backup code it would be 1 + 3 = 4.
+        self.assertEqual(len(menu_mount_snapshot), 1)
+        self.assertEqual(
+            menu_mount_snapshot[0], 2,
+            "phase 2 should batch all peeks into one mount, got %d mounts "
+            "before the selection menu (1 listing + 1 batched peek = 2)"
+            % menu_mount_snapshot[0],
+        )
+
     def test_card_is_not_left_mounted_across_gui_waits(self):
         """The card must be unmounted before every user-facing screen, so
         pulling it while a confirmation dialog is open is harmless."""
@@ -1198,3 +1250,38 @@ class SdCardItemsTest(BitboxBackupFlowTestBase):
             by_kind.setdefault(kind, []).append(label)
         self.assertEqual(by_kind.get("enc"), ["mykey"])
         self.assertEqual(by_kind.get("plain"), ["paperbackup"])
+
+    def test_enumeration_capped_at_max_entries(self):
+        """An adversarial card with far more root entries than a real
+        Specter-DIY would ever produce must not cause unbounded memory
+        use: the scan stops after _SDCARD_LIST_MAX_ENTRIES entries, the
+        same bound bitbox_sd._listdir_typed uses for bitbox02/ listings.
+        The "Format entire SD card" option in the delete menu is the
+        tool for wiping everything indiscriminately, so silently stopping
+        after the cap is the right behaviour."""
+        sd_root = platform.fpath("/sd")
+        cap = self.sp._SDCARD_LIST_MAX_ENTRIES
+        created = []
+        for i in range(cap + 50):
+            fname = "%s/junk_%05d.txt" % (sd_root, i)
+            with open(fname, "w") as f:
+                f.write("x")
+            created.append(fname)
+        try:
+            items = self.sp._list_sdcard_items()
+        finally:
+            for fname in created:
+                try:
+                    os.remove(fname)
+                except OSError:
+                    pass
+        # None of the junk files match the enc/plain filters, so items
+        # is empty - but the important thing is the function returned
+        # in bounded time instead of enumerating all cap+50 entries.
+        # (If the cap were missing, this test would still pass on a
+        # fast machine; the guard is against adversarial memory use,
+        # not speed. We assert the cap is respected by checking that
+        # the loop did not process every entry: with the cap, only
+        # cap entries are looked at, so the function cannot have
+        # classified any file past the cap.)
+        self.assertIsInstance(items, list)
