@@ -271,13 +271,251 @@ computer is not.
   — and the card itself as sensitive: mnemonic backups written by the
   device (`specterdiy<hex-id>.<name>`) are encrypted and only readable by
   this device, but anything you explicitly export — plain mnemonic
-  `.txt` files, BIP-85-derived keys, xpub files — is written
-  **unencrypted** (and only when you choose that export).
+  `.txt` files, BitBox02-format backups, BIP-85-derived keys, xpub files —
+  is written **unencrypted** (and only when you choose that export).
 
 Regardless of the channel, the host software (Specter Desktop, Bitcoin
 Core, etc.) is considered untrusted: it can withhold transactions or show
 you wrong information on its own screen, but it cannot make the device
 sign something you didn't confirm on the device screen.
+
+## Importing a native BitBox02 microSD backup
+
+Specter can import a wallet directly from an original BitBox02 microSD backup
+(`Key management` -> `Import recovery phrase` -> `BitBox microSD backup`).
+The parser lives in [`src/bitbox_backup.py`](../src/bitbox_backup.py) (format
+decoding/validation, no hardware or GUI dependencies) and
+[`src/bitbox_sd.py`](../src/bitbox_sd.py) (read-only SD card discovery); the
+menu flow is `Specter.import_bitbox_backup()` in
+[`src/specter.py`](../src/specter.py).
+
+**The backup is not encrypted.** BitBox02's native microSD backup format
+(`messages/backup.proto` in
+[bitbox02-firmware](https://github.com/BitBoxSwiss/bitbox02-firmware),
+Apache-2.0) has a single defined mode, `PLAINTEXT`, and stores the wallet's
+raw BIP-39 entropy in the clear inside a small protobuf message. **Anyone
+with physical access to the SD card can read the wallet's recovery phrase
+directly off it**, without a PIN, password or any device. This is a property
+of the BitBox02 backup format itself, not a Specter limitation - Specter's
+job here is only to import what's already unencrypted on the card, and it
+shows an explicit "not encrypted" warning before doing so.
+
+A few things that are *not* required or used during import, since they
+don't apply to this format:
+
+- **The BitBox device password is never asked for and never needed.** It
+  protects the BitBox02's own internal flash storage, not the microSD
+  backup - the backup file itself has no such protection.
+- **A BIP-39 passphrase is never read from the backup.** A BitBox microSD
+  backup contains only the BIP-39 entropy; the format has no field for a
+  passphrase. Specter does not ask for one during the import either - after
+  the recovery phrase has been imported you can apply a BIP-39 passphrase
+  through Specter's normal existing passphrase workflow, exactly as after
+  any other recovery phrase import. Note that a BIP-39 passphrase is a
+  value you choose yourself and is entirely unrelated to the BitBox device
+  password.
+- The 32-byte value in the file called `checksum` is a SHA-256 corruption
+  check, **not an authentication tag**. It proves the file wasn't damaged in
+  storage/transit, but it does nothing to stop someone who can write their
+  own bytes to the card from producing a "valid" (self-consistent) forged
+  backup. It is not presented as, and must not be understood as, proof that
+  the backup came from a genuine BitBox02.
+
+**What the import checks**, in order, before anything is ever loaded:
+
+1. Every file is opened read-only and capped at 1024 bytes (BitBox02's own
+   `SD_MAX_FILE_SIZE`) before parsing.
+2. The protobuf is decoded by a small, special-purpose parser restricted to
+   exactly the five messages in `backup.proto` - not a general protobuf
+   library. It rejects (rather than guesses at) truncated or overlong
+   varints, non-canonical varint encodings, length prefixes that would run
+   past the buffer, protobuf "groups" (wire types 3/4), unknown/duplicate
+   backup-version selectors, and duplicate occurrences of any known
+   singular field. This is stricter than plain proto3 "last field wins"
+   semantics, deliberately, since a genuine BitBox02 backup never needs to
+   duplicate a field.
+3. The stored checksum is recomputed (little-endian `u32` fields, the
+   64-byte zero-padded name, the 32-byte seed field, the 20-byte zero-padded
+   generator string, and the historical `length` field, which is `0` on
+   current backups but is still read and used verbatim for older ones) and
+   compared against the value in the file. A mismatch is rejected outright.
+4. Only 16/24/32-byte entropy (12/18/24-word mnemonics) is accepted; the
+   32-byte `seed` field's unused tail must be all-zero padding.
+5. The backup id (the 64-character hex directory name) is independently
+   recomputed as `HMAC-SHA256("backup", entropy zero-padded to 32 bytes)`
+   and compared against the directory the files were loaded from.
+6. A BitBox02 backup has three (normally identical) copies. Specter reads
+   all three read-only, validates each independently, and:
+   - uses the result if one or more copies are individually valid, but only
+     after confirming that *all* individually-valid copies agree with each
+     other byte-for-byte - conflicting valid copies abort the import with an
+     explicit error instead of silently picking one (this is stricter than
+     bitbox02-firmware's own loader, which returns the first valid copy it
+     finds without cross-checking the others);
+   - otherwise, if all three files are the same length, attempts a
+     bitwise-majority reconstruction (`(a&b)|(a&c)|(b&c)` per byte) and
+     re-runs the *entire* validation pipeline above (checksum and backup id
+     included) against the reconstructed data before it is ever used. A
+     majority-recovered import shows an explicit warning asking the user to
+     verify the recovery phrase carefully.
+   - if none of that succeeds, the import is rejected.
+7. Only after all of the above passes does Specter show the backup's
+   metadata (name, creation time in UTC, word count, generator/firmware
+   string, the full backup id wrapped onto two lines - so it can be
+   compared character-for-character against what the BitBox App or a real
+   BitBox02 shows - and whether majority recovery was used) and the
+   recovered recovery phrase, using the existing recovery-phrase
+   confirmation screen. Nothing is loaded into the keystore until the user
+   explicitly confirms the phrase.
+
+**Where the BitBox-specific code ends.** Step 7 is the boundary. Once a
+valid mnemonic has been recovered, the import hands it to
+`Specter.confirm_and_set_mnemonic()` - literally the same method the
+QR/SD/USB host import uses - and does nothing else afterwards. From that
+point on nothing in Specter knows, or needs to know, that the phrase came
+from a BitBox backup.
+
+Specter's other recovery-phrase sources deliberately assemble the steps
+before that point differently, and are not expected to share code with it:
+manual entry and key generation confirm the words inside the entry screen
+itself and therefore call `Specter.set_mnemonic()` directly, while loading
+an already stored key (internal flash, SD card or smartcard) needs neither a
+confirmation nor a new save and so applies `keystore.set_mnemonic()` from
+within the keystore. What *is* guaranteed - and covered by
+`ImportSourceEquivalenceTest` in `test/tests_native/test_bitbox_backup_flow.py`
+- is that all of these end in the same place: the same mnemonic with an
+empty password reaching the keystore, exactly one app re-initialisation, no
+automatic passphrase, no automatic persistence, and the main menu as the
+destination.
+
+**What the import never does:**
+
+- It never writes, renames, or deletes anything on the SD card - every file
+  is opened read-only.
+- It never auto-saves the imported key. Exactly like every other recovery
+  phrase import in Specter, `set_mnemonic()` only loads the key into RAM;
+  whether to work amnesically, store the key encrypted, export it in
+  plaintext, or add a passphrase remains the user's explicit choice
+  afterwards, through the existing Specter menus.
+- It never adds BitBox-specific screens or prompts after the phrase has been
+  confirmed - in particular it does not ask about a BIP-39 passphrase, a PIN,
+  or a storage medium.
+- On any cancellation or error at any step, the previously loaded key (if
+  any) is left completely untouched, and no file on the card is modified.
+
+**Known limits:**
+
+- Directory names are matched as exactly 64 lowercase hex characters; an
+  uppercase or mixed-case directory (which genuine BitBox02 firmware never
+  produces - it always writes lowercase hex) is ignored rather than
+  case-folded, to avoid any ambiguity on the case-insensitive FAT
+  filesystem used on the card.
+- **Zeroization is partial by design, and worth stating precisely.** The
+  buffers the import code *owns* are explicitly overwritten as soon as they
+  are no longer needed: the three raw file images (right after parsing,
+  before any user-facing screen), the intermediate 32-byte padded seed
+  field, the extracted entropy of every rejected or redundant copy, and
+  finally the imported entropy itself once the mnemonic has been derived
+  (including on every abort and exception path). `ParsedBackup` keeps
+  exactly one entropy buffer rather than re-slicing it on each access,
+  precisely so that a single `zeroize()` reaches all of it.
+
+  What this does **not** cover, and cannot in pure Python: the final
+  mnemonic is a `str` and immutable, so it cannot be wiped - the same is
+  already true of every other recovery-phrase path in Specter. Likewise,
+  intermediate `bytes` slices produced while decoding the protobuf, and the
+  one immutable copy that must be handed to `embit.bip39` (see below), stay
+  in the heap until garbage collected. In short: the number of live secret
+  copies is deliberately minimised and the owned ones are wiped, but no
+  guarantee of full memory erasure is offered or implied.
+
+  One sharp edge worth recording, since it is easy to reintroduce: embit's
+  `bip39.mnemonic_from_bytes()` performs `entropy += checksum` internally,
+  which for a `bytearray` argument **mutates the caller's buffer in place**
+  (16 bytes in, 48 bytes out). The import therefore hands embit an
+  immutable `bytes` copy on purpose; removing that conversion as a
+  "needless copy" would silently corrupt the entropy buffer and defeat its
+  zeroization.
+
+- The SD card is mounted only for the two short, purely read-only
+  operations that need it (listing the backup directories, and reading the
+  three files of the chosen backup) and is unmounted again before any
+  confirmation screen is shown. The card is never left mounted while
+  waiting on the user, so removing it mid-dialog cannot affect the import.
+- Inserting any SD card increases the main MCU's attack surface, exactly as
+  already noted above under "Hardware" - this applies to a BitBox backup
+  card exactly as it does to any other SD card content Specter reads.
+
+## Exporting a recovery phrase to the SD card
+
+When you ask Specter to save the loaded recovery phrase to the SD card
+(`Show recovery phrase` -> `Save to SD card`, or `Flash & SD card storage`
+-> `Save key` -> `SD card`), it offers a choice of formats and tells you
+plainly what each one means before anything is written:
+
+- **Plain text (Specter format)** writes the phrase as a plaintext
+  `<name>.specter.txt` file. **Anyone holding the card gets full access to
+  the funds** - the confirmation dialog says exactly that and tells you to
+  treat the card like a handwritten paper backup and never plug it into an
+  untrusted computer.
+- **Bitbox format** writes a native BitBox02 microSD backup: three
+  redundant copies under `bitbox02/<backup id>/`, the same layout a real
+  BitBox02 produces, so the card can in principle be restored by a real
+  BitBox02 as well (untested on real hardware). The same "not encrypted"
+  warning applies - the BitBox microSD format stores the entropy in the
+  clear, as described in the import section above. Two deliberate
+  differences from real-device output: Specter-DIY has no real-time clock,
+  so it writes `timestamp = 0` ("unknown (no clock)" on import) rather
+  than fabricating a date, and names the files `0.bin`, `1.bin`, `2.bin`
+  instead of timestamped names (the firmware loader ignores file names -
+  only the exactly-three-files rule matters). Because the backup id
+  depends only on the seed, each recovery phrase has exactly one backup
+  directory; the writer refuses to write into a directory that already
+  contains files rather than merging into it, since a directory with
+  other than exactly three files is rejected by both implementations.
+  The written copies are verified immediately by reading them back
+  through the same parser the import uses.
+- **Encrypted (this device only)** is available when the active keystore
+  is `Flash & SD card storage` (SDKeyStore): the phrase is written with
+  the same AEAD scheme and device-bound secret as internal-flash storage
+  (`specterdiy<hex-id>.<name>`), readable only by this exact device. The
+  warning spells out the residual risk: more convenient than plaintext,
+  but still a software-only barrier - not comparable to a PIN-protected
+  smartcard. With a smartcard keystore active the option is shown but
+  disabled, since there is no device-bound secret to encrypt with.
+
+User-chosen backup names are validated before they become file names
+(path separators, FAT-invalid and control characters are rejected), and
+overwriting an existing file always requires an explicit confirmation.
+
+## Erasing data from the SD card
+
+`Device settings` -> `SD card` shows how many Specter-related items the
+card holds (device-encrypted key files, plaintext phrase exports, BitBox
+backup directories) and offers **Delete data**, which can erase a single
+item or format the whole card:
+
+- **Deleting one item** overwrites the file contents with fresh random
+  data several times, syncing after each pass, before unlinking - the
+  same overwrite-then-unlink principle BitBox02's own firmware uses when
+  it replaces a backup (theirs overwrites once with a fixed byte), except
+  with multiple random passes. A plain delete only removes the directory
+  entry and leaves the old bytes recoverable until the space is reused.
+- **Format entire SD card** overwrites *every block* on the card with
+  random data before creating a fresh FAT filesystem - the same approach
+  `platform.wipe()` uses for the internal flash - and requires two
+  confirmations, since it destroys everything on the card, not just
+  Specter's files.
+
+One honest limit, stated in the format confirmation as well: SD cards do
+their own wear leveling, so a logically overwritten block may still exist
+physically in controller-managed space the host can never reach.
+MicroPython's SD driver exposes no hardware erase command (CMD38) that
+could close that gap. The random-overwrite passes and the full-card wipe
+are the strongest erase Specter-DIY can perform in software and are a
+large improvement over plain deletion - but against a well-equipped
+forensic attacker, physical destruction is the only certain way to
+sanitize any SD card.
 
 ## Known limitations and open work
 

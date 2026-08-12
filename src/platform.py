@@ -3,6 +3,7 @@ import sys
 import os
 import pyb
 import gc
+import asyncio
 
 simulator = (sys.platform in ["linux", "darwin"])
 
@@ -112,6 +113,89 @@ class SDCard:
 
     def __exit__(self, *args, **kwargs):
         self.unmount()
+
+    async def erase_and_format(self, progress_cb=None):
+        """
+        Securely erases the SD card - overwrites every block with random
+        data, the same approach platform.wipe() uses for the internal
+        flash - and then creates a fresh, empty FAT filesystem on it.
+
+        This is irreversible and destroys EVERYTHING on the card, not
+        just files Specter-DIY created. There is no cancelling partway
+        through: like platform.wipe(), once started it must run to
+        completion or the card is left in a half-overwritten, unusable
+        state.
+
+        progress_cb(fraction), if given, is awaited after every chunk
+        with the fraction (0..1) of blocks written so far, so a caller
+        can drive a progress screen without blocking the event loop for
+        the whole operation. The event loop is allowed to run after every
+        chunk either way (asyncio.sleep_ms(0)) - also when a progress_cb
+        is given, since a callback that never awaits anything itself
+        (like a simple screen redraw) would otherwise starve the GUI's
+        update loop for the entire operation.
+        """
+        if not self.is_present:
+            raise RuntimeError("SD card is not present")
+        self.unmount()
+        if self._sd is None:
+            # simulator: no real block device to overwrite - just clear
+            # out the directory that stands in for the card.
+            delete_recursively(fpath("/sd"))
+            if progress_cb is not None:
+                await progress_cb(1.0)
+            return
+        if self._led is not None:
+            self._led.on()
+        self._sd.power(True)
+        try:
+            block_size = self._sd.ioctl(5, None)
+            block_count = self._sd.ioctl(4, None)
+            if not block_size or not block_count:
+                raise RuntimeError(
+                    "SD card reported invalid geometry "
+                    "(block size %r, block count %r) - cannot erase."
+                    % (block_size, block_count)
+                )
+            # 1 MB per write call: a full-card wipe can be tens of
+            # thousands of chunks even at this size, so this balances
+            # write/gc.collect() overhead against keeping a single
+            # os.urandom() buffer (and GUI-tick latency) reasonable.
+            chunk_blocks = max(1, (1024 * 1024) // block_size)
+            for start in range(0, block_count, chunk_blocks):
+                n = min(chunk_blocks, block_count - start)
+                try:
+                    self._sd.writeblocks(start, os.urandom(block_size * n))
+                except OSError as e:
+                    raise RuntimeError(
+                        "Could not write to the SD card during secure erase "
+                        "(card may have been removed):\n\n%s\n\n"
+                        "The card is now in a half-overwritten, unusable "
+                        "state and must be reformatted before it can be "
+                        "used again." % e
+                    ) from e
+                gc.collect()
+                if progress_cb is not None:
+                    await progress_cb((start + n) / block_count)
+                # Always yield to the event loop, even with a progress_cb:
+                # a callback that never awaits (e.g. one that only redraws
+                # a progress bar) runs synchronously and would otherwise
+                # keep every other task - including the GUI update loop -
+                # from running until the whole card is overwritten.
+                await asyncio.sleep_ms(0)
+            try:
+                os.VfsFat.mkfs(self._sd)
+            except OSError as e:
+                raise RuntimeError(
+                    "Overwrite completed, but creating a fresh filesystem "
+                    "failed:\n\n%s\n\nThe card's old data has been wiped, "
+                    "but it has no valid filesystem and must be reformatted "
+                    "on a computer before it can be used." % e
+                ) from e
+        finally:
+            self._sd.power(False)
+            if self._led is not None:
+                self._led.off()
 
 
 def fpath(fname):
@@ -310,6 +394,62 @@ def delete_recursively(path, include_self=False):
             os.rmdir(path)
         return True
     raise RuntimeError("Failed to delete folder %s" % path)
+
+
+def secure_delete_file(path, passes=3):
+    """
+    Overwrites a file's contents with fresh random data `passes` times,
+    syncing after each pass, before deleting it - the same
+    overwrite-then-unlink principle BitBox02's firmware uses when it
+    replaces a backup file (_delete_file() / sd_erase_file_in_subdir() in
+    bitbox02-firmware/src/sd.c), except that overwrites once with a fixed
+    byte (0xAC); this uses fresh random data on every one of several
+    passes instead.
+
+    A plain os.remove() only unlinks the directory entry - the file's
+    old bytes are still physically on the card until that space happens
+    to be reused, and can often be recovered with an undelete tool in
+    the meantime. This closes that gap for individual files (see
+    SDCard.erase_and_format() for the equivalent whole-card operation).
+
+    The file is opened once and kept open across all passes, rather than
+    stat-then-open per pass: a stat/open gap would let an attacker with
+    write access swap the path (e.g. via a hardlink on FAT variants that
+    support them) between the size check and the overwrite, causing us
+    to wipe the wrong file. The size is read from the same handle via
+    seek(0, 2)/tell(), and that handle is used for every overwrite pass.
+    """
+    with open(path, "r+b") as f:
+        f.seek(0, 2)  # seek to end
+        size = f.tell()
+        for _ in range(passes):
+            f.seek(0)
+            remaining = size
+            while remaining > 0:
+                chunk = min(remaining, 4096)
+                f.write(os.urandom(chunk))
+                remaining -= chunk
+            sync()
+    os.remove(path)
+
+
+def secure_delete_tree(path, passes=3):
+    """
+    Recursively secure_delete_file()s every regular file under `path`
+    (see its docstring), then removes the now-empty directories,
+    including `path` itself. Used for multi-file items such as a BitBox
+    backup directory, where each of the redundant copies must be
+    overwritten, not just unlinked.
+    """
+    for name, entry_type, *_rest in os.ilistdir(path):
+        if name in (".", ".."):
+            continue
+        full = "%s/%s" % (path, name)
+        if entry_type == 0x8000:
+            secure_delete_file(full, passes=passes)
+        elif entry_type == 0x4000:
+            secure_delete_tree(full, passes=passes)
+    os.rmdir(path)
 
 
 if not simulator:
