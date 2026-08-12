@@ -155,14 +155,19 @@ class SDKeyStore(FlashKeyStore):
         if not platform.file_exists(file):
             raise KeyStoreError("File not found.")
         try:
-            os.remove(file)
+            platform.secure_delete_file(file)
         except Exception as e:
             print(e)
             raise KeyStoreError("Failed to delete file '%s'" % file)
         finally:
             if platform.sdcard.is_present and file.startswith(self.sdpath):
                 platform.sdcard.unmount()
-            return True
+        # NOTE: this return must stay OUTSIDE the finally block - a return
+        # inside finally executes while an exception is propagating and
+        # silently discards it, so a failed delete would still report
+        # success. The unmount above belongs to the finally (it must run
+        # on every path); the success return does not.
+        return True
 
     async def storage_menu(self):
         """Manage storage, return True if new key was loaded"""
