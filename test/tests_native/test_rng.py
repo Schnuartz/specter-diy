@@ -1,3 +1,4 @@
+import os
 import sys
 
 if sys.implementation.name != "micropython":
@@ -62,12 +63,43 @@ class RNGSanityCheckTest(TestCase):
         self.assertTrue(rng._looks_dead(b"\x00" * 31 + b"\x2a"))
         self.assertTrue(rng._looks_dead(b"\x00" * 26 + bytes(range(1, 7))))
 
+    def test_looks_dead_rejects_majority_stall_that_survives_counting(self):
+        # these have enough distinct values to pass a plain distinct-count
+        # threshold, but are mostly one repeated byte
+        # 16 bytes = 12-word seed entropy: 13 zeros + 3 live bytes
+        self.assertTrue(rng._looks_dead(b"\x00" * 13 + bytes(range(1, 4))))
+        # 32 bytes = 24-word seed entropy: 25 zeros + 7 live bytes
+        self.assertTrue(rng._looks_dead(b"\x00" * 25 + bytes(range(1, 8))))
+        # 96 of 128 bytes stalled
+        self.assertTrue(rng._looks_dead(b"\x00" * 96 + bytes(range(1, 33))))
+
+    def test_looks_dead_rejects_low_variety_without_a_majority_value(self):
+        # no value covers half the buffer, but 8 distinct values in 32 bytes
+        # is ~2^-111 for healthy output (expected is ~30)
+        self.assertTrue(rng._looks_dead(bytes(range(8)) * 4))
+        # 1000 bytes with 40 distinct values - passes any fixed cap of 32
+        self.assertTrue(rng._looks_dead(bytes(range(40)) * 25))
+
     def test_looks_dead_allows_healthy_long_buffers(self):
-        # distinct byte values saturate at 256, so the threshold must be
-        # capped - 245 distinct values in 1000 bytes is healthy TRNG output
-        data = bytes(range(245)) + b"\x00" * 755
+        # distinct byte values saturate at 256, so the threshold cannot grow
+        # with n - 245 distinct values in 1000 bytes is healthy TRNG output
+        data = bytes(range(245)) * 4 + bytes(range(20))
+        self.assertEqual(len(data), 1000)
         self.assertEqual(len(set(data)), 245)
         self.assertFalse(rng._looks_dead(data))
+
+    def test_looks_dead_passes_real_random_output(self):
+        # guards against a threshold tight enough to reject healthy hardware
+        for nbytes in (4, 8, 16, 32, 64, 128, 1000):
+            for _ in range(100):
+                self.assertFalse(rng._looks_dead(os.urandom(nbytes)))
+
+    def test_expected_distinct_matches_the_closed_form(self):
+        for nbytes in (1, 4, 8, 16, 32, 64, 128, 256, 512, 1000):
+            self.assertEqual(
+                rng._expected_distinct(nbytes),
+                int(256 * (1 - (255 / 256) ** nbytes)),
+            )
 
     def test_get_random_bytes_checks_trng_on_the_raw_path(self):
         # requests over 64 bytes return TRNG output directly, without mixing

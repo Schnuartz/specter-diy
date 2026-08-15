@@ -21,6 +21,27 @@ class RNGError(BaseError):
     NAME = "RNG Error"
 
 
+_FP = 1 << 32
+
+
+def _expected_distinct(nbytes):
+    """Expected number of distinct byte values in nbytes of healthy output.
+
+    256 * (1 - (255/256)**nbytes), floored. Computed in fixed point rather
+    than floats so the threshold is identical on every build - MicroPython on
+    the F469 is single precision, CPython in the tests is double.
+    """
+    # (255/256)**nbytes in Q32, by repeated squaring
+    r = _FP
+    b = (255 * _FP) // 256
+    while nbytes:
+        if nbytes & 1:
+            r = (r * b) // _FP
+        b = (b * b) // _FP
+        nbytes >>= 1
+    return (256 * (_FP - r)) // _FP
+
+
 def _looks_dead(data):
     """Detect a stalled or failed TRNG.
 
@@ -28,8 +49,20 @@ def _looks_dead(data):
     os.urandom() calls it once per byte, so a dead peripheral surfaces as
     all-zero output - or, more generally, as a single repeated byte. A
     peripheral that stalls only intermittently surfaces as mostly-repeated
-    output with a few live bytes mixed in, which is why we count distinct
-    values rather than only rejecting a fully uniform buffer.
+    output with a few live bytes mixed in, so a plain "all bytes equal" test
+    is not enough. Two checks:
+
+    1. No single byte value may cover more than half the buffer. This is what
+       catches a partial stall - 25 zeros and 7 live bytes in 32 is obviously
+       broken, yet has enough distinct values to pass a counting test.
+    2. The number of distinct values must be at least half of what healthy
+       output gives (_expected_distinct). Scaling with the expectation matters
+       because distinct values saturate at 256: a fixed threshold that is safe
+       for 16 bytes accepts a 75%-dead 1000-byte buffer.
+
+    Both are far from the healthy distribution, so a false rejection is below
+    2^-24 for the shortest checked buffer and below 2^-40 from 16 bytes up
+    (16 bytes is a 12-word seed, 32 a 24-word one).
 
     This is a liveness check, not a proof of health: no cheap check can
     distinguish a healthy TRNG from a subtly biased one. It only catches the
@@ -42,22 +75,20 @@ def _looks_dead(data):
     n = len(data)
     if n < 4:
         return False
-    # iterating bytes yields one int per byte, so set() collapses the buffer
-    # to the distinct byte values it contains and len() counts them:
-    # b"\x00\x00\x00\x00" -> {0} -> 1, bytes(range(8)) -> {0..7} -> 8
-    distinct = len(set(data))
-    if n < 16:
-        # too short for a meaningful distribution - only reject a dead flatline
-        return distinct <= 1
-    # a healthy TRNG gives ~30 distinct values in 32 bytes, so a buffer far
-    # below that is broken hardware, not bad luck: P(<=8 distinct in 32
-    # random bytes) is about 2^-121.
-    #
-    # The cap matters: there are only 256 possible byte values, so distinct
-    # saturates near 256 for long buffers while n // 4 keeps growing. Without
-    # min(..., 32) the check would reject ~25% of healthy 1000-byte requests
-    # (getrandom allows up to 1000) and almost every request above that.
-    return distinct < min(n // 4, 32)
+    # iterating bytes yields one int per byte, so counts maps byte value ->
+    # occurrences and top is the largest of those counts
+    counts = {}
+    top = 0
+    for byte in data:
+        c = counts.get(byte, 0) + 1
+        counts[byte] = c
+        if c > top:
+            top = c
+    # below 8 bytes a majority value is plausible in healthy output
+    # (b"\x00\x00\x00\x01" is fine), so only the count check applies there
+    if n >= 8 and top * 2 > n:
+        return True
+    return 2 * len(counts) < _expected_distinct(n)
 
 
 # assuming that entropy_pool has some real entropy
