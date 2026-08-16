@@ -59,6 +59,53 @@ With the secure element you will have three options:
 
 At the moment, we have implementation for the first two options. Last seems to be the most secure, but then you need to trust proprietary crypto implementation. The second option saves the private key on the secure element under pin protection, and it can be encrypted, so the secure element never knows the private keys.
 
+## *How can I refurbish a Specter-Javacard after too many wrong PIN attempts?*
+
+Too many wrong PIN attempts can permanently lock the Specter applet. The card may still be reusable by deleting and reinstalling the applet through GlobalPlatform.
+
+> **Warning:** This completely erases the applet and all seeds or keys stored on it. It does not recover data. Make sure you have the recovery words first.
+
+You need [GlobalPlatformPro](https://github.com/martinpaljak/GlobalPlatformPro), Java, a smartcard reader, and a matching Specter-Javacard CAP file. The current [3rdIteration CAP files](https://github.com/3rdIteration/seedsigner/tree/dev/javacard-cap) include `SpecterDIY.cap`; older builds may use another filename. On Windows, `gp.exe` can be used instead of `java -jar gp.jar`.
+
+This procedure was tested with an NXP JCOP3 J3H145 card. It requires access to the card's GlobalPlatform management keys. If GlobalPlatformPro reports custom or unknown keys, or an invalid cryptogram, stop.
+
+Check that the card is accessible:
+
+```text
+java -jar gp.jar -r
+java -jar gp.jar -l
+```
+
+The first command lists available readers. If multiple readers are connected, add `-r "reader name or unique part"` to each following command. For example:
+
+```text
+java -jar gp.jar -r "reader name or unique part" -l
+```
+
+The output should include `ISD: A000000151000000 (OP_READY)`.
+
+Delete the Specter package and install the matching CAP file:
+
+```text
+java -jar gp.jar -r "reader name or unique part" -f -delete B00B5111CB
+java -jar gp.jar -r "reader name or unique part" -install SpecterDIY.cap
+```
+
+Use the actual CAP filename you downloaded. If only one reader is connected, omit the `-r` option. The package AID is `B00B5111CB`; do not substitute the applet instance AID `B00B5111CB01`.
+
+Verify the installation:
+
+```text
+java -jar gp.jar -r "reader name or unique part" -l
+```
+
+The output should contain:
+
+```text
+APP: B00B5111CB01 (SELECTABLE)
+PKG: B00B5111CB (LOADED)
+```
+
 # Troubleshooting questions
 
 # I can't flash my device via Mini-USB ?
@@ -74,7 +121,3 @@ https://github.com/cryptoadvance/specter-bootloader/blob/master/doc/remove_prote
 ## *Does anyone have any tips on mounting the power bank and QR code scanner to the STM32 board in a somewhat ergonomic manner?*
 
 Use the smallest powerbank possible. Check out the [gallery](https://github.com/cryptoadvance/specter-diy/blob/master/docs/pictures/gallery/README.md) to see how people do it.
-
-
-
-
