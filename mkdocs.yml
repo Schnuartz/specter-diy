@@ -5,7 +5,6 @@ nav:
     - Home:
       - 'Introduction': README.md
       - 'FAQ': faq.md
-      - roadmap.md
     - Hardware:
       - shopping.md
       - assembly.md
