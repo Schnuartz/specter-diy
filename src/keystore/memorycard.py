@@ -16,15 +16,16 @@ import lvgl as lv
 SMARTCARD_BLOCKED_MESSAGE = (
     "No more PIN attempts!\n"
     "\n"
-    "Inserted Specter-Javacard is bricked...\n"
+    "Inserted Specter-Javacard is locked.\n"
     "\n"
-    "Reinstall the Specter-Javacard applet using the SeedSigner smartcard-compatible fork "
-    "or a PC with a USB smartcard reader."
+    "Press the button, remove the card, and reinstall the Specter-Javacard applet using the "
+    "SeedSigner smartcard-compatible fork or a PC with a USB smartcard reader."
 )
 
 
 class SmartcardLockedError(PinError):
     NAME = "Smartcard locked"
+    requires_card_removal = True
 
 
 class MemoryCard(RAMKeyStore):
@@ -355,6 +356,15 @@ In this mode device can only operate when the smartcard is inserted!"""
             scr.tick(5)
         if scr.waiting:
             scr.waiting = False
+
+    async def wait_for_card_removal(self):
+        while self.connection.isCardInserted():
+            await asyncio.sleep_ms(100)
+        try:
+            self.connection.disconnect()
+        except Exception:
+            pass
+        self.connected = False
 
     async def init(self, show_fn, show_loader):
         """

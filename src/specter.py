@@ -142,7 +142,13 @@ class Specter:
         # catch an expected error
         except BaseError as e:
             # show error
-            await self.gui.alert(e.NAME, "%s" % e)
+            requires_card_removal = getattr(e, "requires_card_removal", False)
+            button_text = "Remove card" if requires_card_removal else "OK"
+            await self.gui.alert(e.NAME, "%s" % e, button_text=button_text)
+            if requires_card_removal:
+                wait_for_removal = getattr(self.keystore, "wait_for_card_removal", None)
+                if wait_for_removal is not None:
+                    await wait_for_removal()
             # restart
             return next_fn
         # show trace for unexpected errors
