@@ -67,6 +67,8 @@ Too many wrong PIN attempts can permanently lock the Specter applet. The card ma
 
 You need [GlobalPlatformPro](https://github.com/martinpaljak/GlobalPlatformPro), Java, a smartcard reader, and a matching Specter-Javacard CAP file. The current [3rdIteration CAP files](https://github.com/3rdIteration/seedsigner/tree/dev/javacard-cap) include `SpecterDIY.cap`; older builds may use another filename. On Windows, `gp.exe` can be used instead of `java -jar gp.jar`.
 
+This procedure was tested with an NXP JCOP3 J3H145 card. It requires access to the card's GlobalPlatform management keys. If GlobalPlatformPro reports custom or unknown keys, or an invalid cryptogram, stop.
+
 Check that the card is accessible:
 
 ```text
@@ -104,8 +106,6 @@ APP: B00B5111CB01 (SELECTABLE)
 PKG: B00B5111CB (LOADED)
 ```
 
-If GlobalPlatformPro reports custom keys or an invalid card cryptogram, stop. Do not repeatedly retry commands with unknown keys.
-
 # Troubleshooting questions
 
 # I can't flash my device via Mini-USB ?
@@ -121,4 +121,3 @@ https://github.com/cryptoadvance/specter-bootloader/blob/master/doc/remove_prote
 ## *Does anyone have any tips on mounting the power bank and QR code scanner to the STM32 board in a somewhat ergonomic manner?*
 
 Use the smallest powerbank possible. Check out the [gallery](https://github.com/cryptoadvance/specter-diy/blob/master/docs/pictures/gallery/README.md) to see how people do it.
-
