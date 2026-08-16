@@ -21,6 +21,6 @@ The simulator create folders in `./fs`:
 
 ## Specter-Playground
 
-For a more interactive development experience, check out [specter-playground](https://github.com/k9ert/specter-playground). It builds on top of the simulator and lets you explore and prototype UI scenarios for the Specter hardware without flashing a device.
+For a more interactive development experience, check out [specter-playground](https://github.com/k9ert/specter-playground). It is an external community project that builds on top of the simulator and lets you explore and prototype UI scenarios for the Specter hardware without flashing a device.
 
 
