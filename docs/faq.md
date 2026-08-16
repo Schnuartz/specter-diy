@@ -59,6 +59,75 @@ With the secure element you will have three options:
 
 At the moment, we have implementation for the first two options. Last seems to be the most secure, but then you need to trust proprietary crypto implementation. The second option saves the private key on the secure element under pin protection, and it can be encrypted, so the secure element never knows the private keys.
 
+## *How can I refurbish a Specter-Javacard after it is locked by too many wrong PIN attempts?*
+
+The Specter-Javacard applet can be permanently locked by too many wrong PIN attempts. The card itself is not necessarily damaged: the GlobalPlatform Issuer Security Domain can still be used to remove and reinstall the applet.
+
+This procedure completely erases the applet and all data stored on it. It cannot recover a seed or key. Only use it if you have the recovery words or if the card contains no valuable data.
+
+### Requirements
+
+- A USB PC/SC smartcard reader. Contact readers are recommended for applet management.
+- GlobalPlatformPro (`gp.jar`, or `gp.exe` on Windows): [GlobalPlatformPro releases](https://github.com/martinpaljak/GlobalPlatformPro/releases)
+- Java, using a version supported by the selected GlobalPlatformPro release. The Windows procedure was tested with Java 11.
+- The matching Specter-Javacard CAP file. The filename depends on where it came from; examples include `MemoryCardApplet.cap` and `SpecterDIY.cap`. The CAP must contain the Specter package/app AIDs `B00B5111CB` and `B00B5111CB01`.
+
+GlobalPlatformPro uses PC/SC on all three major desktop platforms. Windows normally uses the Smart Card service, macOS uses its built-in smartcard support, and Linux normally needs `pcscd` and the `ccid` driver.
+
+### Check the reader and card
+
+Open a terminal in the directory containing `gp.jar` and the CAP file. On Windows, `gp.exe` can be used instead of `java -jar gp.jar`.
+
+List available readers:
+
+```text
+java -jar gp.jar -r
+```
+
+Use a unique part of the reader name in the following commands. If only one reader is connected, `-r` can be omitted:
+
+```text
+java -jar gp.jar -r "reader name or unique part" -l
+```
+
+The expected output includes `ISD: A000000151000000 (OP_READY)`. GlobalPlatformPro may still show the applet as `SELECTABLE` even when its own PIN is locked; that does not mean the applet PIN was recovered.
+
+The default ISD keys are used only when the card has not been personalized. If GlobalPlatformPro reports a custom-key or invalid-cryptogram warning, stop and do not repeatedly retry commands.
+
+### Remove and reinstall the applet
+
+The delete command is destructive. Use the Specter package AID, not the applet instance AID:
+
+```text
+java -jar gp.jar -r "reader name or unique part" -f -delete B00B5111CB
+java -jar gp.jar -r "reader name or unique part" -install <matching-Specter-CAP-file>
+```
+
+For example, the tested Windows card was reinstalled with:
+
+```text
+gp -install MemoryCardApplet.cap
+```
+
+The current CAP directory in the 3rdIteration SeedSigner fork contains `SpecterDIY.cap`: [CAP files](https://github.com/3rdIteration/seedsigner/tree/dev/javacard-cap).
+
+### Verify the result
+
+Run the list command again:
+
+```text
+java -jar gp.jar -r "reader name or unique part" -l
+```
+
+The result should contain:
+
+```text
+APP: B00B5111CB01 (SELECTABLE)
+PKG: B00B5111CB (LOADED)
+```
+
+If the CAP publisher provides a checksum, verify it before installation. On Windows use `certutil -hashfile <file> SHA256`, on Linux use `sha256sum <file>`, and on macOS use `shasum -a 256 <file>`.
+
 # Troubleshooting questions
 
 # I can't flash my device via Mini-USB ?
@@ -74,7 +143,6 @@ https://github.com/cryptoadvance/specter-bootloader/blob/master/doc/remove_prote
 ## *Does anyone have any tips on mounting the power bank and QR code scanner to the STM32 board in a somewhat ergonomic manner?*
 
 Use the smallest powerbank possible. Check out the [gallery](https://github.com/cryptoadvance/specter-diy/blob/master/docs/pictures/gallery/README.md) to see how people do it.
-
 
 
 
