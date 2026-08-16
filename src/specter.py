@@ -154,6 +154,7 @@ class Specter:
                     )
                     await wait_for_removal()
                     self.gui.hide_loader()
+                    self.keystore = None
             # restart
             return next_fn
         # show trace for unexpected errors

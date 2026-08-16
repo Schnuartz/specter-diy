@@ -19,7 +19,8 @@ SMARTCARD_BLOCKED_MESSAGE = (
     "Inserted Specter-Javacard is locked.\n"
     "\n"
     "Press the button, remove the card, and reinstall the Specter-Javacard applet using the "
-    "SeedSigner smartcard-compatible fork or a PC with a USB smartcard reader."
+    "SeedSigner smartcard-compatible fork or a PC with a USB smartcard reader.\n"
+    "After removal, Specter-DIY will continue with internal storage."
 )
 
 
