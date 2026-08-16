@@ -70,24 +70,31 @@ You need [GlobalPlatformPro](https://github.com/martinpaljak/GlobalPlatformPro),
 Check that the card is accessible:
 
 ```text
+java -jar gp.jar -r
 java -jar gp.jar -l
 ```
 
-If multiple readers are connected, add `-r "reader name or unique part"` to each command. The output should include `ISD: A000000151000000 (OP_READY)`.
+The first command lists available readers. If multiple readers are connected, add `-r "reader name or unique part"` to each following command. For example:
+
+```text
+java -jar gp.jar -r "reader name or unique part" -l
+```
+
+The output should include `ISD: A000000151000000 (OP_READY)`.
 
 Delete the Specter package and install the matching CAP file:
 
 ```text
-java -jar gp.jar -f -delete B00B5111CB
-java -jar gp.jar -install SpecterDIY.cap
+java -jar gp.jar -r "reader name or unique part" -f -delete B00B5111CB
+java -jar gp.jar -r "reader name or unique part" -install SpecterDIY.cap
 ```
 
-Use the actual CAP filename you downloaded. The package AID is `B00B5111CB`; do not substitute the applet instance AID `B00B5111CB01`.
+Use the actual CAP filename you downloaded. If only one reader is connected, omit the `-r` option. The package AID is `B00B5111CB`; do not substitute the applet instance AID `B00B5111CB01`.
 
 Verify the installation:
 
 ```text
-java -jar gp.jar -l
+java -jar gp.jar -r "reader name or unique part" -l
 ```
 
 The output should contain:
@@ -114,5 +121,4 @@ https://github.com/cryptoadvance/specter-bootloader/blob/master/doc/remove_prote
 ## *Does anyone have any tips on mounting the power bank and QR code scanner to the STM32 board in a somewhat ergonomic manner?*
 
 Use the smallest powerbank possible. Check out the [gallery](https://github.com/cryptoadvance/specter-diy/blob/master/docs/pictures/gallery/README.md) to see how people do it.
-
 
