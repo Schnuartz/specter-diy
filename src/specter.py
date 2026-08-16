@@ -148,7 +148,12 @@ class Specter:
             if requires_card_removal:
                 wait_for_removal = getattr(self.keystore, "wait_for_card_removal", None)
                 if wait_for_removal is not None:
+                    self.gui.show_loader(
+                        title="Remove the locked card",
+                        text="Waiting for the smartcard to be removed...",
+                    )
                     await wait_for_removal()
+                    self.gui.hide_loader()
             # restart
             return next_fn
         # show trace for unexpected errors
