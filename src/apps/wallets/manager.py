@@ -775,9 +775,13 @@ class WalletManager(BaseApp):
         Populates meta["warnings"] for the transaction confirmation screen.
         Warns if the transaction spends inputs from multiple different
         wallets (multisig change-address attack mitigation).
+        Appends to existing warnings instead of replacing them.
         """
         if len(wallets) > 1:
-            meta["warnings"] = ["Mixed inputs from different wallets!"]
+            warning = "Mixed inputs from different wallets!"
+            warnings = meta.setdefault("warnings", [])
+            if warning not in warnings:
+                warnings.append(warning)
 
     def sign_psbtview(self, psbtv, out_stream, wallets, sighash):
         for w in wallets:
