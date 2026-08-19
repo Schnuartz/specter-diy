@@ -169,11 +169,15 @@ class EraseAndFormatTest(TestCase):
 class SecureDeleteTreeTest(TestCase):
     def setUp(self):
         clear_testdir()
+        platform.maybe_mkdir("testdir")
         platform.maybe_mkdir("testdir/deltree")
         self.path = "testdir/deltree"
 
     def tearDown(self):
-        platform.delete_recursively("testdir", include_self=True)
+        try:
+            platform.delete_recursively("testdir", include_self=True)
+        except OSError:
+            pass
 
     def _make_files(self, n):
         for i in range(n):
