@@ -1,4 +1,4 @@
-import os
+import random
 import sys
 
 if sys.implementation.name != "micropython":
@@ -49,6 +49,16 @@ class RNGSanityCheckTest(TestCase):
 
         self.assertEqual(rng.entropy_pool, b"A" * 64)
 
+    def test_get_random_bytes_handles_zero_length_requests(self):
+        # apps/getrandom.py rejects num_bytes < 0 but permits 0, so a host can
+        # reach this: _looks_dead(b"") is False, feed(b"") still advances the
+        # pool, and the caller gets an empty result rather than an error
+        rng.entropy_pool = b"A" * 64
+        rng.get_trng_bytes = lambda nbytes: b""
+
+        self.assertEqual(rng.get_random_bytes(0), b"")
+        self.assertNotEqual(rng.entropy_pool, b"A" * 64)
+
     def test_get_random_bytes_keeps_one_byte_requests_working(self):
         rng.get_trng_bytes = lambda nbytes: b"\x00" * nbytes
         self.assertEqual(len(rng.get_random_bytes(1)), 1)
@@ -88,11 +98,18 @@ class RNGSanityCheckTest(TestCase):
         self.assertEqual(len(set(data)), 245)
         self.assertFalse(rng._looks_dead(data))
 
-    def test_looks_dead_passes_real_random_output(self):
-        # guards against a threshold tight enough to reject healthy hardware
+    def test_looks_dead_passes_healthy_random_output(self):
+        # guards against a threshold tight enough to reject healthy hardware.
+        # A seeded PRNG rather than os.urandom: the thresholds do have a
+        # non-zero false rejection rate (5.96e-8 at 4 bytes, 1.36e-8 at 8,
+        # 6.43e-13 at 16), which over enough CI runs would eventually flake.
+        # Uniform independent bytes are what the check is specified against,
+        # so a fixed stream tests the same property without the dice roll.
+        prng = random.Random(0x5EEDBEEF)
         for nbytes in (4, 8, 16, 32, 64, 128, 1000):
             for _ in range(100):
-                self.assertFalse(rng._looks_dead(os.urandom(nbytes)))
+                data = bytes(prng.getrandbits(8) for _ in range(nbytes))
+                self.assertFalse(rng._looks_dead(data))
 
     def test_expected_distinct_matches_the_closed_form(self):
         for nbytes in (1, 4, 8, 16, 32, 64, 128, 256, 512, 1000):
