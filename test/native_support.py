@@ -74,6 +74,17 @@ def setup_native_stubs():
 
         pyb.Pin = _DummyPin
 
+    uscard = _ensure_module("uscard")
+    if not hasattr(uscard, "Reader"):
+        class _DummyReader:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def createConnection(self):
+                return None
+
+        uscard.Reader = _DummyReader
+
     lvgl = _ensure_module("lvgl")
     if not hasattr(lvgl, "SYMBOL"):
         class _Symbol:
