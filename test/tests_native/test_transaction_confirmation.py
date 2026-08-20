@@ -28,10 +28,11 @@ from unittest import TestCase
 # meta["outputs"] in the primary confirmation section calls
 # self.show_output() unconditionally, with no conditional "continue"/skip
 # keyed on out["change"]. This fails against the pre-fix source and passes
-# after it. It was also manually verified in the simulator (see the PR
-# description) that a transaction containing an external output, a verified
-# change output, and a receive-branch self-payment shows all three outputs
-# on the primary confirmation page.
+# after it. Manual/simulator verification of the actual rendered screen
+# (external output, verified change output, and receive-branch
+# self-payment all visible on the primary confirmation page) has not been
+# performed and is not claimed here - see the PR description for the
+# current verification status.
 
 TRANSACTION_SCREEN_PATH = (
     Path(__file__).resolve().parents[2] / "src" / "gui" / "screens" / "transaction.py"

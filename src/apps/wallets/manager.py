@@ -393,8 +393,12 @@ class WalletManager(BaseApp):
         Security invariant: an output is change only if all of the following
         are true:
         - `wallet` is the single, unambiguous wallet that owns every input
-          being spent (a watch-only/unknown/ambiguous spending context can
-          never produce automatic change);
+          being spent (an unknown or ambiguous spending context can never
+          produce automatic change; a watch-only wallet is not excluded
+          here since the script re-derivation below verifies it the same
+          way regardless of whether the device holds its private key -
+          watch-only status is separately surfaced via the "Watch-only
+          wallet!" warning on the output, which stays visible either way);
         - the host-supplied BIP32 (or Taproot BIP32) derivation metadata for
           the output resolves, via the wallet's descriptor, to branch index
           1 - the descriptor's canonical change branch;
