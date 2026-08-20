@@ -100,6 +100,7 @@ class SecureChannel:
             h = hmac.new(self.card_mac_key, digestmod="sha256")
             h.update(data)
             expected_hmac = h.digest()[:MAC_SIZE]
+            # constant-time compare (L6) - do not replace with == / !=
             if not consteq(expected_hmac, recv_hmac):
                 raise SecureChannelError("Wrong HMAC.")
             data += recv_hmac
@@ -130,6 +131,7 @@ class SecureChannel:
             h = hmac.new(self.card_mac_key, digestmod="sha256")
             h.update(data)
             expected_hmac = h.digest()[:MAC_SIZE]
+            # constant-time compare (L6) - do not replace with == / !=
             if not consteq(expected_hmac, recv_hmac):
                 raise SecureChannelError("Wrong HMAC.")
             data += recv_hmac
@@ -168,6 +170,7 @@ class SecureChannel:
         h.update(iv)
         h.update(ct)
         expected_hmac = h.digest()[:MAC_SIZE]
+        # constant-time compare (L6) - do not replace with == / !=
         if not consteq(expected_hmac, recv_hmac):
             raise SecureChannelError("Wrong HMAC.")
         crypto = aes(self.card_aes_key, AES_CBC, iv)

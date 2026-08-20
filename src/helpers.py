@@ -49,6 +49,12 @@ def consteq(a: bytes, b: bytes) -> bool:
     do not use it to compare secret-dependent variable-length data.
     Used because the MicroPython build on this device (custom C `hmac`
     usermod) has no `hmac.compare_digest()`.
+
+    SECURITY: do not "simplify" the loop below back to `a == b` / `!=`,
+    and do not add an early `return False` inside the loop - either
+    change reintroduces the timing side channel this function exists
+    to remove. A test asserting equal() == equal() cannot catch that
+    regression, since both implementations return the same booleans.
     """
     if len(a) != len(b):
         return False
@@ -115,6 +121,7 @@ def aead_decrypt(ciphertext: bytes, key: bytes) -> tuple:
 
     aes_key = tagged_hash("aes", key)
     hmac_key = tagged_hash("hmac", key)
+    # constant-time compare (L6) - do not replace with == / !=
     if not consteq(mac, hmac.new(hmac_key, ct, digestmod="sha256").digest()):
         raise Exception("Invalid HMAC")
     b = BytesIO(ct)
