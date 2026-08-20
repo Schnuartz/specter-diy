@@ -135,7 +135,18 @@ class Specter:
             await self.gui.error("Critical error, the device will be wiped.\n\n%s" % e)
             self.gui.show_loader(title="Wiping the device...")
             # wipe everything and reboot
-            self.wipe()
+            try:
+                self.wipe()
+            except Exception as wipe_exc:
+                # wipe() failed to fully destroy the sensitive data it was
+                # meant to. Never let that look like a successful wipe -
+                # tell the user loudly and stop here instead of proceeding
+                # as if the device were safe.
+                await self.gui.error(
+                    "Wipe failed to complete!\n\n%s\n\n"
+                    "Do not consider this device safe." % wipe_exc
+                )
+                raise
         # catch an expected error
         except BaseError as e:
             # show error
