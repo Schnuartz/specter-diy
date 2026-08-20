@@ -285,12 +285,14 @@ class XpubApp(BaseApp):
             # derive the xpub so we can show the user exactly what would be shared
             xpub = self.keystore.get_xpub(derivation)
             xpub_str = xpub.to_base58(NETWORKS[self.network]["xpub"])
+            fingerprint = hexlify(self.keystore.fingerprint).decode()
             confirm = await show_screen(
                 Prompt(
-                    "Share XPUB?",
+                    "Share Xpub?",
                     "A connected host wants the\nextended public key for:\n\n%s\n\n%s" % (
                         derivation, xpub_str,
                     ),
+                    note="Device fingerprint %s (for reference, not shared)" % fingerprint,
                 )
             )
             if not confirm:
