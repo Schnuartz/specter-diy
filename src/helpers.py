@@ -36,6 +36,24 @@ def tagged_hash(tag: str, data: bytes) -> bytes:
     return hashlib.sha256(hashtag + hashtag + data).digest()
 
 
+def consteq(a: bytes, b: bytes) -> bool:
+    """
+    Constant-time comparison for MACs, HMACs and other secret-derived
+    fixed-length values. Plain `==`/`!=` on bytes can stop as soon as a
+    differing byte is found, so its timing can leak how many leading
+    bytes matched. This walks every byte of both inputs unconditionally
+    and only combines the differences at the end, avoiding that timing
+    side channel. Used because the MicroPython build on this device
+    (custom C `hmac` usermod) has no `hmac.compare_digest()`.
+    """
+    if len(a) != len(b):
+        return False
+    result = 0
+    for x, y in zip(a, b):
+        result |= x ^ y
+    return result == 0
+
+
 def encrypt(plain: bytes, key: bytes) -> bytes:
     """Encrypt data with bit padding (0x80...)"""
     iv = rng.get_random_bytes(IV_SIZE)
@@ -93,7 +111,7 @@ def aead_decrypt(ciphertext: bytes, key: bytes) -> tuple:
 
     aes_key = tagged_hash("aes", key)
     hmac_key = tagged_hash("hmac", key)
-    if mac != hmac.new(hmac_key, ct, digestmod="sha256").digest():
+    if not consteq(mac, hmac.new(hmac_key, ct, digestmod="sha256").digest()):
         raise Exception("Invalid HMAC")
     b = BytesIO(ct)
     l = compact.read_from(b)
