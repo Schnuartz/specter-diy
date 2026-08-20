@@ -260,17 +260,10 @@ class XpubApp(BaseApp):
         # reads prefix from the stream (until first space)
         prefix = self.get_prefix(stream)
         # get device fingerprint, data is ignored
+        # non-interactive: used for device discovery/identification by
+        # companion software, must not require on-device confirmation
         if prefix == b"fingerprint":
-            fingerprint = hexlify(self.keystore.fingerprint).decode()
-            confirm = await show_screen(
-                Prompt(
-                    "Share master fingerprint?",
-                    "A connected host requests\nthe master fingerprint:\n\n%s" % fingerprint,
-                )
-            )
-            if not confirm:
-                return False
-            return BytesIO(fingerprint.encode()), {}
+            return BytesIO(hexlify(self.keystore.fingerprint)), {}
         # get xpub,
         # data: derivation path in human-readable form like m/44h/1h/0
         elif prefix == b"xpub":
@@ -285,14 +278,12 @@ class XpubApp(BaseApp):
             # derive the xpub so we can show the user exactly what would be shared
             xpub = self.keystore.get_xpub(derivation)
             xpub_str = xpub.to_base58(NETWORKS[self.network]["xpub"])
-            fingerprint = hexlify(self.keystore.fingerprint).decode()
             confirm = await show_screen(
                 Prompt(
                     "Share Xpub?",
                     "A connected host wants the\nextended public key for:\n\n%s\n\n%s" % (
                         derivation, xpub_str,
                     ),
-                    note="Device fingerprint %s" % fingerprint,
                 )
             )
             if not confirm:

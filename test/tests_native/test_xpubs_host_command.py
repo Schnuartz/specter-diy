@@ -111,7 +111,9 @@ class XpubsHostCommandTest(TestCase):
         )
         self.assertIn(expected, message)
 
-    def test_fingerprint_approved_matches_direct_value(self):
+    def test_fingerprint_returns_immediately_without_confirmation(self):
+        # fingerprint is used for non-interactive device discovery/
+        # identification by companion software and must never prompt
         show_screen, seen = self._show_screen(True)
         stream = BytesIO(b"fingerprint")
         res = self._run(self.app.process_host_command(stream, show_screen))
@@ -119,14 +121,7 @@ class XpubsHostCommandTest(TestCase):
         result_stream, meta = res
         expected = hexlify(self.keystore.fingerprint).decode()
         self.assertEqual(result_stream.read().decode(), expected)
-        self.assertEqual(len(seen), 1)
-
-    def test_fingerprint_rejected_returns_no_fingerprint(self):
-        show_screen, seen = self._show_screen(False)
-        stream = BytesIO(b"fingerprint")
-        res = self._run(self.app.process_host_command(stream, show_screen))
-        self.assertFalse(res)
-        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen, [])
 
     def test_invalid_derivation_fails_before_confirmation(self):
         show_screen, seen = self._show_screen(True)

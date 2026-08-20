@@ -10,4 +10,3 @@ release
 .DS_Store
 .direnv
 src/git_info.py
-AGENTS.md

@@ -20,16 +20,15 @@ class BasicTest(TestCase):
         self.assertEqual(res, b"error: User cancelled")
 
     def test_get_xpub(self):
-        # host requests must be confirmed on the device
-        res = sim.query(b"fingerprint", [True])
+        # fingerprint is non-interactive (device discovery/identification)
+        res = sim.query(b"fingerprint")
         self.assertEqual(res, b"73c5da0a")
+        # xpub requests must be confirmed on the device
         res = sim.query(b"xpub m/44h/1h/0h", [True])
         self.assertEqual(res, b"tpubDC5FSnBiZDMmhiuCmWAYsLwgLYrrT9rAqvTySfuCCrgsWz8wxMXUS9Tb9iVMvcRbvFcAHGkMD5Kx8koh4GquNGNTfohfk7pgjhaPCdXpoba")
 
     def test_get_xpub_rejected(self):
-        # rejecting the on-device confirmation must not leak the fingerprint/xpub
-        res = sim.query(b"fingerprint", [False])
-        self.assertEqual(res, b"error: User cancelled")
+        # rejecting the on-device confirmation must not leak the xpub
         res = sim.query(b"xpub m/44h/1h/0h", [False])
         self.assertEqual(res, b"error: User cancelled")
 

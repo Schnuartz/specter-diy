@@ -77,8 +77,9 @@ class SpecterClient(HardwareWalletClient):
         :param bip32_path: The BIP 32 derivation path
         :return: The extended public key
         """
-        # this should be fast
-        xpub = self.query("xpub %s" % bip32_path, timeout=self.TIMEOUT)
+        # xpub now requires on-device user confirmation and may take
+        # arbitrarily long - wait indefinitely, same as sign_tx()
+        xpub = self.query("xpub %s" % bip32_path)
         hd = ExtendedKey.deserialize(xpub)
         # Specter returns xpub with a prefix
         # for a network currently selected on the device
