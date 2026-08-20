@@ -126,7 +126,7 @@ class FlashKeyStore(RAMKeyStore):
         # calculate hmac with entered PIN
         key = tagged_hash("pin", self.secret)
         pin_hmac = hmac.new(key=key, msg=pin.encode(), digestmod="sha256").digest()
-        # check hmac is the same
+        # check hmac is the same (constant-time compare, L6 - do not replace with == / !=)
         if not consteq(pin_hmac, self.pin):
             raise PinError(
                 "Invalid PIN!\n%d of %d attempts left..."
