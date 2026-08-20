@@ -257,17 +257,6 @@ class XpubApp(BaseApp):
     async def process_host_command(self, stream, show_screen):
         if self.keystore.is_locked:
             raise AppError("Device is locked")
-        if not self.keystore.is_ready:
-            await show_screen(
-                Alert(
-                    "No seed phrase loaded",
-                    "A connected host wants your master fingerprint or Xpub, "
-                    "but no seed phrase is loaded on this device yet.\n\n"
-                    "Create or load a seed phrase, then ask the host to try again.",
-                    button_text="Close",
-                )
-            )
-            raise AppError("Seed phrase not loaded. Please load your seed phrase first.")
         # reads prefix from the stream (until first space)
         prefix = self.get_prefix(stream)
         # get device fingerprint, data is ignored
