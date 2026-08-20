@@ -189,6 +189,50 @@ class ChangeClassificationTest(TestCase):
         self.assertEqual(derivation, (7, 2))
         self.assertFalse(is_change)
 
+    def test_branch_index_is_position_not_raw_derivation_value(self):
+        # branch_idx must mean "position in the descriptor's branch list",
+        # not the raw derivation value at that path component. A descriptor
+        # using unusual branch values (22, 33, 44) still has its change
+        # branch at position 1 (raw value 33) - not at raw value 1, which
+        # isn't even a valid branch of this descriptor.
+        der_path = "m/84h/1h/0h"
+        xpub = self.keystore.get_xpub(der_path)
+        desc_str = "wpkh([%s%s]%s/<22;33;44>/*)" % (
+            self.fingerprint.hex(),
+            der_path[1:],
+            xpub.to_base58(self.manager.Networks["regtest"]["xpub"]),
+        )
+        odd_wallet = Wallet.from_descriptor(desc_str, None)
+        self.assertEqual(odd_wallet.descriptor.num_branches, 3)
+
+        def odd_derivation(raw_branch_value, idx):
+            path = bip32.parse_path("%s/%d/%d" % (der_path, raw_branch_value, idx))
+            return DerivationPath(self.fingerprint, path)
+
+        wallets = {odd_wallet: {}}
+
+        # raw derivation value 33 -> branch position 1 -> verified change
+        out_change = self.make_out(
+            bip32_derivations={fake_pubkey(21): odd_derivation(33, 4)},
+            script_pubkey=self.script_for(odd_wallet, 1, 4),
+        )
+        derivation, is_change = self.manager.get_verified_change_derivation(
+            odd_wallet, wallets, out_change
+        )
+        self.assertEqual(derivation, (4, 1))
+        self.assertTrue(is_change)
+
+        # raw derivation value 22 -> branch position 0 -> receive, not change
+        out_receive = self.make_out(
+            bip32_derivations={fake_pubkey(22): odd_derivation(22, 4)},
+            script_pubkey=self.script_for(odd_wallet, 0, 4),
+        )
+        derivation0, is_change0 = self.manager.get_verified_change_derivation(
+            odd_wallet, wallets, out_receive
+        )
+        self.assertEqual(derivation0, (4, 0))
+        self.assertFalse(is_change0)
+
     # --- Test H: Taproot ----------------------------------------------------
 
     def test_taproot_branch1_is_change_and_branch0_is_not(self):
