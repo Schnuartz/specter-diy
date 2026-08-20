@@ -338,7 +338,9 @@ class LWalletManager(WalletManager):
             gaps = None
             if wallet:
                 gaps = [g for g in wallet.gaps] # copy
-                res = wallet.get_derivation(inp.bip32_derivations)
+                res = wallet.get_derivation(
+                    inp.bip32_derivations, getattr(inp, "taproot_bip32_derivations", {})
+                )
                 if res:
                     idx, branch_idx = res
                     gaps[branch_idx] = max(gaps[branch_idx], idx+wallet.GAP_LIMIT+1)
@@ -542,22 +544,23 @@ class LWalletManager(WalletManager):
             if not (asset and value) or not (len(asset) == 32 and isinstance(value, int)):
                 asset = None
                 value = -1
+            derivation, is_change = self.get_verified_change_derivation(wallet, wallets, out)
             metaout.update({
-                "change": (wallet is not None and len(wallets) == 1 and wallet in wallets),
+                "change": is_change,
                 "value": value,
                 "address": self.get_address(out),
                 "asset": self.asset_label(asset),
             })
             if wallet:
                 metaout["label"] = wallet.name
-                res = wallet.get_derivation(out.bip32_derivations)
+                res = derivation
                 if res:
                     idx, branch_idx = res
                     branch_txt = ""
                     if branch_idx == 1:
-                        "change "
+                        branch_txt = "change "
                     elif branch_idx > 1:
-                        "branch %d " % branch_idx
+                        branch_txt = "branch %d " % branch_idx
                     metaout["label"] = "%s %s#%d" % (wallet.name, branch_txt, idx)
                     if wallet in wallets:
                         allowed_idx = wallets[wallet]["gaps"][branch_idx]

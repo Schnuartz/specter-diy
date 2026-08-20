@@ -65,12 +65,10 @@ class TransactionScreen(Prompt):
         self.style_warning = style_warning
         self.style_gray = style_gray
 
-        num_change_outputs = 0
         for out in meta["outputs"]:
-            # first only show destination addresses
-            if out["change"] and not out.get("warning", ""):
-                num_change_outputs += 1
-                continue
+            # Every output is shown on the primary confirmation screen -
+            # the host is not trusted, so a verified change output must
+            # still be visible (with its change label), never hidden.
             obj = self.show_output(out, obj)
 
         fee = meta.get("fee")
