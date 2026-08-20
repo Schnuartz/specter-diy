@@ -261,7 +261,16 @@ class XpubApp(BaseApp):
         prefix = self.get_prefix(stream)
         # get device fingerprint, data is ignored
         if prefix == b"fingerprint":
-            return BytesIO(hexlify(self.keystore.fingerprint)), {}
+            fingerprint = hexlify(self.keystore.fingerprint).decode()
+            confirm = await show_screen(
+                Prompt(
+                    "Share master fingerprint?",
+                    "A connected host requests\nthe master fingerprint:\n\n%s" % fingerprint,
+                )
+            )
+            if not confirm:
+                return False
+            return BytesIO(fingerprint.encode()), {}
         # get xpub,
         # data: derivation path in human-readable form like m/44h/1h/0
         elif prefix == b"xpub":
@@ -271,8 +280,18 @@ class XpubApp(BaseApp):
                 path = bip32.parse_path(path.decode())
             except:
                 raise AppError('Invalid path: "%s"' % path.decode())
+            # normalize to the canonical string representation
+            derivation = bip32.path_to_str(path)
+            confirm = await show_screen(
+                Prompt(
+                    "Share XPUB?",
+                    "A connected host wants the\nextended public key for:\n\n%s" % derivation,
+                )
+            )
+            if not confirm:
+                return False
             # get xpub
-            xpub = self.keystore.get_xpub(bip32.path_to_str(path))
+            xpub = self.keystore.get_xpub(derivation)
             # send back as base58
             return BytesIO(xpub.to_base58(NETWORKS[self.network]["xpub"]).encode()), {}
         raise AppError("Unknown command")
