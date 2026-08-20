@@ -38,13 +38,17 @@ def tagged_hash(tag: str, data: bytes) -> bytes:
 
 def consteq(a: bytes, b: bytes) -> bool:
     """
-    Constant-time comparison for MACs, HMACs and other secret-derived
-    fixed-length values. Plain `==`/`!=` on bytes can stop as soon as a
-    differing byte is found, so its timing can leak how many leading
-    bytes matched. This walks every byte of both inputs unconditionally
-    and only combines the differences at the end, avoiding that timing
-    side channel. Used because the MicroPython build on this device
-    (custom C `hmac` usermod) has no `hmac.compare_digest()`.
+    Fixed-work comparison for MACs, HMACs and other fixed-length
+    authentication values. Plain `==`/`!=` on bytes can stop as soon as
+    a differing byte is found, so its timing can leak how many leading
+    bytes matched; for equal-length inputs this instead compares every
+    byte without an early exit that depends on where they differ. The
+    length check below is NOT constant-time and input length is not
+    treated as secret, so this is only appropriate where both inputs
+    have a fixed, public length (e.g. a 32-byte HMAC-SHA256 digest) -
+    do not use it to compare secret-dependent variable-length data.
+    Used because the MicroPython build on this device (custom C `hmac`
+    usermod) has no `hmac.compare_digest()`.
     """
     if len(a) != len(b):
         return False
