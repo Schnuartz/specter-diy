@@ -385,6 +385,60 @@ class WalletManager(BaseApp):
         proceed = await show_screen(scr)
         return proceed
 
+    def get_verified_change_derivation(self, wallet, wallets, out):
+        """
+        Determines the wallet-relative derivation of an output and whether
+        it is *verified* change.
+
+        Security invariant: an output is change only if all of the following
+        are true:
+        - `wallet` is the single, unambiguous wallet that owns every input
+          being spent (a watch-only/unknown/ambiguous spending context can
+          never produce automatic change);
+        - the host-supplied BIP32 (or Taproot BIP32) derivation metadata for
+          the output resolves, via the wallet's descriptor, to branch index
+          1 - the descriptor's canonical change branch;
+        - re-deriving the descriptor's script_pubkey for that exact
+          branch/index on the device reproduces the actual output
+          script_pubkey.
+
+        Host-supplied metadata (branch/index claims) is never trusted by
+        itself - the last check is what proves the output really is the one
+        the wallet would produce. Any missing wallet, missing/invalid
+        derivation, wrong branch, ambiguous spending wallet, or script
+        mismatch fails closed to "not change", so the output stays visible
+        on the confirmation screen instead of silently disappearing.
+
+        Returns a tuple `(derivation, is_change)`:
+        - `derivation` is the `(idx, branch_idx)` pair used for the
+          output's label / gap-limit warning, or `None` if no wallet
+          derivation could be established for this output at all;
+        - `is_change` is the verified change boolean described above.
+        """
+        if wallet is None:
+            return None, False
+        derivation = wallet.get_derivation(
+            out.bip32_derivations, getattr(out, "taproot_bip32_derivations", {})
+        )
+        if derivation is None:
+            return None, False
+        idx, branch_idx = derivation
+        # Preserve the existing conservative rule: automatic change
+        # detection only ever applies when there is exactly one
+        # unambiguous wallet spending in this transaction.
+        if len(wallets) != 1 or wallet not in wallets:
+            return derivation, False
+        # Only the descriptor's dedicated change branch (index 1) may be
+        # treated as change. Branch 0 (receive) and any branch beyond 1
+        # are outgoing/self-payment outputs from a confirmation standpoint.
+        if branch_idx != 1:
+            return derivation, False
+        try:
+            desc, _ = wallet.get_descriptor(idx, branch_idx)
+        except WalletError:
+            return derivation, False
+        return derivation, desc.script_pubkey() == out.script_pubkey
+
     def get_sighash_info(self, sighash):
         if sighash not in SIGHASH_NAMES:
             raise WalletError("Unknown sighash type: %d!" % sighash)
@@ -683,7 +737,9 @@ class WalletManager(BaseApp):
                         break
             if wallet:
                 gaps = [g for g in wallet.gaps] # copy
-                res = wallet.get_derivation(inp.bip32_derivations)
+                res = wallet.get_derivation(
+                    inp.bip32_derivations, getattr(inp, "taproot_bip32_derivations", {})
+                )
                 if res:
                     idx, branch_idx = res
                     gaps[branch_idx] = max(gaps[branch_idx], idx+wallet.GAP_LIMIT+1)
@@ -740,21 +796,22 @@ class WalletManager(BaseApp):
             # Get values and store in metadata and wallets dict
             value = out.value
             fee -= value
+            derivation, is_change = self.get_verified_change_derivation(wallet, wallets, out)
             metaout.update({
-                "change": (wallet is not None and len(wallets) == 1 and wallet in wallets),
+                "change": is_change,
                 "value": value,
                 "address": self.get_address(out),
             })
             if wallet:
                 metaout["label"] = wallet.name
-                res = wallet.get_derivation(out.bip32_derivations)
+                res = derivation
                 if res:
                     idx, branch_idx = res
                     branch_txt = ""
                     if branch_idx == 1:
-                        "change "
+                        branch_txt = "change "
                     elif branch_idx > 1:
-                        "branch %d " % branch_idx
+                        branch_txt = "branch %d " % branch_idx
                     metaout["label"] = "%s %s#%d" % (wallet.name, branch_txt, idx)
                     if wallet in wallets:
                         allowed_idx = wallets[wallet]["gaps"][branch_idx]
