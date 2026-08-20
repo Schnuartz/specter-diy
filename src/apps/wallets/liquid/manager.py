@@ -556,12 +556,18 @@ class LWalletManager(WalletManager):
                 res = derivation
                 if res:
                     idx, branch_idx = res
-                    branch_txt = ""
                     if branch_idx == 1:
-                        branch_txt = "change "
-                    elif branch_idx > 1:
-                        branch_txt = "branch %d " % branch_idx
-                    metaout["label"] = "%s %s#%d" % (wallet.name, branch_txt, idx)
+                        # Verified change is hidden from the primary
+                        # confirmation screen (see TransactionScreen), so
+                        # this label is only ever seen on the details page.
+                        metaout["label"] = "%s change #%d" % (wallet.name, idx)
+                    else:
+                        # Not change - e.g. a receive-branch self-payment.
+                        # It still needs full confirmation, so mark it
+                        # clearly as belonging to this wallet without
+                        # implying it's automatic change.
+                        branch_txt = "" if branch_idx == 0 else "branch %d " % branch_idx
+                        metaout["label"] = "This wallet (%s) %s#%d" % (wallet.name, branch_txt, idx)
                     if wallet in wallets:
                         allowed_idx = wallets[wallet]["gaps"][branch_idx]
                     else:
