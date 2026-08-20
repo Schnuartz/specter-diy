@@ -2,7 +2,6 @@ from .core import KeyStoreError, PinError
 from .ram import RAMKeyStore
 from .javacard.applets.memorycard import MemoryCardApplet, SecureError
 from .javacard.util import get_connection
-from platform import CriticalErrorWipeImmediately
 import platform
 from embit import bip39
 from helpers import tagged_hash, aead_encrypt, aead_decrypt
@@ -12,6 +11,22 @@ import asyncio
 from io import BytesIO
 from binascii import hexlify
 import lvgl as lv
+
+
+SMARTCARD_BLOCKED_MESSAGE = (
+    "No more PIN attempts!\n"
+    "\n"
+    "Inserted Specter-Javacard is locked.\n"
+    "\n"
+    "Press the button, remove the card, and reinstall the Specter-Javacard applet using the "
+    "SeedSigner smartcard-compatible fork or a PC with a USB smartcard reader.\n"
+    "After removal, Specter-DIY will continue with internal storage."
+)
+
+
+class SmartcardLockedError(PinError):
+    NAME = "Smartcard locked"
+    requires_card_removal = True
 
 
 class MemoryCard(RAMKeyStore):
@@ -45,6 +60,10 @@ In this mode device can only operate when the smartcard is inserted!"""
         self.applet = MemoryCardApplet(self.connection)
         self._is_key_saved = False
         self.connected = False
+
+
+    def _raise_blocked_card(self):
+        raise SmartcardLockedError(SMARTCARD_BLOCKED_MESSAGE)
 
 
     @classmethod
@@ -112,7 +131,7 @@ In this mode device can only operate when the smartcard is inserted!"""
     def _unlock(self, pin):
         """
         Unlock the keystore, raises PinError if PIN is invalid.
-        Raises CriticalErrorWipeImmediately if no attempts left.
+        Raises PinError if the card was permanently locked.
         """
         try:
             self.applet.unlock(pin)
@@ -123,8 +142,7 @@ In this mode device can only operate when the smartcard is inserted!"""
                     % (self.pin_attempts_left, self.pin_attempts_max)
                 )
             elif str(e) == "0503":  # bricked
-                # wipe is happening automatically on this exception
-                raise CriticalErrorWipeImmediately("No more PIN attempts!\nWipe!")
+                self._raise_blocked_card()
             else:
                 raise e
         self.check_saved()
@@ -327,6 +345,8 @@ In this mode device can only operate when the smartcard is inserted!"""
             self.applet.open_secure_channel()
             self.connected = True
         self.applet.get_pin_status()
+        if self.is_locked and self.pin_attempts_left == 0:
+            self._raise_blocked_card()
         if check_pin and self.is_locked:
             pin = await self.get_pin()
             self._unlock(pin)
@@ -337,6 +357,15 @@ In this mode device can only operate when the smartcard is inserted!"""
             scr.tick(5)
         if scr.waiting:
             scr.waiting = False
+
+    async def wait_for_card_removal(self):
+        while self.connection.isCardInserted():
+            await asyncio.sleep_ms(100)
+        try:
+            self.connection.disconnect()
+        except Exception:
+            pass
+        self.connected = False
 
     async def init(self, show_fn, show_loader):
         """
@@ -351,6 +380,12 @@ In this mode device can only operate when the smartcard is inserted!"""
         await self.check_card()
         # the rest can be done with parent
         await super().init(show_fn, show_loader)
+
+    async def unlock(self):
+        self.applet.get_pin_status()
+        if self.is_locked and self.pin_attempts_left == 0:
+            self._raise_blocked_card()
+        await super().unlock()
 
     @property
     def hexid(self):
