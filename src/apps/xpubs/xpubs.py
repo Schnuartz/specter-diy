@@ -282,18 +282,21 @@ class XpubApp(BaseApp):
                 raise AppError('Invalid path: "%s"' % path.decode())
             # normalize to the canonical string representation
             derivation = bip32.path_to_str(path)
+            # derive the xpub so we can show the user exactly what would be shared
+            xpub = self.keystore.get_xpub(derivation)
+            xpub_str = xpub.to_base58(NETWORKS[self.network]["xpub"])
             confirm = await show_screen(
                 Prompt(
                     "Share XPUB?",
-                    "A connected host wants the\nextended public key for:\n\n%s" % derivation,
+                    "A connected host wants the\nextended public key for:\n\n%s\n\n%s" % (
+                        derivation, xpub_str,
+                    ),
                 )
             )
             if not confirm:
                 return False
-            # get xpub
-            xpub = self.keystore.get_xpub(derivation)
             # send back as base58
-            return BytesIO(xpub.to_base58(NETWORKS[self.network]["xpub"]).encode()), {}
+            return BytesIO(xpub_str.encode()), {}
         raise AppError("Unknown command")
 
     async def show_xpub(self, derivation, show_screen):

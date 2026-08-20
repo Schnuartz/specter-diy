@@ -100,6 +100,17 @@ class XpubsHostCommandTest(TestCase):
         self.assertIn("m/48h/0h/7h/2h", message)
         self.assertNotIn("m/84h/0h/0h", message)
 
+    def test_confirmation_shows_actual_xpub_value(self):
+        show_screen, seen = self._show_screen(False)
+        stream = BytesIO(b"xpub m/84h/0h/0h")
+        self._run(self.app.process_host_command(stream, show_screen))
+        shown = seen[0]
+        message = shown.args[1] if len(shown.args) > 1 else shown.kwargs.get("message")
+        expected = self.keystore.get_xpub("m/84h/0h/0h").to_base58(
+            NETWORKS["test"]["xpub"]
+        )
+        self.assertIn(expected, message)
+
     def test_fingerprint_approved_matches_direct_value(self):
         show_screen, seen = self._show_screen(True)
         stream = BytesIO(b"fingerprint")
