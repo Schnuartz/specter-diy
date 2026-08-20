@@ -64,6 +64,16 @@ def setup_native_stubs():
         pyb.UART = lambda *args, **kwargs: None
         pyb.USB_VCP = lambda *args, **kwargs: None
 
+        class _DummyPinNamespace:
+            """Stands in for pyb.Pin.cpu.<NAME> (e.g. Pin.cpu.A2)"""
+            def __getattr__(self, name):
+                return name
+
+        class _DummyPin:
+            cpu = _DummyPinNamespace()
+
+        pyb.Pin = _DummyPin
+
     lvgl = _ensure_module("lvgl")
     if not hasattr(lvgl, "SYMBOL"):
         class _Symbol:
