@@ -292,7 +292,7 @@ class XpubApp(BaseApp):
                     "A connected host wants the\nextended public key for:\n\n%s\n\n%s" % (
                         derivation, xpub_str,
                     ),
-                    note="Device fingerprint %s (for reference, not shared)" % fingerprint,
+                    note="Device fingerprint %s" % fingerprint,
                 )
             )
             if not confirm:
