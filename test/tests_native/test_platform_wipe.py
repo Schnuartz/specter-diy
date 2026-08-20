@@ -18,15 +18,22 @@ class FakeFlash:
     blocks were (or were not) overwritten, without touching real hardware.
     """
 
-    def __init__(self, block_size=512, fail_at_blocks=None, raise_at_blocks=None):
+    def __init__(self, block_size=512, fail_at_blocks=None, raise_at_blocks=None,
+                 fail_sync=False):
         self.block_size = block_size
         self.calls = []  # list of (block_num, num_blocks)
         self.fail_at_blocks = set(fail_at_blocks or [])
         self.raise_at_blocks = set(raise_at_blocks or [])
+        self.fail_sync = fail_sync
+        self.ioctl_calls = []
 
     def ioctl(self, cmd, arg):
+        self.ioctl_calls.append(cmd)
         if cmd == 5:  # MP_BLOCKDEV_IOCTL_BLOCK_SIZE
             return self.block_size
+        if cmd == 3:  # MP_BLOCKDEV_IOCTL_SYNC
+            if self.fail_sync:
+                raise OSError("simulated sync failure")
         return None
 
     def writeblocks(self, block_num, buf):
@@ -234,6 +241,9 @@ class WipeHardwareTest(TestCase):
         # never touch the fake MBR or the reserved/bootloader blocks
         for start, n in fake.calls:
             self.assertGreaterEqual(start, 256)
+        # the write-behind cache must be forced out to physical flash
+        # before reboot, or the last dirty sector could be lost on reset
+        self.assertIn(platform.MP_BLOCKDEV_IOCTL_SYNC, fake.ioctl_calls)
 
     def test_failed_wipe_raises_and_does_not_reboot(self):
         fake = FakeFlash(fail_at_blocks={platform.QSPI_START_BLOCK})
@@ -244,3 +254,75 @@ class WipeHardwareTest(TestCase):
 
         # a partial wipe must never look like a successful one
         self.assertFalse(self.rebooted)
+
+    def test_flash_unmount_failure_still_overwrites_and_raises(self):
+        def failing_umount(path):
+            if path == "/flash":
+                raise OSError("simulated unmount failure")
+            self.umounted.append(path)
+
+        platform.os.umount = failing_umount
+        fake = FakeFlash()
+        pyb.Flash = lambda: fake
+
+        with self.assertRaises(Exception):
+            platform.wipe()
+
+        # a failed /flash unmount must not be silently treated as success
+        self.assertFalse(self.rebooted)
+        # but the raw overwrite must still have been attempted for both
+        # regions, to destroy as much data as safely possible
+        expected = set(range(platform.INTERNAL_FLASH_START_BLOCK, platform.INTERNAL_FLASH_END_BLOCK))
+        expected |= set(range(platform.QSPI_START_BLOCK, platform.QSPI_END_BLOCK))
+        self.assertEqual(fake.written_blocks(), expected)
+        # /qspi unmount is independent and should still have happened
+        self.assertEqual(self.umounted, ["/qspi"])
+
+    def test_qspi_unmount_failure_still_overwrites_and_raises(self):
+        def failing_umount(path):
+            if path == "/qspi":
+                raise OSError("simulated unmount failure")
+            self.umounted.append(path)
+
+        platform.os.umount = failing_umount
+        fake = FakeFlash()
+        pyb.Flash = lambda: fake
+
+        with self.assertRaises(Exception):
+            platform.wipe()
+
+        self.assertFalse(self.rebooted)
+        expected = set(range(platform.INTERNAL_FLASH_START_BLOCK, platform.INTERNAL_FLASH_END_BLOCK))
+        expected |= set(range(platform.QSPI_START_BLOCK, platform.QSPI_END_BLOCK))
+        self.assertEqual(fake.written_blocks(), expected)
+        # /flash unmount is independent and should still have happened
+        self.assertEqual(self.umounted, ["/flash"])
+
+    def test_both_unmounts_failing_still_overwrites_and_raises(self):
+        def failing_umount(path):
+            raise OSError("simulated unmount failure")
+
+        platform.os.umount = failing_umount
+        fake = FakeFlash()
+        pyb.Flash = lambda: fake
+
+        with self.assertRaises(Exception):
+            platform.wipe()
+
+        self.assertFalse(self.rebooted)
+        expected = set(range(platform.INTERNAL_FLASH_START_BLOCK, platform.INTERNAL_FLASH_END_BLOCK))
+        expected |= set(range(platform.QSPI_START_BLOCK, platform.QSPI_END_BLOCK))
+        self.assertEqual(fake.written_blocks(), expected)
+
+    def test_sync_failure_raises_and_does_not_reboot(self):
+        fake = FakeFlash(fail_sync=True)
+        pyb.Flash = lambda: fake
+
+        with self.assertRaises(Exception):
+            platform.wipe()
+
+        self.assertFalse(self.rebooted)
+        # the overwrite itself must still have completed fully
+        expected = set(range(platform.INTERNAL_FLASH_START_BLOCK, platform.INTERNAL_FLASH_END_BLOCK))
+        expected |= set(range(platform.QSPI_START_BLOCK, platform.QSPI_END_BLOCK))
+        self.assertEqual(fake.written_blocks(), expected)

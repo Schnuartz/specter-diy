@@ -413,6 +413,19 @@ QSPI_END_BLOCK = QSPI_START_BLOCK + 32768                       # + QSPI flash b
 # to 16MiB for QSPI) at once.
 WIPE_CHUNK_BLOCKS = 16
 
+# extmod/vfs.h: MP_BLOCKDEV_IOCTL_SYNC. Both the internal-flash driver
+# (flashbdev.c) and the QSPI driver (drivers/memory/spiflash.c, built with
+# USE_WR_DELAY) keep a *write-behind* RAM cache: writeblocks() only
+# guarantees the data reaches that RAM cache, not the physical chip. The
+# cache is flushed to physical storage on a sector-boundary crossing, on
+# this ioctl, or - eventually - by a periodic background IRQ. Nothing
+# forces the very last sector each overwrite loop below touches to be
+# flushed before reboot() other than calling this ioctl explicitly, so
+# wipe() must do that itself: a hard reset with a still-dirty cache would
+# lose our random overwrite of that sector from RAM and leave the
+# original, pre-wipe bytes physically in place on the chip.
+MP_BLOCKDEV_IOCTL_SYNC = 3
+
 
 def _secure_overwrite_blocks(f, start_block, end_block, block_size,
                               chunk_blocks=WIPE_CHUNK_BLOCKS):
@@ -465,14 +478,25 @@ def wipe():
         pass
     # on real hardware overwrite flash with random data
     if not simulator:
+        # /flash and /qspi are unmounted independently, and a failure on
+        # either is tracked rather than swallowed: a clean unmount is what
+        # flushes any write-behind cache left over from delete_recursively()
+        # above (see flashbdev.c/spiflash.c), and losing that guarantee is
+        # itself a reason not to trust the wipe. It does not, however, stop
+        # us from attempting the raw overwrite below - that's still the
+        # best available defense even if the unmount failed.
+        flash_unmount_ok = True
         try:
             os.umount("/flash")
-        except:
-            pass
+        except Exception:
+            flash_unmount_ok = False
+
+        qspi_unmount_ok = True
         try:
             os.umount("/qspi")
-        except:
-            pass
+        except Exception:
+            qspi_unmount_ok = False
+
         f = pyb.Flash()
         block_size = f.ioctl(5, None)
 
@@ -483,7 +507,15 @@ def wipe():
             f, QSPI_START_BLOCK, QSPI_END_BLOCK, block_size
         )
 
-        if not (internal_ok and qspi_ok):
+        # Force the write-behind cache out to physical flash now - see
+        # MP_BLOCKDEV_IOCTL_SYNC above for why this can't be skipped.
+        sync_ok = True
+        try:
+            f.ioctl(MP_BLOCKDEV_IOCTL_SYNC, None)
+        except Exception:
+            sync_ok = False
+
+        if not (flash_unmount_ok and qspi_unmount_ok and internal_ok and qspi_ok and sync_ok):
             # Whatever could be destroyed already has been (see
             # _secure_overwrite_blocks), but a partial wipe must never be
             # allowed to look like a successful one. Raise instead of
