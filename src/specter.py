@@ -635,17 +635,22 @@ class Specter:
         warning so the user knows not to trust the device, then forces
         the same reboot so the device does not keep running in an
         undefined state (some blocks overwritten, filesystems possibly
-        gone, but still executing).
+        gone, but still executing). The reboot is in a `finally` so it
+        still happens even if showing that warning itself raises -
+        recovering from a partial hardware wipe must not depend on the
+        GUI working.
         """
         try:
             self.wipe()
         except Exception as wipe_exc:
-            await self.gui.error(
-                "Wipe failed to complete!\n\n%s\n\n"
-                "Do not consider this device safe. The device will now restart."
-                % wipe_exc
-            )
-            reboot()
+            try:
+                await self.gui.error(
+                    "Wipe failed to complete!\n\n%s\n\n"
+                    "Do not consider this device safe. The device will now restart."
+                    % wipe_exc
+                )
+            finally:
+                reboot()
 
     async def lock(self):
         # lock the keystore

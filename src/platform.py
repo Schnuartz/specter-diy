@@ -430,17 +430,44 @@ MP_BLOCKDEV_IOCTL_SYNC = 3
 # overwrite of that sector from RAM and leave the original, pre-wipe
 # bytes physically in place on the chip.
 #
-# Known limitation: on the QSPI path, a genuine erase/program failure
-# during that flush (in mp_spiflash_cache_flush_internal(), spiflash.c)
-# is not propagated up through mp_spiflash_cache_flush() -> the SYNC
-# ioctl -> here - the C driver clears its dirty flag and returns before
-# checking the erase/write result. The same applies to a sector-boundary
-# flush triggered mid-loop by a writeblocks() call. So a hardware write
-# failure at that level can go undetected by wipe() even though the
-# higher-level checks below (writeblocks()'s own return code, and the
-# geometry check below) still catch what they can. Fixing that requires
-# propagating real error codes through the pinned MicroPython fork's
-# QSPI driver - out of scope here.
+# Known limitation: the pinned MicroPython storage drivers do not
+# reliably propagate every underlying physical erase/program failure up
+# to this Python-level API - and this affects both flash regions, not
+# just QSPI:
+#   - QSPI (drivers/memory/spiflash.c): a genuine erase/program failure
+#     during a cache flush (mp_spiflash_cache_flush_internal()) is not
+#     propagated through mp_spiflash_cache_flush() -> the SYNC ioctl, nor
+#     through a sector-boundary flush triggered mid-loop by a
+#     writeblocks() call - the C driver clears its dirty flag and
+#     returns before checking the erase/write result.
+#   - Internal flash (ports/stm32/flash.c): flash_erase() and
+#     flash_write() are themselves declared void - a HAL_FLASHEx_Erase()
+#     or HAL_FLASH_Program() failure inside them is checked but has
+#     nowhere to go, and flash_bdev's cache (flashbdev.c) is marked clean
+#     again regardless.
+# So a hardware write failure at that level can go undetected here, even
+# though every check wipe() below actually has access to (writeblocks()'s
+# own return code, the SYNC ioctl's return code, and the geometry check
+# below) is applied. This means "not (internal_ok and qspi_ok and ...)"
+# below is not a complete guarantee that every possible physical write
+# failure was caught - only that every failure the pinned MicroPython
+# fork's block-device API actually surfaces was caught. Fixing the gap
+# itself requires propagating real error codes through both of those
+# drivers - out of scope here.
+
+
+def _sync_flash(f):
+    """
+    Forces the write-behind cache (see MP_BLOCKDEV_IOCTL_SYNC above) out
+    to physical flash, checking both an exception and a nonzero/failure
+    return code - not just whether the call raised. See the "Known
+    limitation" note above for what this can and can't actually catch.
+    """
+    try:
+        ret = f.ioctl(MP_BLOCKDEV_IOCTL_SYNC, None)
+    except Exception:
+        return False
+    return ret in (0, None)
 
 
 def _secure_overwrite_blocks(f, start_block, end_block, block_size,
@@ -547,19 +574,21 @@ def wipe():
         internal_ok = _secure_overwrite_blocks(
             f, INTERNAL_FLASH_START_BLOCK, INTERNAL_FLASH_END_BLOCK, block_size
         )
+        # Flush now, before starting the much longer QSPI loop: if power
+        # is lost partway through overwriting 16 MiB of QSPI, the internal
+        # flash's last touched sector should already be durably written
+        # rather than still waiting in the write-behind cache.
+        internal_sync_ok = _sync_flash(f)
+
         qspi_ok = _secure_overwrite_blocks(
             f, QSPI_START_BLOCK, QSPI_END_BLOCK, block_size
         )
+        # Final flush - see MP_BLOCKDEV_IOCTL_SYNC above for why this
+        # can't be skipped.
+        qspi_sync_ok = _sync_flash(f)
 
-        # Force the write-behind cache out to physical flash now - see
-        # MP_BLOCKDEV_IOCTL_SYNC above for why this can't be skipped.
-        sync_ok = True
-        try:
-            f.ioctl(MP_BLOCKDEV_IOCTL_SYNC, None)
-        except Exception:
-            sync_ok = False
-
-        if not (flash_unmount_ok and qspi_unmount_ok and internal_ok and qspi_ok and sync_ok):
+        if not (flash_unmount_ok and qspi_unmount_ok and internal_ok and qspi_ok
+                and internal_sync_ok and qspi_sync_ok):
             # Whatever could be destroyed already has been (see
             # _secure_overwrite_blocks), but a partial wipe must never be
             # allowed to look like a successful one. Raise instead of
