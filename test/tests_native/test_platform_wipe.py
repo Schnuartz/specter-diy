@@ -22,13 +22,14 @@ class FakeFlash:
     """
 
     def __init__(self, block_size=512, block_count=None, fail_at_blocks=None,
-                 raise_at_blocks=None, fail_sync=False):
+                 raise_at_blocks=None, fail_sync=False, sync_error_code=None):
         self.block_size = block_size
         self.block_count = block_count if block_count is not None else platform.QSPI_END_BLOCK
         self.calls = []  # list of (block_num, num_blocks)
         self.fail_at_blocks = set(fail_at_blocks or [])
         self.raise_at_blocks = set(raise_at_blocks or [])
         self.fail_sync = fail_sync
+        self.sync_error_code = sync_error_code
         self.ioctl_calls = []
         self.events = []  # shared write/sync (and, externally, reboot) order log
 
@@ -42,6 +43,9 @@ class FakeFlash:
             self.events.append(("sync",))
             if self.fail_sync:
                 raise OSError("simulated sync failure")
+            if self.sync_error_code is not None:
+                return self.sync_error_code
+            return 0
         return None
 
     def writeblocks(self, block_num, buf):
@@ -276,8 +280,9 @@ class WipeHardwareTest(TestCase):
         for start, n in fake.calls:
             self.assertGreaterEqual(start, 256)
         # the write-behind cache must be forced out to physical flash
-        # before reboot, or the last dirty sector could be lost on reset
-        self.assertIn(platform.MP_BLOCKDEV_IOCTL_SYNC, fake.ioctl_calls)
+        # before reboot, or the last dirty sector could be lost on reset -
+        # once after the internal-flash loop, once after the QSPI loop
+        self.assertEqual(fake.ioctl_calls.count(platform.MP_BLOCKDEV_IOCTL_SYNC), 2)
 
     def test_failed_wipe_raises_and_does_not_reboot(self):
         fake = FakeFlash(fail_at_blocks={platform.QSPI_START_BLOCK})
@@ -352,7 +357,7 @@ class WipeHardwareTest(TestCase):
         expected |= set(range(platform.QSPI_START_BLOCK, platform.QSPI_END_BLOCK))
         self.assertEqual(fake.written_blocks(), expected)
 
-    def test_sync_failure_raises_and_does_not_reboot(self):
+    def test_sync_exception_raises_and_does_not_reboot(self):
         fake = FakeFlash(fail_sync=True)
         self.fake = fake
         pyb.Flash = lambda: fake
@@ -362,6 +367,22 @@ class WipeHardwareTest(TestCase):
 
         self.assertFalse(self.rebooted)
         # the overwrite itself must still have completed fully
+        expected = set(range(platform.INTERNAL_FLASH_START_BLOCK, platform.INTERNAL_FLASH_END_BLOCK))
+        expected |= set(range(platform.QSPI_START_BLOCK, platform.QSPI_END_BLOCK))
+        self.assertEqual(fake.written_blocks(), expected)
+
+    def test_sync_error_return_code_raises_and_does_not_reboot(self):
+        # A failed sync doesn't have to raise - the pinned driver can also
+        # just hand back a nonzero/negative-errno return code. That must
+        # be treated as a failure too, not just an exception.
+        fake = FakeFlash(sync_error_code=-5)
+        self.fake = fake
+        pyb.Flash = lambda: fake
+
+        with self.assertRaises(Exception):
+            platform.wipe()
+
+        self.assertFalse(self.rebooted)
         expected = set(range(platform.INTERNAL_FLASH_START_BLOCK, platform.INTERNAL_FLASH_END_BLOCK))
         expected |= set(range(platform.QSPI_START_BLOCK, platform.QSPI_END_BLOCK))
         self.assertEqual(fake.written_blocks(), expected)
@@ -413,9 +434,12 @@ class WipeHardwareTest(TestCase):
 
     def test_write_then_sync_then_reboot_ordering(self):
         # Not just "sync was called somewhere" (that's covered above) but
-        # that it happens strictly after the last write and strictly
-        # before reboot - the actual ordering the write-behind cache
-        # depends on.
+        # that the *last* sync happens strictly after the *last* write and
+        # strictly before reboot - the actual ordering the write-behind
+        # cache depends on. There are two syncs (internal flash, then
+        # QSPI): the first one sits between the two write loops, so only
+        # the final sync is required to be the very last thing before
+        # reboot.
         fake = FakeFlash()
         self.fake = fake
         pyb.Flash = lambda: fake
@@ -423,11 +447,31 @@ class WipeHardwareTest(TestCase):
         platform.wipe()
 
         kinds = [event[0] for event in fake.events]
+        self.assertEqual(kinds.count("sync"), 2)
         self.assertIn("write", kinds)
-        self.assertIn("sync", kinds)
         self.assertIn("reboot", kinds)
         last_write_index = max(i for i, k in enumerate(kinds) if k == "write")
-        sync_index = kinds.index("sync")
+        last_sync_index = max(i for i, k in enumerate(kinds) if k == "sync")
         reboot_index = kinds.index("reboot")
-        self.assertLess(last_write_index, sync_index)
-        self.assertLess(sync_index, reboot_index)
+        self.assertLess(last_write_index, last_sync_index)
+        self.assertLess(last_sync_index, reboot_index)
+
+    def test_internal_flash_synced_before_qspi_overwrite_starts(self):
+        # The intermediate sync (added so a power loss during the long
+        # QSPI loop doesn't strand the internal-flash overwrite in RAM)
+        # must happen strictly between the two write loops, not after
+        # QSPI writes have already started.
+        fake = FakeFlash()
+        self.fake = fake
+        pyb.Flash = lambda: fake
+
+        platform.wipe()
+
+        kinds = [event[0] for event in fake.events]
+        first_sync_index = kinds.index("sync")
+        qspi_write_indices = [
+            i for i, e in enumerate(fake.events)
+            if e[0] == "write" and e[1] >= platform.QSPI_START_BLOCK
+        ]
+        self.assertTrue(qspi_write_indices)
+        self.assertLess(first_sync_index, min(qspi_write_indices))
