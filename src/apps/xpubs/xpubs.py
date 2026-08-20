@@ -258,7 +258,7 @@ class XpubApp(BaseApp):
         if self.keystore.is_locked:
             raise AppError("Device is locked")
         if not self.keystore.is_ready:
-            raise AppError("No key loaded")
+            raise AppError("Seed phrase not loaded. Please load your seed phrase first.")
         # reads prefix from the stream (until first space)
         prefix = self.get_prefix(stream)
         # get device fingerprint, data is ignored
