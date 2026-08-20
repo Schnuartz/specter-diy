@@ -14,24 +14,32 @@ from tests.util import clear_testdir
 
 class FakeFlash:
     """
-    Records every writeblocks() call so tests can check exactly which
-    blocks were (or were not) overwritten, without touching real hardware.
+    Records every writeblocks()/ioctl() call - including their relative
+    order in a shared `events` log - so tests can check exactly which
+    blocks were (or were not) overwritten, what data was written, and
+    that write/sync/reboot happen in the right order, without touching
+    real hardware.
     """
 
-    def __init__(self, block_size=512, fail_at_blocks=None, raise_at_blocks=None,
-                 fail_sync=False):
+    def __init__(self, block_size=512, block_count=None, fail_at_blocks=None,
+                 raise_at_blocks=None, fail_sync=False):
         self.block_size = block_size
+        self.block_count = block_count if block_count is not None else platform.QSPI_END_BLOCK
         self.calls = []  # list of (block_num, num_blocks)
         self.fail_at_blocks = set(fail_at_blocks or [])
         self.raise_at_blocks = set(raise_at_blocks or [])
         self.fail_sync = fail_sync
         self.ioctl_calls = []
+        self.events = []  # shared write/sync (and, externally, reboot) order log
 
     def ioctl(self, cmd, arg):
         self.ioctl_calls.append(cmd)
         if cmd == 5:  # MP_BLOCKDEV_IOCTL_BLOCK_SIZE
             return self.block_size
+        if cmd == 4:  # MP_BLOCKDEV_IOCTL_BLOCK_COUNT
+            return self.block_count
         if cmd == 3:  # MP_BLOCKDEV_IOCTL_SYNC
+            self.events.append(("sync",))
             if self.fail_sync:
                 raise OSError("simulated sync failure")
         return None
@@ -40,6 +48,7 @@ class FakeFlash:
         assert len(buf) % self.block_size == 0
         n = len(buf) // self.block_size
         self.calls.append((block_num, n))
+        self.events.append(("write", block_num, n, bytes(buf)))
         if block_num in self.raise_at_blocks:
             raise OSError("simulated flash failure")
         if block_num in self.fail_at_blocks:
@@ -152,6 +161,27 @@ class SecureOverwriteBlocksTest(TestCase):
         self.assertFalse(ok)
         self.assertEqual(f.written_blocks(), set(range(0, 64)))
 
+    def test_writes_a_fixed_pattern_not_random_data(self):
+        # os.urandom() on this port draws one hardware RNG sample per byte
+        # (~10us each), which would make a 16 MiB QSPI wipe take minutes
+        # just to generate the buffers. A fixed pattern is just as
+        # effective against the "read the chip directly" threat model,
+        # since every touched sector gets erased and reprogrammed either
+        # way, so the loop must not depend on true randomness.
+        f = FakeFlash()
+        platform._secure_overwrite_blocks(f, 0, 64, 512, chunk_blocks=16)
+        for _, _, _, buf in f.events:
+            self.assertEqual(buf, bytes(len(buf)))
+
+    def test_reuses_one_buffer_instead_of_allocating_per_chunk(self):
+        f = FakeFlash()
+        platform._secure_overwrite_blocks(f, 0, 64, 512, chunk_blocks=16)
+        full_chunks = [buf for _, _, n, buf in f.events if n == 16]
+        self.assertGreater(len(full_chunks), 1)
+        # every full-size chunk must be the exact same underlying bytes
+        # object, not a freshly allocated one each iteration
+        self.assertTrue(all(buf is full_chunks[0] for buf in full_chunks))
+
 
 class WipeSimulatorTest(TestCase):
     def setUp(self):
@@ -204,10 +234,13 @@ class WipeHardwareTest(TestCase):
         self._orig_simulator = platform.simulator
         platform.simulator = False
 
+        self.fake = None
         self.rebooted = False
 
         def fake_reboot():
             self.rebooted = True
+            if self.fake is not None:
+                self.fake.events.append(("reboot",))
 
         self._orig_reboot = platform.reboot
         platform.reboot = fake_reboot
@@ -229,6 +262,7 @@ class WipeHardwareTest(TestCase):
 
     def test_successful_wipe_overwrites_both_regions_and_reboots(self):
         fake = FakeFlash()
+        self.fake = fake
         pyb.Flash = lambda: fake
 
         platform.wipe()
@@ -247,6 +281,7 @@ class WipeHardwareTest(TestCase):
 
     def test_failed_wipe_raises_and_does_not_reboot(self):
         fake = FakeFlash(fail_at_blocks={platform.QSPI_START_BLOCK})
+        self.fake = fake
         pyb.Flash = lambda: fake
 
         with self.assertRaises(Exception):
@@ -263,6 +298,7 @@ class WipeHardwareTest(TestCase):
 
         platform.os.umount = failing_umount
         fake = FakeFlash()
+        self.fake = fake
         pyb.Flash = lambda: fake
 
         with self.assertRaises(Exception):
@@ -286,6 +322,7 @@ class WipeHardwareTest(TestCase):
 
         platform.os.umount = failing_umount
         fake = FakeFlash()
+        self.fake = fake
         pyb.Flash = lambda: fake
 
         with self.assertRaises(Exception):
@@ -304,6 +341,7 @@ class WipeHardwareTest(TestCase):
 
         platform.os.umount = failing_umount
         fake = FakeFlash()
+        self.fake = fake
         pyb.Flash = lambda: fake
 
         with self.assertRaises(Exception):
@@ -316,6 +354,7 @@ class WipeHardwareTest(TestCase):
 
     def test_sync_failure_raises_and_does_not_reboot(self):
         fake = FakeFlash(fail_sync=True)
+        self.fake = fake
         pyb.Flash = lambda: fake
 
         with self.assertRaises(Exception):
@@ -326,3 +365,69 @@ class WipeHardwareTest(TestCase):
         expected = set(range(platform.INTERNAL_FLASH_START_BLOCK, platform.INTERNAL_FLASH_END_BLOCK))
         expected |= set(range(platform.QSPI_START_BLOCK, platform.QSPI_END_BLOCK))
         self.assertEqual(fake.written_blocks(), expected)
+
+    def test_wrong_block_size_aborts_before_any_destructive_action(self):
+        platform.maybe_mkdir(platform.fpath("/flash"))
+        with open(platform.fpath("/flash/secret.txt"), "w") as fh:
+            fh.write("still here")
+
+        fake = FakeFlash(block_size=4096)  # hardware map assumes 512
+        self.fake = fake
+        pyb.Flash = lambda: fake
+
+        with self.assertRaises(Exception):
+            platform.wipe()
+
+        self.assertFalse(self.rebooted)
+        # a geometry mismatch must refuse before touching anything - not
+        # a single write, unmount, or delete
+        self.assertEqual(fake.calls, [])
+        self.assertEqual(self.umounted, [])
+        self.assertTrue(platform.file_exists(platform.fpath("/flash/secret.txt")))
+
+    def test_wrong_block_count_aborts_before_any_destructive_action(self):
+        platform.maybe_mkdir(platform.fpath("/qspi"))
+        with open(platform.fpath("/qspi/wallet.json"), "w") as fh:
+            fh.write("{}")
+
+        fake = FakeFlash(block_count=platform.QSPI_END_BLOCK - 1)  # off by one
+        self.fake = fake
+        pyb.Flash = lambda: fake
+
+        with self.assertRaises(Exception):
+            platform.wipe()
+
+        self.assertFalse(self.rebooted)
+        self.assertEqual(fake.calls, [])
+        self.assertEqual(self.umounted, [])
+        self.assertTrue(platform.file_exists(platform.fpath("/qspi/wallet.json")))
+
+    def test_matching_geometry_does_not_block_the_wipe(self):
+        fake = FakeFlash(block_size=512, block_count=platform.QSPI_END_BLOCK)
+        self.fake = fake
+        pyb.Flash = lambda: fake
+
+        platform.wipe()
+
+        self.assertTrue(self.rebooted)
+
+    def test_write_then_sync_then_reboot_ordering(self):
+        # Not just "sync was called somewhere" (that's covered above) but
+        # that it happens strictly after the last write and strictly
+        # before reboot - the actual ordering the write-behind cache
+        # depends on.
+        fake = FakeFlash()
+        self.fake = fake
+        pyb.Flash = lambda: fake
+
+        platform.wipe()
+
+        kinds = [event[0] for event in fake.events]
+        self.assertIn("write", kinds)
+        self.assertIn("sync", kinds)
+        self.assertIn("reboot", kinds)
+        last_write_index = max(i for i, k in enumerate(kinds) if k == "write")
+        sync_index = kinds.index("sync")
+        reboot_index = kinds.index("reboot")
+        self.assertLess(last_write_index, sync_index)
+        self.assertLess(sync_index, reboot_index)
