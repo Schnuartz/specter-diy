@@ -14,7 +14,7 @@ import gc
 from tests.util import get_keystore, get_xpubs_app, clear_testdir
 from embit import bip32
 from embit.liquid.networks import NETWORKS
-from gui.screens import Prompt
+from gui.screens import Prompt, Alert
 
 
 class XpubsHostCommandTest(TestCase):
@@ -71,7 +71,9 @@ class XpubsHostCommandTest(TestCase):
         ):
             with self.assertRaises(Exception):
                 self._run(self.app.process_host_command(stream, show_screen))
-        self.assertEqual(seen, [])
+        # an explanatory Alert is shown on-device before the request is rejected
+        self.assertEqual(len(seen), 1)
+        self.assertIsInstance(seen[0], Alert)
 
     def test_no_key_loaded_rejects_fingerprint_request(self):
         show_screen, seen = self._show_screen(True)
@@ -81,7 +83,8 @@ class XpubsHostCommandTest(TestCase):
         ):
             with self.assertRaises(Exception):
                 self._run(self.app.process_host_command(stream, show_screen))
-        self.assertEqual(seen, [])
+        self.assertEqual(len(seen), 1)
+        self.assertIsInstance(seen[0], Alert)
 
     def test_xpub_approved_matches_direct_derivation(self):
         show_screen, seen = self._show_screen(True)
