@@ -260,6 +260,8 @@ class XpubApp(BaseApp):
         # reads prefix from the stream (until first space)
         prefix = self.get_prefix(stream)
         # get device fingerprint, data is ignored
+        # non-interactive: used for device discovery/identification by
+        # companion software, must not require on-device confirmation
         if prefix == b"fingerprint":
             return BytesIO(hexlify(self.keystore.fingerprint)), {}
         # get xpub,
@@ -271,10 +273,23 @@ class XpubApp(BaseApp):
                 path = bip32.parse_path(path.decode())
             except:
                 raise AppError('Invalid path: "%s"' % path.decode())
-            # get xpub
-            xpub = self.keystore.get_xpub(bip32.path_to_str(path))
+            # normalize to the canonical string representation
+            derivation = bip32.path_to_str(path)
+            # derive the xpub so we can show the user exactly what would be shared
+            xpub = self.keystore.get_xpub(derivation)
+            xpub_str = xpub.to_base58(NETWORKS[self.network]["xpub"])
+            confirm = await show_screen(
+                Prompt(
+                    "Share Xpub?",
+                    "A connected host wants the\nextended public key for:\n\n%s\n\n%s" % (
+                        derivation, xpub_str,
+                    ),
+                )
+            )
+            if not confirm:
+                return False
             # send back as base58
-            return BytesIO(xpub.to_base58(NETWORKS[self.network]["xpub"]).encode()), {}
+            return BytesIO(xpub_str.encode()), {}
         raise AppError("Unknown command")
 
     async def show_xpub(self, derivation, show_screen):
