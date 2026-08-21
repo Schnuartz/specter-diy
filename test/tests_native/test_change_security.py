@@ -16,6 +16,7 @@ from embit.psbt import DerivationPath, PSBT
 from embit.transaction import Transaction, TransactionInput, TransactionOutput
 
 from apps.wallets.wallet import Wallet
+from apps.wallets.manager import UNVERIFIED_CHANGE_WARNING
 from tests.util import clear_testdir, get_keystore, get_wallets_app
 
 
@@ -70,6 +71,17 @@ class ChangeSecurityTest(TestCase):
         out = self.output(1, 3, self.wallet_script(self.wallet, 1, 3))
         status = self.manager.get_output_status(self.wallet, {self.wallet: {}}, out)
         self.assertEqual(status, ((3, 1), True, None))
+
+    def test_internal_change_address_with_unknown_input_is_not_verified_change(self):
+        out = self.output(1, 10, self.wallet_script(self.wallet, 1, 10))
+        derivation, change, warning = self.manager.get_output_status(
+            self.wallet, {self.wallet: {}, None: {}}, out
+        )
+        self.assertEqual(derivation, (10, 1))
+        self.assertFalse(change)
+        self.assertEqual(
+            warning, UNVERIFIED_CHANGE_WARNING % (1, 10)
+        )
 
     def test_receive_branch_is_visible_wallet_output_without_warning(self):
         out = self.output(0, 3, self.wallet_script(self.wallet, 0, 3))
@@ -311,6 +323,28 @@ class ChangeSecurityTest(TestCase):
         self.assertEqual(
             [out["warning"] for out in meta["outputs"]],
             [INVALID_CHANGE_WARNING, INVALID_CHANGE_WARNING],
+        )
+
+    def test_unknown_input_internal_change_warning_survives_preprocess(self):
+        wallet = self.wallet
+        tx = Transaction(
+            vin=[TransactionInput(b"6" * 32, 0)],
+            vout=[
+                TransactionOutput(
+                    95_000, self.wallet_script(wallet, 1, 10)
+                )
+            ],
+        )
+        psbt = PSBT(tx)
+        psbt.inputs[0].witness_utxo = TransactionOutput(
+            120_000, script.p2wpkh(fake_pubkey(91))
+        )
+        psbt.outputs[0].bip32_derivations[fake_pubkey(92)] = self.derivation(1, 10)
+        _, meta = self.manager.preprocess_psbt(BytesIO(psbt.serialize()), BytesIO())
+        output = meta["outputs"][0]
+        self.assertFalse(output["change"])
+        self.assertEqual(
+            output["warning"], UNVERIFIED_CHANGE_WARNING % (1, 10)
         )
 
     def test_liquid_uses_the_same_conservative_change_rules(self):

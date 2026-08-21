@@ -47,6 +47,12 @@ INVALID_CHANGE_METADATA_WARNING = (
     "Invalid change metadata! Host claimed this output as wallet change, "
     "but it does not match your wallet. Verify the destination."
 )
+UNVERIFIED_CHANGE_WARNING = (
+    "This output goes to your wallet's change address (branch %d, #%d), "
+    "but the transaction contains unknown inputs. It is being treated as a "
+    "regular wallet output because it cannot be verified as change. "
+    "Review the destination."
+)
 
 class WalletManager(BaseApp):
     """
@@ -465,6 +471,18 @@ class WalletManager(BaseApp):
                     is_change = desc.script_pubkey() == out.script_pubkey
                 except Exception:
                     is_change = False
+            if (
+                not is_change
+                and None in wallets
+                and wallet.descriptor.num_branches == 2
+                and branch_idx == 1
+            ):
+                try:
+                    desc, _ = wallet.get_descriptor(idx, branch_idx)
+                    if desc.script_pubkey() == out.script_pubkey:
+                        warning = UNVERIFIED_CHANGE_WARNING % (branch_idx, idx)
+                except Exception:
+                    pass
         return derivation if wallet is not None else None, is_change, warning
 
     def get_verified_change_derivation(self, wallet, wallets, out):
