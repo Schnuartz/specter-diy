@@ -556,16 +556,22 @@ class LWalletManager(WalletManager):
                 res = derivation
                 if res:
                     idx, branch_idx = res
-                    if branch_idx == 1:
+                    if is_change:
                         # Verified change is hidden from the primary
                         # confirmation screen (see TransactionScreen), so
                         # this label is only ever seen on the details page.
                         metaout["label"] = "%s change #%d" % (wallet.name, idx)
                     else:
-                        # Not change - e.g. a receive-branch self-payment.
-                        # It still needs full confirmation, so mark it
-                        # clearly as belonging to this wallet without
-                        # implying it's automatic change.
+                        # Not change - e.g. a receive-branch self-payment,
+                        # a branch-1 output of a wallet that isn't the sole
+                        # spending wallet, or a branch-1 output belonging to
+                        # a different wallet than the one spending. Label by
+                        # is_change (what actually gates hiding it), never
+                        # by branch_idx alone, so an output the security
+                        # logic did NOT accept as change can't still be
+                        # captioned "change". It still needs full
+                        # confirmation, so mark it clearly as belonging to
+                        # this wallet instead.
                         branch_txt = "" if branch_idx == 0 else "branch %d " % branch_idx
                         metaout["label"] = "This wallet (%s) %s#%d" % (wallet.name, branch_txt, idx)
                     if wallet in wallets:

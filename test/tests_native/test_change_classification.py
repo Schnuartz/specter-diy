@@ -363,3 +363,108 @@ class ChangeClassificationTest(TestCase):
         # but exclude the verified change output.
         send_amount = sum(out["value"] for out in outputs if not out["change"])
         self.assertEqual(send_amount, 50_000 + 100_000)
+
+    # --- Label must follow is_change, never branch_idx alone ---------------
+    #
+    # preprocess_psbt() used to choose the output label from branch_idx
+    # directly ("... change #idx" whenever branch_idx == 1), instead of
+    # from the is_change verdict that get_verified_change_derivation()
+    # already computed. That means an output correctly NOT treated as
+    # change (still fully shown to the user) could still be captioned
+    # "change" - misleading, since the trusted display would be telling
+    # the user "change" while its own security logic says otherwise. Both
+    # cases below hit a real branch-1 derivation that is_change rejects
+    # for a reason other than "wrong branch".
+
+    def _other_wallet(self, mnemonic, name="WalletB"):
+        # a second, independently keyed wallet - imported like a real
+        # watch-only wallet would be, not a clone of self.wallet's keys.
+        # Returns (wallet, fingerprint): self.derivation() always signs
+        # with self.fingerprint (Wallet A's), so derivations for this
+        # wallet must be built with its own fingerprint instead.
+        other_keystore = get_keystore(mnemonic=mnemonic)
+        der_path = "m/84h/1h/0h"
+        xpub = other_keystore.get_xpub(der_path)
+        desc_str = "wpkh([%s%s]%s/<0;1>/*)" % (
+            other_keystore.fingerprint.hex(),
+            der_path[1:],
+            xpub.to_base58(self.manager.Networks["regtest"]["xpub"]),
+        )
+        wallet = Wallet.from_descriptor(desc_str, None)
+        wallet.name = name
+        self.manager.wallets.append(wallet)
+        return wallet, other_keystore.fingerprint
+
+    def _derivation_for(self, fingerprint, branch_idx, idx, origin="m/84h/1h/0h"):
+        path = bip32.parse_path("%s/%d/%d" % (origin, branch_idx, idx))
+        return DerivationPath(fingerprint, path)
+
+    def test_branch1_output_of_a_different_wallet_is_not_labeled_change(self):
+        # Wallet A spends the only input. The output verifiably belongs to
+        # Wallet B (also imported, but not among this transaction's
+        # spending wallets) on branch 1. get_verified_change_derivation()
+        # correctly returns is_change=False (Wallet B isn't a spending
+        # wallet here), so the output stays fully visible - but its label
+        # must not claim "change" for it.
+        wallet_b, wallet_b_fp = self._other_wallet("zoo " * 11 + "wrong")
+
+        wallet_a = self.wallet
+        prev_script = self.script_for(wallet_a, 0, 0)
+        txin = TransactionInput(b"\x22" * 32, 0)
+        out0 = TransactionOutput(
+            29_000, wallet_b.descriptor.derive(5, branch_index=1).script_pubkey()
+        )
+
+        tx = Transaction(vin=[txin], vout=[out0])
+        p = PSBT(tx)
+        p.inputs[0].witness_utxo = TransactionOutput(30_000, prev_script)
+        p.inputs[0].bip32_derivations[fake_pubkey(61)] = self.derivation(wallet_a, 0, 0)
+        p.outputs[0].bip32_derivations[fake_pubkey(62)] = self._derivation_for(
+            wallet_b_fp, 1, 5
+        )
+
+        raw = p.serialize()
+        wallets, meta = self.manager.preprocess_psbt(BytesIO(raw), BytesIO())
+
+        outputs = meta["outputs"]
+        self.assertEqual(len(outputs), 1)
+        self.assertFalse(outputs[0]["change"])
+        self.assertIn("label", outputs[0])
+        self.assertNotIn("change", outputs[0]["label"])
+
+    def test_branch1_output_with_mixed_spending_wallets_is_not_labeled_change(self):
+        # Inputs come from both Wallet A and Wallet B (ambiguous spending
+        # context), and the output verifiably belongs to Wallet A on
+        # branch 1. get_verified_change_derivation() correctly returns
+        # is_change=False here too (len(wallets) != 1), so again the label
+        # must not say "change".
+        wallet_a = self.wallet
+        wallet_b, wallet_b_fp = self._other_wallet("zoo " * 11 + "wrong")
+
+        txin_a = TransactionInput(b"\x33" * 32, 0)
+        txin_b = TransactionInput(b"\x44" * 32, 0)
+        out0 = TransactionOutput(29_000, self.script_for(wallet_a, 1, 3))
+
+        tx = Transaction(vin=[txin_a, txin_b], vout=[out0])
+        p = PSBT(tx)
+        p.inputs[0].witness_utxo = TransactionOutput(
+            20_000, self.script_for(wallet_a, 0, 0)
+        )
+        p.inputs[0].bip32_derivations[fake_pubkey(71)] = self.derivation(wallet_a, 0, 0)
+        p.inputs[1].witness_utxo = TransactionOutput(
+            15_000, wallet_b.descriptor.derive(0, branch_index=0).script_pubkey()
+        )
+        p.inputs[1].bip32_derivations[fake_pubkey(72)] = self._derivation_for(
+            wallet_b_fp, 0, 0
+        )
+        p.outputs[0].bip32_derivations[fake_pubkey(73)] = self.derivation(wallet_a, 1, 3)
+
+        raw = p.serialize()
+        wallets, meta = self.manager.preprocess_psbt(BytesIO(raw), BytesIO())
+
+        self.assertEqual(len(wallets), 2)
+        outputs = meta["outputs"]
+        self.assertEqual(len(outputs), 1)
+        self.assertFalse(outputs[0]["change"])
+        self.assertIn("label", outputs[0])
+        self.assertNotIn("change", outputs[0]["label"])
