@@ -304,10 +304,34 @@ The following rules apply to transactions that the wallet will sign:
   wallet by adding the wallet descriptor (over QR, USB or SD card). The
   device only signs for wallets it knows.
 
-Change is verified for you automatically: the device identifies change
-outputs against the imported wallet descriptor and labels them with the
-wallet name. What the device cannot check is the *recipient* — so always
-verify the receive address and the transaction details (amounts, fees)
+Change is verified for you automatically only when there is one unambiguous
+spending wallet, its descriptor has exactly two branches, the output
+derivation resolves to branch-list position 1, and the device re-derives the
+exact output script from that branch and index. Every other output remains
+visible, including receive-branch self-payments and outputs from unusual
+descriptors. The branch position is not the raw child-number value in the
+descriptor.
+
+The Bitcoin transaction does not contain an `is_change` flag. A PSBT may carry
+host-supplied BIP32 or Taproot derivation metadata, but that metadata is
+untrusted and is checked against the locally stored descriptor and the actual
+output script. If a branch-1 wallet claim does not match, the output remains
+visible and the device displays: `Invalid change metadata! Host claimed this
+output as wallet change, but it does not match your wallet. Verify the
+destination.` This reports inconsistent host metadata; it does not claim that
+Bitcoin marked the output as change.
+
+The forged branch-1/script-mismatch demonstration sometimes called scenario
+#5 was already kept visible by the previous firmware: `Descriptor.owns()`
+rejected the output before it could be treated as wallet-owned. The newer
+logic additionally surfaces the rejected, inconsistent claim instead of
+making it look like an ordinary external output. The material regression
+addressed by branch-aware classification was a genuine wallet-owned receive
+branch output being treated as change merely because it belonged to the sole
+spending wallet.
+
+What the device cannot check is the *recipient* of an unverified output — so
+always verify the receive address and the transaction details (amounts, fees)
 on the device screen. The screen is the trusted output channel, the host
 computer is not.
 

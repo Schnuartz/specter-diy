@@ -43,6 +43,11 @@ SIGHASH_NAMES = {
 for sh in list(SIGHASH_NAMES):
     SIGHASH_NAMES[sh | SIGHASH.ANYONECANPAY] = SIGHASH_NAMES[sh] + " | ANYONECANPAY"
 
+INVALID_CHANGE_METADATA_WARNING = (
+    "Invalid change metadata! Host claimed this output as wallet change, "
+    "but it does not match your wallet. Verify the destination."
+)
+
 class WalletManager(BaseApp):
     """
     WalletManager class manages your wallets.
@@ -385,63 +390,87 @@ class WalletManager(BaseApp):
         proceed = await show_screen(scr)
         return proceed
 
-    def get_verified_change_derivation(self, wallet, wallets, out):
+    def add_output_warning(self, metaout, warning):
+        """Append an output warning without discarding an earlier warning."""
+        if not warning:
+            return
+        warnings = metaout.setdefault("warnings", [])
+        if warning not in warnings:
+            warnings.append(warning)
+        metaout["warning"] = "\n".join(warnings)
+
+    def get_wallet_derivation_claims(self, wallet, out):
+        """Return all descriptor-valid derivation claims made for an output."""
+        claims = []
+        for derivation in getattr(out, "bip32_derivations", {}).values():
+            try:
+                claim = wallet.descriptor.check_derivation(derivation)
+            except Exception:
+                claim = None
+            if claim is not None and claim not in claims:
+                claims.append(claim)
+        for leafs, derivation in getattr(out, "taproot_bip32_derivations", {}).values():
+            try:
+                claim = wallet.descriptor.check_derivation(derivation)
+            except Exception:
+                claim = None
+            if claim is not None and claim not in claims:
+                claims.append(claim)
+        return claims
+
+    def get_output_status(self, wallet, wallets, out):
+        """Return ``(derivation, is_change, warning)`` for one output.
+
+        A failed ownership check must not erase a descriptor-valid claim from
+        the sole known spending wallet. Claims from unrelated imported wallets
+        and ambiguous transactions are deliberately ignored.
         """
-        Determines the wallet-relative derivation of an output and whether
-        it is *verified* change.
-
-        Security invariant: an output is change only if all of the following
-        are true:
-        - `wallet` is the single, unambiguous wallet that owns every input
-          being spent (an unknown or ambiguous spending context can never
-          produce automatic change; a watch-only wallet is not excluded
-          here since the script re-derivation below verifies it the same
-          way regardless of whether the device holds its private key -
-          watch-only status is separately surfaced via the "Watch-only
-          wallet!" warning on the output, which stays visible either way);
-        - the host-supplied BIP32 (or Taproot BIP32) derivation metadata for
-          the output resolves, via the wallet's descriptor, to branch index
-          1 - the descriptor's canonical change branch;
-        - re-deriving the descriptor's script_pubkey for that exact
-          branch/index on the device reproduces the actual output
-          script_pubkey.
-
-        Host-supplied metadata (branch/index claims) is never trusted by
-        itself - the last check is what proves the output really is the one
-        the wallet would produce. Any missing wallet, missing/invalid
-        derivation, wrong branch, ambiguous spending wallet, or script
-        mismatch fails closed to "not change", so the output stays visible
-        on the confirmation screen instead of silently disappearing.
-
-        Returns a tuple `(derivation, is_change)`:
-        - `derivation` is the `(idx, branch_idx)` pair used for the
-          output's label / gap-limit warning, or `None` if no wallet
-          derivation could be established for this output at all;
-        - `is_change` is the verified change boolean described above.
-        """
+        derivation = None
+        if wallet is not None:
+            derivation = wallet.get_derivation(
+                out.bip32_derivations,
+                getattr(out, "taproot_bip32_derivations", {}),
+            )
+        warning = None
         if wallet is None:
-            return None, False
-        derivation = wallet.get_derivation(
-            out.bip32_derivations, getattr(out, "taproot_bip32_derivations", {})
-        )
-        if derivation is None:
-            return None, False
-        idx, branch_idx = derivation
-        # Preserve the existing conservative rule: automatic change
-        # detection only ever applies when there is exactly one
-        # unambiguous wallet spending in this transaction.
-        if len(wallets) != 1 or wallet not in wallets:
-            return derivation, False
-        # Only the descriptor's dedicated change branch (index 1) may be
-        # treated as change. Branch 0 (receive) and any branch beyond 1
-        # are outgoing/self-payment outputs from a confirmation standpoint.
-        if branch_idx != 1:
-            return derivation, False
-        try:
-            desc, _ = wallet.get_descriptor(idx, branch_idx)
-        except WalletError:
-            return derivation, False
-        return derivation, desc.script_pubkey() == out.script_pubkey
+            spending_wallets = [w for w in wallets if w is not None]
+            if len(spending_wallets) == 1:
+                candidate = spending_wallets[0]
+                branch1_claims = [
+                    claim for claim in self.get_wallet_derivation_claims(candidate, out)
+                    if claim[1] == 1
+                ]
+                for idx, branch_idx in branch1_claims:
+                    try:
+                        desc, _ = candidate.get_descriptor(idx, branch_idx)
+                    except Exception:
+                        continue
+                    if out.script_pubkey is not None and desc.script_pubkey() == out.script_pubkey:
+                        break
+                else:
+                    if branch1_claims:
+                        warning = INVALID_CHANGE_METADATA_WARNING
+
+        is_change = False
+        if wallet is not None and derivation is not None:
+            idx, branch_idx = derivation
+            if (
+                len(wallets) == 1
+                and wallet in wallets
+                and wallet.descriptor.num_branches == 2
+                and branch_idx == 1
+            ):
+                try:
+                    desc, _ = wallet.get_descriptor(idx, branch_idx)
+                    is_change = desc.script_pubkey() == out.script_pubkey
+                except Exception:
+                    is_change = False
+        return derivation if wallet is not None else None, is_change, warning
+
+    def get_verified_change_derivation(self, wallet, wallets, out):
+        """Return the trusted output derivation and verified-change result."""
+        derivation, is_change, _ = self.get_output_status(wallet, wallets, out)
+        return derivation, is_change
 
     def get_sighash_info(self, sighash):
         if sighash not in SIGHASH_NAMES:
@@ -800,12 +829,14 @@ class WalletManager(BaseApp):
             # Get values and store in metadata and wallets dict
             value = out.value
             fee -= value
-            derivation, is_change = self.get_verified_change_derivation(wallet, wallets, out)
+            derivation, is_change, warning = self.get_output_status(wallet, wallets, out)
             metaout.update({
                 "change": is_change,
                 "value": value,
                 "address": self.get_address(out),
             })
+            if warning:
+                self.add_output_warning(metaout, warning)
             if wallet:
                 metaout["label"] = wallet.name
                 res = derivation
@@ -834,9 +865,13 @@ class WalletManager(BaseApp):
                     else:
                         allowed_idx = wallet.gaps[branch_idx]
                     if allowed_idx <= idx:
-                        metaout["warning"] = "Derivation index is by %d larger than last known used index %d!" % (idx-allowed_idx+wallet.GAP_LIMIT, allowed_idx-wallet.GAP_LIMIT)
+                        self.add_output_warning(
+                            metaout,
+                            "Derivation index is by %d larger than last known used index %d!" %
+                            (idx-allowed_idx+wallet.GAP_LIMIT, allowed_idx-wallet.GAP_LIMIT),
+                        )
                 if wallet.is_watchonly:
-                    metaout["warning"] = "Watch-only wallet!"
+                    self.add_output_warning(metaout, "Watch-only wallet!")
 
             out.write_to(fout, version=psbtv.version)
         meta["fee"] = fee

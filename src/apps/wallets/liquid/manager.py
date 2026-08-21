@@ -544,13 +544,15 @@ class LWalletManager(WalletManager):
             if not (asset and value) or not (len(asset) == 32 and isinstance(value, int)):
                 asset = None
                 value = -1
-            derivation, is_change = self.get_verified_change_derivation(wallet, wallets, out)
+            derivation, is_change, warning = self.get_output_status(wallet, wallets, out)
             metaout.update({
                 "change": is_change,
                 "value": value,
                 "address": self.get_address(out),
                 "asset": self.asset_label(asset),
             })
+            if warning:
+                self.add_output_warning(metaout, warning)
             if wallet:
                 metaout["label"] = wallet.name
                 res = derivation
@@ -579,9 +581,13 @@ class LWalletManager(WalletManager):
                     else:
                         allowed_idx = wallet.gaps[branch_idx]
                     if allowed_idx <= idx:
-                        metaout["warning"] = "Derivation index is by %d larger than last known used index %d!" % (idx-allowed_idx+wallet.GAP_LIMIT, allowed_idx-wallet.GAP_LIMIT)
+                        self.add_output_warning(
+                            metaout,
+                            "Derivation index is by %d larger than last known used index %d!" %
+                            (idx-allowed_idx+wallet.GAP_LIMIT, allowed_idx-wallet.GAP_LIMIT),
+                        )
                 if wallet.is_watchonly:
-                    metaout["warning"] = "Watch-only wallet!"
+                    self.add_output_warning(metaout, "Watch-only wallet!")
             if asset and asset not in self.assets:
                 metaout.update({"raw_asset": asset})
             out.write_to(fout, skip_separator=True, version=psbtv.version)
