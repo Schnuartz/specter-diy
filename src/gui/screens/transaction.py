@@ -65,11 +65,11 @@ class TransactionScreen(Prompt):
         self.style_warning = style_warning
         self.style_gray = style_gray
 
-        num_change_outputs = 0
         for out in meta["outputs"]:
-            # first only show destination addresses
+            # Only warning-free, cryptographically verified change may be
+            # omitted from the primary confirmation page. Details below
+            # always list every output.
             if out["change"] and not out.get("warning", ""):
-                num_change_outputs += 1
                 continue
             obj = self.show_output(out, obj)
 

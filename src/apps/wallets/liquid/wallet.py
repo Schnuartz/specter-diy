@@ -25,7 +25,10 @@ class LWallet(Wallet):
         """
         if not self.owns(scope):
             return False
-        der = self.get_derivation(scope.bip32_derivations)
+        der = self.get_derivation(
+            scope.bip32_derivations,
+            getattr(scope, "taproot_bip32_derivations", {}),
+        )
         if der is None:
             return False
         idx, branch_idx = der
