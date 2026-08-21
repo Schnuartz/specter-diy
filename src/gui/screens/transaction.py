@@ -65,11 +65,18 @@ class TransactionScreen(Prompt):
         self.style_warning = style_warning
         self.style_gray = style_gray
 
-        num_change_outputs = 0
         for out in meta["outputs"]:
-            # first only show destination addresses
+            # A verified change output (see
+            # WalletManager.get_verified_change_derivation - branch 1,
+            # on-device script re-derivation matches) doesn't need its own
+            # confirmation, since the device itself already proved it can't
+            # be an attacker-controlled destination. It stays fully visible
+            # on the details page below. Every other output - external,
+            # unverifiable, or a same-wallet output on a non-change branch
+            # (labelled "This wallet (...)") - is always shown here, and a
+            # "change" output that carries a warning is shown too, since
+            # the warning means it needs the user's attention.
             if out["change"] and not out.get("warning", ""):
-                num_change_outputs += 1
                 continue
             obj = self.show_output(out, obj)
 

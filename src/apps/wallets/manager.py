@@ -43,6 +43,15 @@ SIGHASH_NAMES = {
 for sh in list(SIGHASH_NAMES):
     SIGHASH_NAMES[sh | SIGHASH.ANYONECANPAY] = SIGHASH_NAMES[sh] + " | ANYONECANPAY"
 
+INVALID_CHANGE_METADATA_WARNING = (
+    "Invalid change metadata! Host claimed this output as wallet change, "
+    "but it does not match your wallet. Verify the destination."
+)
+
+MULTIPLE_CHANGE_OUTPUTS_WARNING = (
+    "Multiple verified change outputs in this transaction!"
+)
+
 class WalletManager(BaseApp):
     """
     WalletManager class manages your wallets.
@@ -385,6 +394,88 @@ class WalletManager(BaseApp):
         proceed = await show_screen(scr)
         return proceed
 
+    def add_output_warning(self, metaout, warning):
+        """Append an output warning without discarding an earlier warning."""
+        if not warning:
+            return
+        warnings = metaout.setdefault("warnings", [])
+        if warning not in warnings:
+            warnings.append(warning)
+        metaout["warning"] = "\n".join(warnings)
+
+    def get_wallet_derivation_claims(self, wallet, out):
+        """Return all descriptor-valid derivation claims made for an output."""
+        claims = []
+        for derivation in getattr(out, "bip32_derivations", {}).values():
+            try:
+                claim = wallet.descriptor.check_derivation(derivation)
+            except Exception:
+                claim = None
+            if claim is not None and claim not in claims:
+                claims.append(claim)
+        for leafs, derivation in getattr(out, "taproot_bip32_derivations", {}).values():
+            try:
+                claim = wallet.descriptor.check_derivation(derivation)
+            except Exception:
+                claim = None
+            if claim is not None and claim not in claims:
+                claims.append(claim)
+        return claims
+
+    def get_output_status(self, wallet, wallets, out):
+        """Return ``(derivation, is_change, warning)`` for one output.
+
+        A failed ownership check must not erase a descriptor-valid claim from
+        the sole known spending wallet. Claims from unrelated imported wallets
+        and ambiguous transactions are deliberately ignored.
+        """
+        derivation = None
+        if wallet is not None:
+            derivation = wallet.get_derivation(
+                out.bip32_derivations,
+                getattr(out, "taproot_bip32_derivations", {}),
+            )
+        warning = None
+        if wallet is None:
+            spending_wallets = [w for w in wallets if w is not None]
+            if len(spending_wallets) == 1:
+                candidate = spending_wallets[0]
+                branch1_claims = [
+                    claim for claim in self.get_wallet_derivation_claims(candidate, out)
+                    if claim[1] == 1
+                ]
+                for idx, branch_idx in branch1_claims:
+                    try:
+                        desc, _ = candidate.get_descriptor(idx, branch_idx)
+                    except Exception:
+                        continue
+                    if out.script_pubkey is not None and desc.script_pubkey() == out.script_pubkey:
+                        break
+                else:
+                    if branch1_claims:
+                        warning = INVALID_CHANGE_METADATA_WARNING
+
+        is_change = False
+        if wallet is not None and derivation is not None:
+            idx, branch_idx = derivation
+            if (
+                len(wallets) == 1
+                and wallet in wallets
+                and wallet.descriptor.num_branches == 2
+                and branch_idx == 1
+            ):
+                try:
+                    desc, _ = wallet.get_descriptor(idx, branch_idx)
+                    is_change = desc.script_pubkey() == out.script_pubkey
+                except Exception:
+                    is_change = False
+        return derivation if wallet is not None else None, is_change, warning
+
+    def get_verified_change_derivation(self, wallet, wallets, out):
+        """Return the trusted output derivation and verified-change result."""
+        derivation, is_change, _ = self.get_output_status(wallet, wallets, out)
+        return derivation, is_change
+
     def get_sighash_info(self, sighash):
         if sighash not in SIGHASH_NAMES:
             raise WalletError("Unknown sighash type: %d!" % sighash)
@@ -683,7 +774,9 @@ class WalletManager(BaseApp):
                         break
             if wallet:
                 gaps = [g for g in wallet.gaps] # copy
-                res = wallet.get_derivation(inp.bip32_derivations)
+                res = wallet.get_derivation(
+                    inp.bip32_derivations, getattr(inp, "taproot_bip32_derivations", {})
+                )
                 if res:
                     idx, branch_idx = res
                     gaps[branch_idx] = max(gaps[branch_idx], idx+wallet.GAP_LIMIT+1)
@@ -740,30 +833,49 @@ class WalletManager(BaseApp):
             # Get values and store in metadata and wallets dict
             value = out.value
             fee -= value
+            derivation, is_change, warning = self.get_output_status(wallet, wallets, out)
             metaout.update({
-                "change": (wallet is not None and len(wallets) == 1 and wallet in wallets),
+                "change": is_change,
                 "value": value,
                 "address": self.get_address(out),
             })
+            if warning:
+                self.add_output_warning(metaout, warning)
             if wallet:
                 metaout["label"] = wallet.name
-                res = wallet.get_derivation(out.bip32_derivations)
+                res = derivation
                 if res:
                     idx, branch_idx = res
-                    branch_txt = ""
-                    if branch_idx == 1:
-                        "change "
-                    elif branch_idx > 1:
-                        "branch %d " % branch_idx
-                    metaout["label"] = "%s %s#%d" % (wallet.name, branch_txt, idx)
+                    if is_change:
+                        # Verified change is hidden from the primary
+                        # confirmation screen (see TransactionScreen), so
+                        # this label is only ever seen on the details page.
+                        metaout["label"] = "%s change #%d" % (wallet.name, idx)
+                    else:
+                        # Not change - e.g. a receive-branch self-payment,
+                        # a branch-1 output of a wallet that isn't the sole
+                        # spending wallet, or a branch-1 output belonging to
+                        # a different wallet than the one spending. Label by
+                        # is_change (what actually gates hiding it), never
+                        # by branch_idx alone, so an output the security
+                        # logic did NOT accept as change can't still be
+                        # captioned "change". It still needs full
+                        # confirmation, so mark it clearly as belonging to
+                        # this wallet instead.
+                        branch_txt = "" if branch_idx == 0 else "branch %d " % branch_idx
+                        metaout["label"] = "This wallet (%s) %s#%d" % (wallet.name, branch_txt, idx)
                     if wallet in wallets:
                         allowed_idx = wallets[wallet]["gaps"][branch_idx]
                     else:
                         allowed_idx = wallet.gaps[branch_idx]
                     if allowed_idx <= idx:
-                        metaout["warning"] = "Derivation index is by %d larger than last known used index %d!" % (idx-allowed_idx+wallet.GAP_LIMIT, allowed_idx-wallet.GAP_LIMIT)
+                        self.add_output_warning(
+                            metaout,
+                            "Derivation index is by %d larger than last known used index %d!" %
+                            (idx-allowed_idx+wallet.GAP_LIMIT, allowed_idx-wallet.GAP_LIMIT),
+                        )
                 if wallet.is_watchonly:
-                    metaout["warning"] = "Watch-only wallet!"
+                    self.add_output_warning(metaout, "Watch-only wallet!")
 
             out.write_to(fout, version=psbtv.version)
         meta["fee"] = fee
@@ -774,7 +886,10 @@ class WalletManager(BaseApp):
         """
         Populates meta["warnings"] for the transaction confirmation screen.
         Warns if the transaction spends inputs from multiple different
-        wallets (multisig change-address attack mitigation).
+        wallets (multisig change-address attack mitigation), and if the
+        transaction contains more than one cryptographically verified
+        change output (meta["outputs"][i]["change"] is True - see
+        get_verified_change_derivation()).
         Appends to existing warnings instead of replacing them.
         """
         if len(wallets) > 1:
@@ -782,6 +897,12 @@ class WalletManager(BaseApp):
             warnings = meta.setdefault("warnings", [])
             if warning not in warnings:
                 warnings.append(warning)
+
+        change_outputs = [out for out in meta["outputs"] if out.get("change") is True]
+        if len(change_outputs) >= 2:
+            warnings = meta.setdefault("warnings", [])
+            if MULTIPLE_CHANGE_OUTPUTS_WARNING not in warnings:
+                warnings.append(MULTIPLE_CHANGE_OUTPUTS_WARNING)
 
     def sign_psbtview(self, psbtv, out_stream, wallets, sighash):
         for w in wallets:
