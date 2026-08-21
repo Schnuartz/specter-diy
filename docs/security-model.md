@@ -258,6 +258,19 @@ visible, including receive-branch self-payments and outputs from unusual
 descriptors. The branch position is not the raw child-number value in the
 descriptor.
 
+If a transaction contains two or more outputs that pass this verification
+(`meta["outputs"][i]["change"] is True`), the device shows one transaction-
+level warning that the transaction has multiple verified change outputs,
+in addition to any per-output warnings. This is purely a count of already
+cryptographically verified change outputs — it never counts outputs that
+merely belong to the wallet without passing verification (e.g. receive-
+branch self-payments), and it never counts outputs from descriptors with
+other than two branches, since those already fail closed to `change=False`
+under the rule above. A single verified change output does not trigger
+this warning; behavior for that case is unchanged. This warning applies to
+both the Bitcoin and Liquid signing paths, which share the same warning
+infrastructure.
+
 The Bitcoin transaction does not contain an `is_change` flag. A PSBT may carry
 host-supplied BIP32 or Taproot derivation metadata, but that metadata is
 untrusted and is checked against the locally stored descriptor and the actual

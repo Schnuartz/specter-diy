@@ -48,6 +48,10 @@ INVALID_CHANGE_METADATA_WARNING = (
     "but it does not match your wallet. Verify the destination."
 )
 
+MULTIPLE_CHANGE_OUTPUTS_WARNING = (
+    "Multiple verified change outputs in this transaction!"
+)
+
 class WalletManager(BaseApp):
     """
     WalletManager class manages your wallets.
@@ -882,7 +886,10 @@ class WalletManager(BaseApp):
         """
         Populates meta["warnings"] for the transaction confirmation screen.
         Warns if the transaction spends inputs from multiple different
-        wallets (multisig change-address attack mitigation).
+        wallets (multisig change-address attack mitigation), and if the
+        transaction contains more than one cryptographically verified
+        change output (meta["outputs"][i]["change"] is True - see
+        get_verified_change_derivation()).
         Appends to existing warnings instead of replacing them.
         """
         if len(wallets) > 1:
@@ -890,6 +897,12 @@ class WalletManager(BaseApp):
             warnings = meta.setdefault("warnings", [])
             if warning not in warnings:
                 warnings.append(warning)
+
+        change_outputs = [out for out in meta["outputs"] if out.get("change") is True]
+        if len(change_outputs) >= 2:
+            warnings = meta.setdefault("warnings", [])
+            if MULTIPLE_CHANGE_OUTPUTS_WARNING not in warnings:
+                warnings.append(MULTIPLE_CHANGE_OUTPUTS_WARNING)
 
     def sign_psbtview(self, psbtv, out_stream, wallets, sighash):
         for w in wallets:
