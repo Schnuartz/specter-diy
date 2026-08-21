@@ -338,7 +338,9 @@ class LWalletManager(WalletManager):
             gaps = None
             if wallet:
                 gaps = [g for g in wallet.gaps] # copy
-                res = wallet.get_derivation(inp.bip32_derivations)
+                res = wallet.get_derivation(
+                    inp.bip32_derivations, getattr(inp, "taproot_bip32_derivations", {})
+                )
                 if res:
                     idx, branch_idx = res
                     gaps[branch_idx] = max(gaps[branch_idx], idx+wallet.GAP_LIMIT+1)
@@ -542,31 +544,50 @@ class LWalletManager(WalletManager):
             if not (asset and value) or not (len(asset) == 32 and isinstance(value, int)):
                 asset = None
                 value = -1
+            derivation, is_change, warning = self.get_output_status(wallet, wallets, out)
             metaout.update({
-                "change": (wallet is not None and len(wallets) == 1 and wallet in wallets),
+                "change": is_change,
                 "value": value,
                 "address": self.get_address(out),
                 "asset": self.asset_label(asset),
             })
+            if warning:
+                self.add_output_warning(metaout, warning)
             if wallet:
                 metaout["label"] = wallet.name
-                res = wallet.get_derivation(out.bip32_derivations)
+                res = derivation
                 if res:
                     idx, branch_idx = res
-                    branch_txt = ""
-                    if branch_idx == 1:
-                        "change "
-                    elif branch_idx > 1:
-                        "branch %d " % branch_idx
-                    metaout["label"] = "%s %s#%d" % (wallet.name, branch_txt, idx)
+                    if is_change:
+                        # Verified change is hidden from the primary
+                        # confirmation screen (see TransactionScreen), so
+                        # this label is only ever seen on the details page.
+                        metaout["label"] = "%s change #%d" % (wallet.name, idx)
+                    else:
+                        # Not change - e.g. a receive-branch self-payment,
+                        # a branch-1 output of a wallet that isn't the sole
+                        # spending wallet, or a branch-1 output belonging to
+                        # a different wallet than the one spending. Label by
+                        # is_change (what actually gates hiding it), never
+                        # by branch_idx alone, so an output the security
+                        # logic did NOT accept as change can't still be
+                        # captioned "change". It still needs full
+                        # confirmation, so mark it clearly as belonging to
+                        # this wallet instead.
+                        branch_txt = "" if branch_idx == 0 else "branch %d " % branch_idx
+                        metaout["label"] = "This wallet (%s) %s#%d" % (wallet.name, branch_txt, idx)
                     if wallet in wallets:
                         allowed_idx = wallets[wallet]["gaps"][branch_idx]
                     else:
                         allowed_idx = wallet.gaps[branch_idx]
                     if allowed_idx <= idx:
-                        metaout["warning"] = "Derivation index is by %d larger than last known used index %d!" % (idx-allowed_idx+wallet.GAP_LIMIT, allowed_idx-wallet.GAP_LIMIT)
+                        self.add_output_warning(
+                            metaout,
+                            "Derivation index is by %d larger than last known used index %d!" %
+                            (idx-allowed_idx+wallet.GAP_LIMIT, allowed_idx-wallet.GAP_LIMIT),
+                        )
                 if wallet.is_watchonly:
-                    metaout["warning"] = "Watch-only wallet!"
+                    self.add_output_warning(metaout, "Watch-only wallet!")
             if asset and asset not in self.assets:
                 metaout.update({"raw_asset": asset})
             out.write_to(fout, skip_separator=True, version=psbtv.version)
