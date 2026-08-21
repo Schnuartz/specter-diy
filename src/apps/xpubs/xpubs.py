@@ -298,12 +298,14 @@ class XpubApp(BaseApp):
                 if self._authorization.remaining <= 0:
                     self._authorization = None
                 return BytesIO(xpub_str.encode()), {}
+            fingerprint = hexlify(self.keystore.fingerprint).decode()
             confirm = await show_screen(
                 Prompt(
                     "Share Xpub?",
                     "A connected host wants the\nextended public key for:\n\n%s\n\n%s" % (
                         derivation, xpub_str,
                     ),
+                    note="Device fingerprint %s" % fingerprint,
                 )
             )
             if not confirm:
@@ -332,6 +334,7 @@ class XpubApp(BaseApp):
             raise AppError(str(e))
         net_name = NETWORKS[self.network]["name"]
         allowed = "\n".join(entry.format() for entry in entries)
+        fingerprint = hexlify(self.keystore.fingerprint).decode()
         message = (
             "Connected software requests temporary\n"
             "access to multiple public account keys.\n\n"
@@ -346,6 +349,7 @@ class XpubApp(BaseApp):
                 message,
                 confirm_text="Allow",
                 cancel_text="Cancel",
+                note="Device fingerprint %s" % fingerprint,
             )
         )
         if not confirm:
