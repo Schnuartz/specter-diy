@@ -211,7 +211,8 @@ class ChangeClassificationTest(TestCase):
 
         wallets = {odd_wallet: {}}
 
-        # raw derivation value 33 -> branch position 1 -> verified change
+        # raw derivation value 33 -> branch position 1, but the descriptor
+        # has three branches so it is not eligible for automatic change.
         out_change = self.make_out(
             bip32_derivations={fake_pubkey(21): odd_derivation(33, 4)},
             script_pubkey=self.script_for(odd_wallet, 1, 4),
@@ -220,7 +221,7 @@ class ChangeClassificationTest(TestCase):
             odd_wallet, wallets, out_change
         )
         self.assertEqual(derivation, (4, 1))
-        self.assertTrue(is_change)
+        self.assertFalse(is_change)
 
         # raw derivation value 22 -> branch position 0 -> receive, not change
         out_receive = self.make_out(
