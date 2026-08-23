@@ -47,6 +47,12 @@ INVALID_CHANGE_METADATA_WARNING = (
     "Invalid change metadata! Host claimed this output as wallet change, "
     "but it does not match your wallet. Verify the destination."
 )
+UNVERIFIED_CHANGE_WARNING = (
+    "This output goes to your wallet's change address (branch %d, #%d), "
+    "but the transaction contains unknown inputs. It is being treated as a "
+    "regular wallet output because it cannot be verified as change. "
+    "Review the destination."
+)
 
 class WalletManager(BaseApp):
     """
