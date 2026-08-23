@@ -471,6 +471,18 @@ class WalletManager(BaseApp):
                     is_change = desc.script_pubkey() == out.script_pubkey
                 except Exception:
                     is_change = False
+            if (
+                not is_change
+                and None in wallets
+                and wallet.descriptor.num_branches == 2
+                and branch_idx == 1
+            ):
+                try:
+                    desc, _ = wallet.get_descriptor(idx, branch_idx)
+                    if desc.script_pubkey() == out.script_pubkey:
+                        warning = UNVERIFIED_CHANGE_WARNING % (branch_idx, idx)
+                except Exception:
+                    pass
         return derivation if wallet is not None else None, is_change, warning
 
     def get_verified_change_derivation(self, wallet, wallets, out):
