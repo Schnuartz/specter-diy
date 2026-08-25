@@ -95,9 +95,15 @@ class EraseAndFormatTest(TestCase):
 
         self.assertEqual(
             dev.writes,
-            [(0, 2048 * 512), (2048, 2048 * 512), (4096, 4 * 512)],
+            [
+                (start, count * 512)
+                for start, count in [
+                    (i, min(256, 4100 - i))
+                    for i in range(0, 4100, 256)
+                ]
+            ],
         )
-        self.assertEqual(len(progress), 3)
+        self.assertEqual(len(progress), 17)
         self.assertEqual(progress[-1], 1.0)
         self.assertEqual(dev.power_states, [True, False])
 
@@ -229,7 +235,7 @@ class EraseAndFormatTest(TestCase):
             self.assertIsInstance(ctx.exception.__cause__, asyncio.CancelledError)
 
         _run(main())
-        self.assertEqual(dev.writes, [(0, 2048 * 512)])
+        self.assertEqual(dev.writes, [(0, 128 * 1024)])
         self.assertEqual(dev.power_states, [True, False])
 
 
@@ -370,3 +376,49 @@ class SecureDeleteTreeTest(TestCase):
             os.ilistdir = real_ilistdir
         self.assertEqual(len(files), platform.SECURE_DELETE_MAX_FILES)
         self.assertEqual(len(seen), platform.SECURE_DELETE_MAX_FILES + 1)
+
+    def test_collector_rejects_too_many_directories(self):
+        seen = []
+
+        def many_dirs(path):
+            if path != "virtual":
+                return
+            for i in range(platform.SECURE_DELETE_MAX_ENTRIES + 1000):
+                seen.append(i)
+                yield ("dir_%d" % i, 0x4000, 0, 0)
+
+        real_ilistdir = os.ilistdir
+        os.ilistdir = many_dirs
+        try:
+            with self.assertRaises(RuntimeError) as ctx:
+                platform._collect_files(
+                    "virtual", [], platform.SECURE_DELETE_MAX_ENTRIES
+                )
+            self.assertIn("entries", str(ctx.exception))
+        finally:
+            os.ilistdir = real_ilistdir
+        self.assertEqual(
+            len(seen), platform.SECURE_DELETE_MAX_ENTRIES + 1
+        )
+
+    def test_collector_rejects_excessive_depth(self):
+        seen = []
+
+        def deep_dirs(path):
+            depth = path.count("/")
+            seen.append(depth)
+            yield ("child", 0x4000, 0, 0)
+
+        real_ilistdir = os.ilistdir
+        os.ilistdir = deep_dirs
+        try:
+            with self.assertRaises(RuntimeError) as ctx:
+                platform._collect_files(
+                    "virtual", [], platform.SECURE_DELETE_MAX_ENTRIES
+                )
+            self.assertIn("deeper", str(ctx.exception))
+        finally:
+            os.ilistdir = real_ilistdir
+        self.assertEqual(
+            max(seen), platform.SECURE_DELETE_MAX_DEPTH
+        )

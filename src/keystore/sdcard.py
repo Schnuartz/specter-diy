@@ -160,7 +160,10 @@ class SDKeyStore(FlashKeyStore):
             print(e)
             raise KeyStoreError("Failed to delete file '%s'" % file)
         finally:
-            if platform.sdcard.is_present and file.startswith(self.sdpath):
+            # The card may have been removed while the overwrite was in
+            # progress. Cleanup must still be attempted so SDCard's internal
+            # mounted state is not left stale.
+            if file.startswith(self.sdpath):
                 platform.sdcard.unmount()
         # NOTE: this return must stay OUTSIDE the finally block - a return
         # inside finally executes while an exception is propagating and

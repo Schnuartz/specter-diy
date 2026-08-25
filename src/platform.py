@@ -170,11 +170,11 @@ class SDCard:
                     "(block size %r, block count %r) - cannot erase."
                     % (block_size, block_count)
                 )
-            # 1 MB per write call: a full-card wipe can be tens of
-            # thousands of chunks even at this size, so this balances
-            # write/gc.collect() overhead against keeping a single
-            # os.urandom() buffer (and GUI-tick latency) reasonable.
-            chunk_blocks = max(1, (1024 * 1024) // block_size)
+            # Keep the temporary random-data buffer bounded. A 1 MB
+            # allocation is needlessly risky on a fragmented MicroPython
+            # heap; 128 KiB is still large enough to amortize SD writes
+            # while keeping the wipe usable on the target hardware.
+            chunk_blocks = max(1, (128 * 1024) // block_size)
             for start in range(0, block_count, chunk_blocks):
                 n = min(chunk_blocks, block_count - start)
                 try:
@@ -483,12 +483,13 @@ def _strict_file_sync(f):
         raise OSError("no filesystem sync primitive is available")
 
 
-# Same cap as bitbox_sd.MAX_LIST_ENTRIES / Specter._SDCARD_LIST_MAX_ENTRIES:
-# an adversarial directory with thousands of entries would otherwise make
-# secure_delete_tree() overwrite-and-sync for minutes (DoS). 200 is far
-# above any legitimate tree this is called on (a BitBox backup directory
-# has exactly 3 files), and matches the cap used elsewhere for SD listing.
+# An adversarial directory with thousands of entries would otherwise make
+# secure_delete_tree() enumerate, recurse through, and later remove entries
+# for an unbounded amount of time (DoS). A BitBox backup directory has only a
+# few entries, so this leaves ample room for legitimate trees.
 SECURE_DELETE_MAX_FILES = 200
+SECURE_DELETE_MAX_ENTRIES = SECURE_DELETE_MAX_FILES
+SECURE_DELETE_MAX_DEPTH = 16
 
 
 def secure_delete_tree(path, passes=3):
@@ -499,55 +500,89 @@ def secure_delete_tree(path, passes=3):
     backup directory, where each of the redundant copies must be
     overwritten, not just unlinked.
 
-    Enumerates and counts every file under the tree BEFORE overwriting
-    anything: a tree with more than SECURE_DELETE_MAX_FILES files is
-    rejected up front so a partial overwrite is never left behind, and
-    so an adversarial directory cannot force unbounded overwrite+sync
-    work. The caller can offer "Format entire SD card" as the fallback
-    for wiping a tree that exceeds the cap.
+    Enumerates every entry under the tree BEFORE overwriting anything. A
+    tree with more than SECURE_DELETE_MAX_ENTRIES total entries or deeper
+    than SECURE_DELETE_MAX_DEPTH is rejected up front so a partial wipe is
+    never left behind and an adversarial directory cannot force unbounded
+    traversal or recursion. The caller can offer "Format entire SD card"
+    as the fallback for wiping a tree that exceeds the cap.
     """
     _validate_secure_delete_passes(passes)
     files = []
-    _collect_files(path, files, SECURE_DELETE_MAX_FILES)
+    _collect_files(
+        path,
+        files,
+        SECURE_DELETE_MAX_ENTRIES,
+        SECURE_DELETE_MAX_DEPTH,
+    )
     for full in files:
         secure_delete_file(full, passes=passes)
     _remove_empty_dirs(path)
 
 
-def _collect_files(path, out, max_files):
+def _collect_files(
+        path, out, max_entries, max_depth=SECURE_DELETE_MAX_DEPTH,
+        depth=0, entry_count=0):
     """Recursively appends the full paths of all regular files under
-    `path` to `out` (a list). Aborts before retaining more than
-    `max_files` paths. Does not modify or delete anything."""
+    `path` to `out` (a list). Aborts before traversing more than
+    `max_entries` total entries or descending beyond `max_depth`. Does not
+    modify or delete anything. Returns the total entry count for callers
+    recursing through a tree."""
+    if depth > max_depth:
+        raise RuntimeError(
+            "directory is deeper than %d levels - use 'Format entire SD "
+            "card' instead" % max_depth
+        )
     entries = os.ilistdir(path)
     try:
         for name, entry_type, *_rest in entries:
             if name in (".", ".."):
                 continue
             full = "%s/%s" % (path, name)
+            entry_count += 1
+            if entry_count > max_entries:
+                raise RuntimeError(
+                    "directory contains more than %d entries - use "
+                    "'Format entire SD card' instead" % max_entries
+                )
             if entry_type == 0x8000:
-                if len(out) >= max_files:
-                    raise RuntimeError(
-                        "directory contains more than %d files - use "
-                        "'Format entire SD card' instead" % max_files
-                    )
                 out.append(full)
             elif entry_type == 0x4000:
-                _collect_files(full, out, max_files)
+                entry_count = _collect_files(
+                    full,
+                    out,
+                    max_entries,
+                    max_depth,
+                    depth + 1,
+                    entry_count,
+                )
     finally:
         close = getattr(entries, "close", None)
         if close is not None:
             close()
+    return entry_count
 
 
-def _remove_empty_dirs(path):
+def _remove_empty_dirs(path, max_depth=SECURE_DELETE_MAX_DEPTH, depth=0):
     """Recursively removes every empty directory under `path`, then
     `path` itself. Must be called after secure_delete_file() has already
     unlinked every regular file, so each directory is in fact empty."""
-    for name, entry_type, *_rest in os.ilistdir(path):
-        if name in (".", ".."):
-            continue
-        if entry_type == 0x4000:
-            _remove_empty_dirs("%s/%s" % (path, name))
+    if depth > max_depth:
+        raise RuntimeError(
+            "directory is deeper than %d levels - use 'Format entire SD "
+            "card' instead" % max_depth
+        )
+    entries = os.ilistdir(path)
+    try:
+        for name, entry_type, *_rest in entries:
+            if name in (".", ".."):
+                continue
+            if entry_type == 0x4000:
+                _remove_empty_dirs("%s/%s" % (path, name), max_depth, depth + 1)
+    finally:
+        close = getattr(entries, "close", None)
+        if close is not None:
+            close()
     os.rmdir(path)
 
 

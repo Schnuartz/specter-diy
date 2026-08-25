@@ -109,3 +109,35 @@ class SDDeleteMnemonicTest(_DeleteMnemonicBase):
 
     def _target_path(self):
         return "testdir/specterdiaaaa.mykey"
+
+    def test_sd_cleanup_is_attempted_after_card_disappears(self):
+        target = self.ks.sdpath + "/specterdiaaaa.mykey"
+        self.ks.select_file = lambda: _async_result(target)
+
+        class DisappearedCard:
+            is_present = False
+
+            def __init__(self):
+                self.unmount_calls = 0
+
+            def unmount(self):
+                self.unmount_calls += 1
+
+        card = DisappearedCard()
+        real_card = platform.sdcard
+        real_exists = platform.file_exists
+        real_delete = platform.secure_delete_file
+        platform.sdcard = card
+        platform.file_exists = lambda path: path == target
+        platform.secure_delete_file = lambda path, passes=3: None
+        try:
+            self.assertIs(_run(self.ks.delete_mnemonic()), True)
+        finally:
+            platform.sdcard = real_card
+            platform.file_exists = real_exists
+            platform.secure_delete_file = real_delete
+        self.assertEqual(card.unmount_calls, 1)
+
+
+async def _async_result(value):
+    return value
