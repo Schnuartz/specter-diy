@@ -31,9 +31,10 @@ def setup_native_stubs():
 
     if not hasattr(os, "ilistdir"):
         def _ilistdir(path):
-            for entry in os.scandir(path):
-                mode = 0x4000 if entry.is_dir() else 0x8000
-                yield (entry.name, mode, 0, 0)
+            with os.scandir(path) as entries:
+                for entry in entries:
+                    mode = 0x4000 if entry.is_dir() else 0x8000
+                    yield (entry.name, mode, 0, 0)
         os.ilistdir = _ilistdir
 
     pyb = _ensure_module("pyb")

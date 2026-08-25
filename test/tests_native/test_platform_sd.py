@@ -153,7 +153,19 @@ class EraseAndFormatTest(TestCase):
                 self.writes = []
                 self.power_states = []
 
-        for bad_size, bad_count in [(0, 4100), (512, 0), (None, 4100), (512, None)]:
+        bad_geometries = [
+            (0, 4100),
+            (512, 0),
+            (None, 4100),
+            (512, None),
+            (-512, 4100),
+            (512, -1),
+            (512.0, 4100),
+            (512, "4100"),
+            (True, 4100),
+            (512, False),
+        ]
+        for bad_size, bad_count in bad_geometries:
             dev = _BadGeometryDevice(block_count=bad_count, block_size=bad_size)
             sd = platform.SDCard(sd=dev)
 
@@ -164,6 +176,134 @@ class EraseAndFormatTest(TestCase):
 
             _run(main())
             self.assertEqual(dev.writes, [])
+
+    def test_setup_io_error_is_translated_and_card_is_powered_off(self):
+        class FailingIoctlDevice(_FakeBlockDevice):
+            def ioctl(self, op, arg):
+                raise OSError("card removed during setup")
+
+        dev = FailingIoctlDevice(block_count=4100, block_size=512)
+        sd = platform.SDCard(sd=dev)
+
+        async def main():
+            with self.assertRaises(RuntimeError) as ctx:
+                await sd.erase_and_format()
+            self.assertIn("Could not access", str(ctx.exception))
+            self.assertIsInstance(ctx.exception.__cause__, OSError)
+
+        _run(main())
+        self.assertEqual(dev.power_states, [True, False])
+        self.assertEqual(dev.writes, [])
+
+    def test_power_on_error_is_translated_and_cleanup_is_attempted(self):
+        class FailingPowerDevice(_FakeBlockDevice):
+            def power(self, state):
+                self.power_states.append(state)
+                if state:
+                    raise OSError("card removed while powering on")
+
+        dev = FailingPowerDevice(block_count=4100, block_size=512)
+        sd = platform.SDCard(sd=dev)
+
+        async def main():
+            with self.assertRaises(RuntimeError) as ctx:
+                await sd.erase_and_format()
+            self.assertIn("Could not access", str(ctx.exception))
+            self.assertIsInstance(ctx.exception.__cause__, OSError)
+
+        _run(main())
+        self.assertEqual(dev.power_states, [True, False])
+        self.assertEqual(dev.writes, [])
+
+    def test_cancellation_reports_interrupted_wipe(self):
+        dev = _FakeBlockDevice(block_count=4100, block_size=512)
+        sd = platform.SDCard(sd=dev)
+
+        async def main():
+            async def cancel_after_first_chunk(fraction):
+                raise asyncio.CancelledError()
+
+            with self.assertRaises(RuntimeError) as ctx:
+                await sd.erase_and_format(progress_cb=cancel_after_first_chunk)
+            self.assertIn("interrupted", str(ctx.exception))
+            self.assertIsInstance(ctx.exception.__cause__, asyncio.CancelledError)
+
+        _run(main())
+        self.assertEqual(dev.writes, [(0, 2048 * 512)])
+        self.assertEqual(dev.power_states, [True, False])
+
+
+class SecureDeleteFileTest(TestCase):
+    def setUp(self):
+        clear_testdir()
+        platform.maybe_mkdir("testdir")
+        self.path = "testdir/secret.bin"
+        with open(self.path, "wb") as f:
+            f.write(b"sensitive material")
+
+    def tearDown(self):
+        if platform.file_exists(self.path):
+            os.remove(self.path)
+        try:
+            platform.delete_recursively("testdir", include_self=True)
+        except OSError:
+            pass
+
+    def test_invalid_pass_count_is_rejected_before_opening_file(self):
+        with open(self.path, "rb") as f:
+            original = f.read()
+        for passes in (0, -1, 1.5, True):
+            with self.assertRaises(ValueError):
+                platform.secure_delete_file(self.path, passes=passes)
+            self.assertTrue(platform.file_exists(self.path))
+            with open(self.path, "rb") as f:
+                self.assertEqual(f.read(), original)
+
+    def test_short_write_aborts_without_unlinking(self):
+        class ShortWriteFile:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def seek(self, offset, whence=0):
+                pass
+
+            def tell(self):
+                return 10
+
+            def write(self, data):
+                return len(data) - 1
+
+        had_open = hasattr(platform, "open")
+        real_open = getattr(platform, "open", None)
+        platform.open = lambda *args, **kwargs: ShortWriteFile()
+        try:
+            with self.assertRaises(OSError) as ctx:
+                platform.secure_delete_file(self.path, passes=1)
+            self.assertIn("short write", str(ctx.exception))
+        finally:
+            if had_open:
+                platform.open = real_open
+            else:
+                del platform.open
+        self.assertTrue(platform.file_exists(self.path))
+
+    def test_sync_error_aborts_without_unlinking(self):
+        real_sync = platform._strict_file_sync
+
+        def failing_sync(f):
+            raise OSError("simulated sync failure")
+
+        platform._strict_file_sync = failing_sync
+        try:
+            with self.assertRaises(OSError) as ctx:
+                platform.secure_delete_file(self.path, passes=1)
+            self.assertIn("sync failure", str(ctx.exception))
+        finally:
+            platform._strict_file_sync = real_sync
+        self.assertTrue(platform.file_exists(self.path))
 
 
 class SecureDeleteTreeTest(TestCase):
@@ -196,9 +336,37 @@ class SecureDeleteTreeTest(TestCase):
 
     def test_tree_over_cap_rejected_before_overwrite(self):
         self._make_files(platform.SECURE_DELETE_MAX_FILES + 1)
+        before = {}
+        for i in range(platform.SECURE_DELETE_MAX_FILES + 1):
+            path = "%s/file_%d.bin" % (self.path, i)
+            with open(path, "rb") as f:
+                before[path] = f.read()
         with self.assertRaises(RuntimeError) as ctx:
             platform.secure_delete_tree(self.path)
         self.assertIn("Format", str(ctx.exception))
-        # all files must still be present (no partial wipe)
-        for i in range(platform.SECURE_DELETE_MAX_FILES + 1):
-            self.assertTrue(platform.file_exists("%s/file_%d.bin" % (self.path, i)))
+        # Every file and every byte must be unchanged (no partial wipe).
+        for path, expected in before.items():
+            self.assertTrue(platform.file_exists(path))
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), expected)
+
+    def test_collector_stops_immediately_when_cap_is_exceeded(self):
+        seen = []
+
+        def many_entries(path):
+            for i in range(platform.SECURE_DELETE_MAX_FILES + 1000):
+                seen.append(i)
+                yield ("file_%d.bin" % i, 0x8000, 0, 0)
+
+        real_ilistdir = os.ilistdir
+        os.ilistdir = many_entries
+        files = []
+        try:
+            with self.assertRaises(RuntimeError):
+                platform._collect_files(
+                    "virtual", files, platform.SECURE_DELETE_MAX_FILES
+                )
+        finally:
+            os.ilistdir = real_ilistdir
+        self.assertEqual(len(files), platform.SECURE_DELETE_MAX_FILES)
+        self.assertEqual(len(seen), platform.SECURE_DELETE_MAX_FILES + 1)

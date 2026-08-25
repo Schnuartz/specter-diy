@@ -121,10 +121,10 @@ class SDCard:
         flash - and then creates a fresh, empty FAT filesystem on it.
 
         This is irreversible and destroys EVERYTHING on the card, not
-        just files Specter-DIY created. There is no cancelling partway
-        through: like platform.wipe(), once started it must run to
-        completion or the card is left in a half-overwritten, unusable
-        state.
+        just files Specter-DIY created. Do not cancel or reset the device
+        while the erase is running. If the task is cancelled at an await
+        point, the method reports that the wipe was interrupted and the
+        card must be reformatted before it can be used again.
 
         progress_cb(fraction), if given, is awaited after every chunk
         with the fraction (0..1) of blocks written so far, so a caller
@@ -147,11 +147,24 @@ class SDCard:
             return
         if self._led is not None:
             self._led.on()
-        self._sd.power(True)
         try:
-            block_size = self._sd.ioctl(5, None)
-            block_count = self._sd.ioctl(4, None)
-            if not block_size or not block_count:
+            try:
+                self._sd.power(True)
+                block_size = self._sd.ioctl(5, None)
+                block_count = self._sd.ioctl(4, None)
+            except OSError as e:
+                raise RuntimeError(
+                    "Could not access the SD card before secure erase "
+                    "(card may have been removed):\n\n%s" % e
+                ) from e
+            if (
+                not isinstance(block_size, int)
+                or isinstance(block_size, bool)
+                or block_size <= 0
+                or not isinstance(block_count, int)
+                or isinstance(block_count, bool)
+                or block_count <= 0
+            ):
                 raise RuntimeError(
                     "SD card reported invalid geometry "
                     "(block size %r, block count %r) - cannot erase."
@@ -175,14 +188,23 @@ class SDCard:
                         "used again." % e
                     ) from e
                 gc.collect()
-                if progress_cb is not None:
-                    await progress_cb((start + n) / block_count)
-                # Always yield to the event loop, even with a progress_cb:
-                # a callback that never awaits (e.g. one that only redraws
-                # a progress bar) runs synchronously and would otherwise
-                # keep every other task - including the GUI update loop -
-                # from running until the whole card is overwritten.
-                await asyncio.sleep_ms(0)
+                try:
+                    if progress_cb is not None:
+                        await progress_cb((start + n) / block_count)
+                    # Always yield to the event loop, even with a
+                    # progress_cb: a callback that never awaits (e.g. one
+                    # that only redraws a progress bar) runs synchronously
+                    # and would otherwise keep every other task - including
+                    # the GUI update loop - from running until the whole
+                    # card is overwritten.
+                    await asyncio.sleep_ms(0)
+                except asyncio.CancelledError as e:
+                    raise RuntimeError(
+                        "Secure erase was interrupted before completion. "
+                        "The SD card is now in a half-overwritten, unusable "
+                        "state and must be reformatted before it can be "
+                        "used again."
+                    ) from e
             try:
                 os.VfsFat.mkfs(self._sd)
             except OSError as e:
@@ -419,6 +441,7 @@ def secure_delete_file(path, passes=3):
     to wipe the wrong file. The size is read from the same handle via
     seek(0, 2)/tell(), and that handle is used for every overwrite pass.
     """
+    _validate_secure_delete_passes(passes)
     with open(path, "r+b") as f:
         f.seek(0, 2)  # seek to end
         size = f.tell()
@@ -427,10 +450,37 @@ def secure_delete_file(path, passes=3):
             remaining = size
             while remaining > 0:
                 chunk = min(remaining, 4096)
-                f.write(os.urandom(chunk))
-                remaining -= chunk
-            sync()
+                written = f.write(os.urandom(chunk))
+                if written != chunk:
+                    raise OSError(
+                        "short write during secure delete (%r of %d bytes)"
+                        % (written, chunk)
+                    )
+                remaining -= written
+            _strict_file_sync(f)
     os.remove(path)
+
+
+def _validate_secure_delete_passes(passes):
+    """Reject pass counts that would weaken or skip the overwrite."""
+    if (
+        not isinstance(passes, int)
+        or isinstance(passes, bool)
+        or passes <= 0
+    ):
+        raise ValueError("secure delete passes must be a positive integer")
+
+
+def _strict_file_sync(f):
+    """Flushes an overwrite and propagates every persistence error."""
+    f.flush()
+    if hasattr(os, "sync"):
+        os.sync()
+    elif hasattr(os, "fsync"):
+        # CPython on platforms without os.sync (notably Windows).
+        os.fsync(f.fileno())
+    else:
+        raise OSError("no filesystem sync primitive is available")
 
 
 # Same cap as bitbox_sd.MAX_LIST_ENTRIES / Specter._SDCARD_LIST_MAX_ENTRIES:
@@ -456,29 +506,37 @@ def secure_delete_tree(path, passes=3):
     work. The caller can offer "Format entire SD card" as the fallback
     for wiping a tree that exceeds the cap.
     """
+    _validate_secure_delete_passes(passes)
     files = []
-    _collect_files(path, files)
-    if len(files) > SECURE_DELETE_MAX_FILES:
-        raise RuntimeError(
-            "directory contains %d files (maximum %d) - use 'Format "
-            "entire SD card' instead" % (len(files), SECURE_DELETE_MAX_FILES)
-        )
+    _collect_files(path, files, SECURE_DELETE_MAX_FILES)
     for full in files:
         secure_delete_file(full, passes=passes)
     _remove_empty_dirs(path)
 
 
-def _collect_files(path, out):
+def _collect_files(path, out, max_files):
     """Recursively appends the full paths of all regular files under
-    `path` to `out` (a list). Does not modify or delete anything."""
-    for name, entry_type, *_rest in os.ilistdir(path):
-        if name in (".", ".."):
-            continue
-        full = "%s/%s" % (path, name)
-        if entry_type == 0x8000:
-            out.append(full)
-        elif entry_type == 0x4000:
-            _collect_files(full, out)
+    `path` to `out` (a list). Aborts before retaining more than
+    `max_files` paths. Does not modify or delete anything."""
+    entries = os.ilistdir(path)
+    try:
+        for name, entry_type, *_rest in entries:
+            if name in (".", ".."):
+                continue
+            full = "%s/%s" % (path, name)
+            if entry_type == 0x8000:
+                if len(out) >= max_files:
+                    raise RuntimeError(
+                        "directory contains more than %d files - use "
+                        "'Format entire SD card' instead" % max_files
+                    )
+                out.append(full)
+            elif entry_type == 0x4000:
+                _collect_files(full, out, max_files)
+    finally:
+        close = getattr(entries, "close", None)
+        if close is not None:
+            close()
 
 
 def _remove_empty_dirs(path):
