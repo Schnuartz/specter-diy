@@ -75,6 +75,7 @@ class _FakeBlockDevice:
 
     def writeblocks(self, start, data):
         self.writes.append((start, len(data)))
+        return getattr(self, "write_result", None)
 
     def power(self, state):
         self.power_states.append(state)
@@ -150,6 +151,21 @@ class EraseAndFormatTest(TestCase):
 
         _run(main())
         self.assertEqual(dev.power_states, [True, False])
+
+    def test_writeblocks_failure_return_is_not_ignored(self):
+        for failure_result in (False, -1):
+            dev = _FakeBlockDevice(block_count=4100, block_size=512)
+            dev.write_result = failure_result
+            sd = platform.SDCard(sd=dev)
+
+            async def main():
+                with self.assertRaises(RuntimeError) as ctx:
+                    await sd.erase_and_format()
+                self.assertIn("returned", str(ctx.exception))
+
+            _run(main())
+            self.assertEqual(dev.power_states, [True, False])
+            self.assertEqual(len(dev.writes), 1)
 
     def test_invalid_geometry_rejected_before_any_write(self):
         class _BadGeometryDevice(_FakeBlockDevice):
@@ -239,6 +255,68 @@ class EraseAndFormatTest(TestCase):
         self.assertEqual(dev.power_states, [True, False])
 
 
+class SDCardUnmountTest(TestCase):
+    def _patch_vfs(self, sync_fn, umount_fn):
+        had_sync = hasattr(os, "sync")
+        had_umount = hasattr(os, "umount")
+        old_sync = getattr(os, "sync", None)
+        old_umount = getattr(os, "umount", None)
+        os.sync = sync_fn
+        os.umount = umount_fn
+        return had_sync, had_umount, old_sync, old_umount
+
+    def _restore_vfs(self, state):
+        had_sync, had_umount, old_sync, old_umount = state
+        if had_sync:
+            os.sync = old_sync
+        else:
+            del os.sync
+        if had_umount:
+            os.umount = old_umount
+        else:
+            del os.umount
+
+    def test_sync_failure_still_attempts_umount_and_clears_state_on_success(self):
+        dev = _FakeBlockDevice(block_count=1, block_size=512)
+        sd = platform.SDCard(sd=dev)
+        sd._mounted = True
+        calls = []
+
+        def failing_sync():
+            calls.append("sync")
+            raise OSError("sync failed")
+
+        def successful_umount(path):
+            calls.append(path)
+
+        state = self._patch_vfs(failing_sync, successful_umount)
+        try:
+            with self.assertRaises(OSError):
+                sd.unmount()
+        finally:
+            self._restore_vfs(state)
+        self.assertEqual(calls, ["sync", "/sd"])
+        self.assertFalse(sd._mounted)
+        self.assertEqual(dev.power_states, [False])
+
+    def test_umount_failure_keeps_state_for_a_retry(self):
+        dev = _FakeBlockDevice(block_count=1, block_size=512)
+        sd = platform.SDCard(sd=dev)
+        sd._mounted = True
+
+        def failing_umount(path):
+            raise OSError("umount failed")
+
+        state = self._patch_vfs(lambda: None, failing_umount)
+        try:
+            with self.assertRaises(OSError):
+                sd.unmount()
+        finally:
+            self._restore_vfs(state)
+        self.assertTrue(sd._mounted)
+        self.assertEqual(dev.power_states, [False])
+
+
 class SecureDeleteFileTest(TestCase):
     def setUp(self):
         clear_testdir()
@@ -310,6 +388,41 @@ class SecureDeleteFileTest(TestCase):
         finally:
             platform._strict_file_sync = real_sync
         self.assertTrue(platform.file_exists(self.path))
+
+    def test_file_size_limit_aborts_before_overwrite(self):
+        real_open = getattr(platform, "open", None)
+        original_exists = platform.file_exists
+
+        class OversizedFile:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def seek(self, offset, whence=0):
+                pass
+
+            def tell(self):
+                return platform.SECURE_DELETE_MAX_FILE_BYTES + 1
+
+        platform.open = lambda *args, **kwargs: OversizedFile()
+        platform.file_exists = lambda path: True
+        try:
+            with self.assertRaises(RuntimeError) as ctx:
+                platform.secure_delete_file(
+                    self.path,
+                    passes=1,
+                    max_size=platform.SECURE_DELETE_MAX_FILE_BYTES,
+                )
+            self.assertIn("maximum", str(ctx.exception))
+        finally:
+            if real_open is None:
+                del platform.open
+            else:
+                platform.open = real_open
+            platform.file_exists = original_exists
+        self.assertTrue(original_exists(self.path))
 
 
 class SecureDeleteTreeTest(TestCase):
@@ -421,4 +534,61 @@ class SecureDeleteTreeTest(TestCase):
             os.ilistdir = real_ilistdir
         self.assertEqual(
             max(seen), platform.SECURE_DELETE_MAX_DEPTH
+        )
+
+    def test_collector_rejects_oversized_file_before_retaining_it(self):
+        real_ilistdir = os.ilistdir
+        real_stat = os.stat
+
+        def one_file(path):
+            yield ("large.bin", 0x8000, 0, 0)
+
+        os.ilistdir = one_file
+        os.stat = lambda path: (0, 0, 0, 0, 0, 0,
+                                platform.SECURE_DELETE_MAX_FILE_BYTES + 1)
+        files = []
+        try:
+            with self.assertRaises(RuntimeError) as ctx:
+                platform._collect_files(
+                    "virtual",
+                    files,
+                    platform.SECURE_DELETE_MAX_ENTRIES,
+                    max_file_bytes=platform.SECURE_DELETE_MAX_FILE_BYTES,
+                    max_total_bytes=platform.SECURE_DELETE_MAX_TOTAL_BYTES,
+                )
+            self.assertIn("maximum", str(ctx.exception))
+        finally:
+            os.ilistdir = real_ilistdir
+            os.stat = real_stat
+        self.assertEqual(files, [])
+
+    def test_collector_rejects_oversized_total_before_retaining_file(self):
+        real_ilistdir = os.ilistdir
+        real_stat = os.stat
+
+        def three_files(path):
+            yield ("first.bin", 0x8000, 0, 0)
+            yield ("second.bin", 0x8000, 0, 0)
+            yield ("third.bin", 0x8000, 0, 0)
+
+        os.ilistdir = three_files
+        os.stat = lambda path: (0, 0, 0, 0, 0, 0,
+                                platform.SECURE_DELETE_MAX_FILE_BYTES)
+        files = []
+        try:
+            with self.assertRaises(RuntimeError) as ctx:
+                platform._collect_files(
+                    "virtual",
+                    files,
+                    platform.SECURE_DELETE_MAX_ENTRIES,
+                    max_file_bytes=platform.SECURE_DELETE_MAX_FILE_BYTES,
+                    max_total_bytes=platform.SECURE_DELETE_MAX_TOTAL_BYTES,
+                )
+            self.assertIn("bytes", str(ctx.exception))
+        finally:
+            os.ilistdir = real_ilistdir
+            os.stat = real_stat
+        self.assertEqual(
+            files,
+            ["virtual/first.bin", "virtual/second.bin"],
         )

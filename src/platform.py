@@ -98,14 +98,43 @@ class SDCard:
         # sync file system before unmounting
         if not self._mounted:
             return
-        self._mounted = False
         if self._sd is None:
+            self._mounted = False
             return
-        os.sync()
-        os.umount("/sd")
-        self._sd.power(False)
-        if self._led is not None:
-            self._led.off()
+        error = None
+        unmounted = False
+        try:
+            # A failed sync must not prevent us from trying to remove the
+            # VFS mount. Keep the first error for the caller, but always run
+            # both cleanup operations.
+            try:
+                os.sync()
+            except Exception as e:
+                error = e
+            try:
+                os.umount("/sd")
+                unmounted = True
+            except Exception as e:
+                if error is None:
+                    error = e
+        finally:
+            # Only clear this flag after a successful VFS unmount. If the
+            # result is unknown, a later cleanup attempt must not be skipped.
+            if unmounted:
+                self._mounted = False
+            try:
+                self._sd.power(False)
+            except Exception as e:
+                if error is None:
+                    error = e
+            try:
+                if self._led is not None:
+                    self._led.off()
+            except Exception as e:
+                if error is None:
+                    error = e
+        if error is not None:
+            raise error
 
     def __enter__(self):
         self.mount()
@@ -178,7 +207,9 @@ class SDCard:
             for start in range(0, block_count, chunk_blocks):
                 n = min(chunk_blocks, block_count - start)
                 try:
-                    self._sd.writeblocks(start, os.urandom(block_size * n))
+                    result = self._sd.writeblocks(
+                        start, os.urandom(block_size * n)
+                    )
                 except OSError as e:
                     raise RuntimeError(
                         "Could not write to the SD card during secure erase "
@@ -187,6 +218,26 @@ class SDCard:
                         "state and must be reformatted before it can be "
                         "used again." % e
                     ) from e
+                # MicroPython block devices conventionally return None (or
+                # 0), while the STM32 binding used here returns True/False.
+                # Accept only those known success values; any other result
+                # must fail closed so a missed chunk can never be reported
+                # as a successful secure erase.
+                if not (
+                    result is None
+                    or result is True
+                    or (
+                        isinstance(result, int)
+                        and not isinstance(result, bool)
+                        and result == 0
+                    )
+                ):
+                    raise RuntimeError(
+                        "Could not write to the SD card during secure erase "
+                        "(block device returned %r). The card is now in a "
+                        "half-overwritten, unusable state and must be "
+                        "reformatted before it can be used again." % result
+                    )
                 gc.collect()
                 try:
                     if progress_cb is not None:
@@ -418,7 +469,7 @@ def delete_recursively(path, include_self=False):
     raise RuntimeError("Failed to delete folder %s" % path)
 
 
-def secure_delete_file(path, passes=3):
+def secure_delete_file(path, passes=3, max_size=None):
     """
     Overwrites a file's contents with fresh random data `passes` times,
     syncing after each pass, before deleting it - the same
@@ -445,6 +496,11 @@ def secure_delete_file(path, passes=3):
     with open(path, "r+b") as f:
         f.seek(0, 2)  # seek to end
         size = f.tell()
+        if max_size is not None and size > max_size:
+            raise RuntimeError(
+                "file is %d bytes (maximum %d) - use 'Format entire SD "
+                "card' instead" % (size, max_size)
+            )
         for _ in range(passes):
             f.seek(0)
             remaining = size
@@ -459,6 +515,7 @@ def secure_delete_file(path, passes=3):
                 remaining -= written
             _strict_file_sync(f)
     os.remove(path)
+    return size
 
 
 def _validate_secure_delete_passes(passes):
@@ -490,6 +547,8 @@ def _strict_file_sync(f):
 SECURE_DELETE_MAX_FILES = 200
 SECURE_DELETE_MAX_ENTRIES = SECURE_DELETE_MAX_FILES
 SECURE_DELETE_MAX_DEPTH = 16
+SECURE_DELETE_MAX_FILE_BYTES = 4 * 1024 * 1024
+SECURE_DELETE_MAX_TOTAL_BYTES = 8 * 1024 * 1024
 
 
 def secure_delete_tree(path, passes=3):
@@ -501,11 +560,13 @@ def secure_delete_tree(path, passes=3):
     overwritten, not just unlinked.
 
     Enumerates every entry under the tree BEFORE overwriting anything. A
-    tree with more than SECURE_DELETE_MAX_ENTRIES total entries or deeper
-    than SECURE_DELETE_MAX_DEPTH is rejected up front so a partial wipe is
-    never left behind and an adversarial directory cannot force unbounded
-    traversal or recursion. The caller can offer "Format entire SD card"
-    as the fallback for wiping a tree that exceeds the cap.
+    tree with more than SECURE_DELETE_MAX_ENTRIES total entries, files larger
+    than SECURE_DELETE_MAX_FILE_BYTES, more than
+    SECURE_DELETE_MAX_TOTAL_BYTES of file data, or a depth greater than
+    SECURE_DELETE_MAX_DEPTH is rejected up front. This prevents a partial
+    wipe and stops an adversarial directory from forcing unbounded traversal,
+    recursion, or overwrite work. The caller can offer "Format entire SD
+    card" as the fallback for a tree that exceeds a cap.
     """
     _validate_secure_delete_passes(passes)
     files = []
@@ -514,20 +575,30 @@ def secure_delete_tree(path, passes=3):
         files,
         SECURE_DELETE_MAX_ENTRIES,
         SECURE_DELETE_MAX_DEPTH,
+        max_file_bytes=SECURE_DELETE_MAX_FILE_BYTES,
+        max_total_bytes=SECURE_DELETE_MAX_TOTAL_BYTES,
     )
+    remaining_bytes = SECURE_DELETE_MAX_TOTAL_BYTES
     for full in files:
-        secure_delete_file(full, passes=passes)
+        size = secure_delete_file(
+            full,
+            passes=passes,
+            max_size=min(SECURE_DELETE_MAX_FILE_BYTES, remaining_bytes),
+        )
+        remaining_bytes -= size
     _remove_empty_dirs(path)
 
 
 def _collect_files(
         path, out, max_entries, max_depth=SECURE_DELETE_MAX_DEPTH,
-        depth=0, entry_count=0):
+        depth=0, entry_count=0, total_bytes=0, max_file_bytes=None,
+        max_total_bytes=None):
     """Recursively appends the full paths of all regular files under
     `path` to `out` (a list). Aborts before traversing more than
-    `max_entries` total entries or descending beyond `max_depth`. Does not
-    modify or delete anything. Returns the total entry count for callers
-    recursing through a tree."""
+    `max_entries` total entries or descending beyond `max_depth`. When size
+    limits are provided, regular files are checked with `os.stat()` before
+    their paths are retained. Does not modify or delete anything. Returns
+    `(entry_count, total_bytes)` for callers recursing through a tree."""
     if depth > max_depth:
         raise RuntimeError(
             "directory is deeper than %d levels - use 'Format entire SD "
@@ -546,21 +617,55 @@ def _collect_files(
                     "'Format entire SD card' instead" % max_entries
                 )
             if entry_type == 0x8000:
+                if max_file_bytes is not None or max_total_bytes is not None:
+                    try:
+                        size = os.stat(full)[6]
+                    except Exception as e:
+                        raise RuntimeError(
+                            "Could not inspect file before secure delete: %s"
+                            % full
+                        ) from e
+                    if (
+                        not isinstance(size, int)
+                        or isinstance(size, bool)
+                        or size < 0
+                    ):
+                        raise RuntimeError(
+                            "file has invalid size metadata: %s" % full
+                        )
+                    if max_file_bytes is not None and size > max_file_bytes:
+                        raise RuntimeError(
+                            "file is %d bytes (maximum %d) - use 'Format "
+                            "entire SD card' instead"
+                            % (size, max_file_bytes)
+                        )
+                    total_bytes += size
+                    if (
+                        max_total_bytes is not None
+                        and total_bytes > max_total_bytes
+                    ):
+                        raise RuntimeError(
+                            "tree contains more than %d bytes - use "
+                            "'Format entire SD card' instead" % max_total_bytes
+                        )
                 out.append(full)
             elif entry_type == 0x4000:
-                entry_count = _collect_files(
+                entry_count, total_bytes = _collect_files(
                     full,
                     out,
                     max_entries,
                     max_depth,
-                    depth + 1,
-                    entry_count,
+                    depth=depth + 1,
+                    entry_count=entry_count,
+                    total_bytes=total_bytes,
+                    max_file_bytes=max_file_bytes,
+                    max_total_bytes=max_total_bytes,
                 )
     finally:
         close = getattr(entries, "close", None)
         if close is not None:
             close()
-    return entry_count
+    return entry_count, total_bytes
 
 
 def _remove_empty_dirs(path, max_depth=SECURE_DELETE_MAX_DEPTH, depth=0):

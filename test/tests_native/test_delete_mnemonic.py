@@ -138,6 +138,35 @@ class SDDeleteMnemonicTest(_DeleteMnemonicBase):
             platform.secure_delete_file = real_delete
         self.assertEqual(card.unmount_calls, 1)
 
+    def test_unmount_failure_does_not_hide_delete_failure(self):
+        target = self.ks.sdpath + "/specterdiaaaa.mykey"
+        self.ks.select_file = lambda: _async_result(target)
+
+        class BrokenUnmountCard:
+            is_present = False
+
+            def unmount(self):
+                raise OSError("unmount failed")
+
+        real_card = platform.sdcard
+        real_exists = platform.file_exists
+        real_delete = platform.secure_delete_file
+        platform.sdcard = BrokenUnmountCard()
+        platform.file_exists = lambda path: path == target
+
+        def failing_delete(path, passes=3):
+            raise OSError("delete failed")
+
+        platform.secure_delete_file = failing_delete
+        try:
+            with self.assertRaises(KeyStoreError) as ctx:
+                _run(self.ks.delete_mnemonic())
+            self.assertIn("Failed to delete", str(ctx.exception))
+        finally:
+            platform.sdcard = real_card
+            platform.file_exists = real_exists
+            platform.secure_delete_file = real_delete
+
 
 async def _async_result(value):
     return value

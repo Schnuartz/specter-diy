@@ -152,19 +152,41 @@ class SDKeyStore(FlashKeyStore):
         # mount sd before check
         if platform.sdcard.is_present and file.startswith(self.sdpath):
             platform.sdcard.mount()
-        if not platform.file_exists(file):
-            raise KeyStoreError("File not found.")
+        delete_error = None
+        delete_cause = None
         try:
-            platform.secure_delete_file(file)
-        except Exception as e:
-            print(e)
-            raise KeyStoreError("Failed to delete file '%s'" % file)
+            if not platform.file_exists(file):
+                delete_error = KeyStoreError("File not found.")
+            else:
+                try:
+                    platform.secure_delete_file(file)
+                except Exception as e:
+                    print(e)
+                    delete_error = KeyStoreError(
+                        "Failed to delete file '%s'" % file
+                    )
+                    delete_cause = e
         finally:
             # The card may have been removed while the overwrite was in
             # progress. Cleanup must still be attempted so SDCard's internal
             # mounted state is not left stale.
             if file.startswith(self.sdpath):
-                platform.sdcard.unmount()
+                try:
+                    platform.sdcard.unmount()
+                except Exception as e:
+                    print(e)
+                    # Never let secondary cleanup failure hide the primary
+                    # deletion error. If deletion did succeed, report the
+                    # cleanup failure instead of claiming overall success.
+                    if delete_error is None:
+                        delete_error = KeyStoreError(
+                            "Failed to unmount SD card"
+                        )
+                        delete_cause = e
+        if delete_error is not None:
+            if delete_cause is not None:
+                raise delete_error from delete_cause
+            raise delete_error
         # NOTE: this return must stay OUTSIDE the finally block - a return
         # inside finally executes while an exception is propagating and
         # silently discards it, so a failed delete would still report
