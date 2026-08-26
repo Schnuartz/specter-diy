@@ -442,20 +442,32 @@ class WalletManager(BaseApp):
             spending_wallets = [w for w in wallets if w is not None]
             if len(spending_wallets) == 1:
                 candidate = spending_wallets[0]
-                branch1_claims = [
-                    claim for claim in self.get_wallet_derivation_claims(candidate, out)
-                    if claim[1] == 1
-                ]
-                for idx, branch_idx in branch1_claims:
-                    try:
-                        desc, _ = candidate.get_descriptor(idx, branch_idx)
-                    except Exception:
-                        continue
-                    if out.script_pubkey is not None and desc.script_pubkey() == out.script_pubkey:
-                        break
-                else:
-                    if branch1_claims:
+                # Position 1 only has receive/change semantics for the
+                # canonical two-branch descriptor shape. Other descriptors
+                # must not produce a warning that claims the host forged
+                # change metadata.
+                if candidate.descriptor.num_branches == 2:
+                    branch1_claims = [
+                        claim for claim in self.get_wallet_derivation_claims(candidate, out)
+                        if claim[1] == 1
+                    ]
+                    if len(branch1_claims) > 1:
+                        # Distinct branch-1 claims are contradictory. They
+                        # can never justify hiding an output, so avoid doing
+                        # an expensive descriptor re-derivation for each one.
                         warning = INVALID_CHANGE_METADATA_WARNING
+                    elif branch1_claims:
+                        idx, branch_idx = branch1_claims[0]
+                        try:
+                            desc, _ = candidate.get_descriptor(idx, branch_idx)
+                        except Exception:
+                            desc = None
+                        if (
+                            desc is None
+                            or out.script_pubkey is None
+                            or desc.script_pubkey() != out.script_pubkey
+                        ):
+                            warning = INVALID_CHANGE_METADATA_WARNING
 
         is_change = False
         if wallet is not None and derivation is not None:
