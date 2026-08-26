@@ -65,6 +65,13 @@ class TransactionScreen(Prompt):
         self.style_warning = style_warning
         self.style_gray = style_gray
 
+        if "warnings" in meta and len(meta["warnings"]) > 0:
+            text = "WARNING!\n" + "\n".join(meta["warnings"])
+            self.warning = add_label(text, scr=self.page)
+            self.warning.set_style(0, style_warning)
+            self.warning.align(self.page, lv.ALIGN.IN_TOP_MID, 0, 20)
+            obj = self.warning
+
         num_change_outputs = 0
         for out in meta["outputs"]:
             # first only show destination addresses
@@ -86,12 +93,6 @@ class TransactionScreen(Prompt):
             fee.align(obj, lv.ALIGN.OUT_BOTTOM_MID, 0, 30)
 
             obj = fee
-
-        if "warnings" in meta and len(meta["warnings"]) > 0:
-            text = "WARNING!\n" + "\n".join(meta["warnings"])
-            self.warning = add_label(text, scr=self.page)
-            self.warning.set_style(0, style_warning)
-            self.warning.align(obj, lv.ALIGN.OUT_BOTTOM_MID, 0, 30)
 
         meta_inputs_len = len(meta["inputs"])
         lbl = add_label("%d %s" % (meta_inputs_len, "INPUT" if meta_inputs_len == 1 else "INPUTS"), scr=self.page2)
