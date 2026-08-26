@@ -1,6 +1,7 @@
 from app import BaseApp, AppError
 from gui.screens import Menu, DerivationScreen, NumericScreen, Alert, InputScreen, Prompt
 from .screens import XPubScreen
+from . import scope as xpubauth_scope
 import json
 from binascii import hexlify
 from embit.liquid.networks import NETWORKS
@@ -21,12 +22,23 @@ class XpubApp(BaseApp):
     export_generic_json = "json"
     export_specter_diy = "specter-diy"
     button = "Master public keys"
-    prefixes = [b"fingerprint", b"xpub"]
+    prefixes = [b"fingerprint", b"xpub", b"xpubauth"]
     name = "xpub"
 
     def __init__(self, path):
         self.account = 0
-        pass
+        # volatile scoped multi-xpub authorization (RAM only, never
+        # persisted); see scope.py for the grammar and matching rules
+        self._authorization = None
+
+    def init(self, keystore, network, show_loader, communicate):
+        super().init(keystore, network, show_loader, communicate)
+        # a new key or network invalidates any prior authorization -
+        # it belongs to a specific keystore on a specific network
+        self._authorization = None
+
+    def on_lock(self):
+        self._authorization = None
 
     async def menu(self, show_screen, show_all=False):
         net = NETWORKS[self.network]
@@ -260,6 +272,8 @@ class XpubApp(BaseApp):
         # reads prefix from the stream (until first space)
         prefix = self.get_prefix(stream)
         # get device fingerprint, data is ignored
+        # non-interactive: used for device discovery/identification by
+        # companion software, must not require on-device confirmation
         if prefix == b"fingerprint":
             return BytesIO(hexlify(self.keystore.fingerprint)), {}
         # get xpub,
@@ -271,11 +285,81 @@ class XpubApp(BaseApp):
                 path = bip32.parse_path(path.decode())
             except:
                 raise AppError('Invalid path: "%s"' % path.decode())
-            # get xpub
-            xpub = self.keystore.get_xpub(bip32.path_to_str(path))
+            # normalize to the canonical string representation
+            derivation = bip32.path_to_str(path)
+            # derive the xpub so we can show the user exactly what would be shared
+            xpub = self.keystore.get_xpub(derivation)
+            xpub_str = xpub.to_base58(NETWORKS[self.network]["xpub"])
+            # a previously approved scope covers this exact normalized
+            # path and hasn't already been used - no extra prompt needed
+            if self._authorization is not None and self._authorization.try_consume(
+                self.network, path
+            ):
+                if self._authorization.remaining <= 0:
+                    self._authorization = None
+                return BytesIO(xpub_str.encode()), {}
+            fingerprint = hexlify(self.keystore.fingerprint).decode()
+            confirm = await show_screen(
+                Prompt(
+                    "Share Xpub?",
+                    "A connected host wants the\nextended public key for:\n\n%s\n\n%s" % (
+                        derivation, xpub_str,
+                    ),
+                    note="Device fingerprint %s" % fingerprint,
+                )
+            )
+            if not confirm:
+                return False
             # send back as base58
-            return BytesIO(xpub.to_base58(NETWORKS[self.network]["xpub"]).encode()), {}
+            return BytesIO(xpub_str.encode()), {}
+        # xpubauth begin <scope> / xpubauth end -
+        # one confirmation for a bounded, explicit set of paths, see scope.py
+        elif prefix == b"xpubauth":
+            data = stream.read().strip().decode()
+            if data == "end":
+                self._authorization = None
+                return True
+            if data == "begin" or data.startswith("begin "):
+                scope_str = data[len("begin"):].strip()
+                return await self.xpubauth_begin(scope_str, show_screen)
+            raise AppError("Unknown xpubauth subcommand")
         raise AppError("Unknown command")
+
+    async def xpubauth_begin(self, scope_str, show_screen):
+        try:
+            entries, total = xpubauth_scope.parse_scope(
+                scope_str, self.network, NETWORKS[self.network]["bip32"]
+            )
+        except xpubauth_scope.ScopeError as e:
+            raise AppError(str(e))
+        net_name = NETWORKS[self.network]["name"]
+        allowed = "\n".join(entry.format() for entry in entries)
+        fingerprint = hexlify(self.keystore.fingerprint).decode()
+        message = (
+            "Connected software requests temporary\n"
+            "access to multiple public account keys.\n\n"
+            "Network: %s\n\n"
+            "Allowed:\n%s\n\n"
+            "Up to %d extended public keys.\n\n"
+            "Private keys are not shared." % (net_name, allowed, total)
+        )
+        confirm = await show_screen(
+            Prompt(
+                "Share multiple XPUBs?",
+                message,
+                confirm_text="Allow",
+                cancel_text="Cancel",
+                note="Device fingerprint %s" % fingerprint,
+            )
+        )
+        if not confirm:
+            # fail closed: nothing is approved, any prior authorization
+            # (if this was a replacement request) is left untouched
+            return False
+        # commit only now that the user has approved this exact scope -
+        # this also replaces (never merges with) any prior authorization
+        self._authorization = xpubauth_scope.Authorization(entries, self.network)
+        return True
 
     async def show_xpub(self, derivation, show_screen):
         self.show_loader(title="Deriving the key...")
