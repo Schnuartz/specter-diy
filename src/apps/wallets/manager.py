@@ -62,6 +62,8 @@ class WalletManager(BaseApp):
     # supported networks
     Networks = NETWORKS
     DEFAULT_SIGHASH = SIGHASH.ALL
+    # Fee is considered too high if it exceeds this fraction of the sent amount
+    HIGH_FEE_THRESHOLD = 0.1
 
     def __init__(self, path):
         self.root_path = path
@@ -774,7 +776,8 @@ class WalletManager(BaseApp):
         """
         Populates meta["warnings"] for the transaction confirmation screen.
         Warns if the transaction spends inputs from multiple different
-        wallets (multisig change-address attack mitigation).
+        wallets (multisig change-address attack mitigation), and if the
+        fee is unusually high compared to the amount being sent.
         Appends to existing warnings instead of replacing them.
         """
         if len(wallets) > 1:
@@ -782,6 +785,20 @@ class WalletManager(BaseApp):
             warnings = meta.setdefault("warnings", [])
             if warning not in warnings:
                 warnings.append(warning)
+
+        fee = meta.get("fee")
+        if fee:
+            send_amount = sum(
+                out["value"] for out in meta["outputs"]
+                if not out["change"] and out["value"] != -1
+            )
+            if send_amount > 0 and fee > send_amount * self.HIGH_FEE_THRESHOLD:
+                warning = "Fee is %.0f%% of the amount - unusually high!" % (
+                    fee * 100 / send_amount
+                )
+                warnings = meta.setdefault("warnings", [])
+                if warning not in warnings:
+                    warnings.append(warning)
 
     def sign_psbtview(self, psbtv, out_stream, wallets, sighash):
         for w in wallets:

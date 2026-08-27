@@ -110,6 +110,60 @@ class WalletManagerWarningsTest(TestCase):
         self.manager.add_warnings(wallets, meta)
         self.assertEqual(meta["warnings"], [MIXED_INPUTS_WARNING])
 
+    def test_no_high_fee_warning_when_fee_below_threshold(self):
+        meta = self._meta()
+        meta["outputs"] = [{"change": False, "value": 100000}]
+        meta["fee"] = 9999  # just under 10%
+        self.manager.add_warnings({}, meta)
+        self.assertFalse("warnings" in meta)
+
+    def test_high_fee_warning_when_fee_above_threshold(self):
+        meta = self._meta()
+        meta["outputs"] = [{"change": False, "value": 100000}]
+        meta["fee"] = 10001  # just over 10%
+        self.manager.add_warnings({}, meta)
+        self.assertEqual(
+            meta["warnings"], ["Fee is 10% of the amount - unusually high!"]
+        )
+
+    def test_no_high_fee_warning_when_no_fee(self):
+        meta = self._meta()
+        meta["outputs"] = [{"change": False, "value": 100000}]
+        self.manager.add_warnings({}, meta)
+        self.assertFalse("warnings" in meta)
+
+    def test_no_high_fee_warning_when_send_amount_is_zero(self):
+        # e.g. a wallet consolidation / self-send with only change outputs
+        meta = self._meta()
+        meta["outputs"] = [{"change": True, "value": 100000}]
+        meta["fee"] = 50000
+        self.manager.add_warnings({}, meta)
+        self.assertFalse("warnings" in meta)
+
+    def test_high_fee_warning_not_duplicated(self):
+        meta = self._meta()
+        meta["outputs"] = [{"change": False, "value": 100000}]
+        meta["fee"] = 50000
+        self.manager.add_warnings({}, meta)
+        self.manager.add_warnings({}, meta)
+        self.assertEqual(
+            meta["warnings"], ["Fee is 50% of the amount - unusually high!"]
+        )
+
+    def test_high_fee_warning_combines_with_mixed_inputs_warning(self):
+        meta = self._meta()
+        meta["outputs"] = [{"change": False, "value": 100000}]
+        meta["fee"] = 50000
+        wallets = {
+            object(): {"amount": 1000, "gaps": [0, 0]},
+            object(): {"amount": 2000, "gaps": [0, 0]},
+        }
+        self.manager.add_warnings(wallets, meta)
+        self.assertEqual(
+            meta["warnings"],
+            [MIXED_INPUTS_WARNING, "Fee is 50% of the amount - unusually high!"],
+        )
+
 
 class WalletManagerWarningsIntegrationTest(TestCase):
     """
