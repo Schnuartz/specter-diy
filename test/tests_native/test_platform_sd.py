@@ -487,6 +487,129 @@ class SecureDeleteTreeTest(TestCase):
             with open(path, "rb") as f:
                 self.assertEqual(f.read(), expected)
 
+    def test_nested_tree_is_overwritten_and_removed(self):
+        platform.maybe_mkdir("%s/a" % self.path)
+        platform.maybe_mkdir("%s/a/b" % self.path)
+        paths = [
+            "%s/top.bin" % self.path,
+            "%s/a/mid.bin" % self.path,
+            "%s/a/b/leaf.bin" % self.path,
+        ]
+        for path in paths:
+            with open(path, "wb") as f:
+                f.write(b"secret")
+        overwritten = []
+        real_secure_delete_file = platform.secure_delete_file
+
+        def recording_secure_delete_file(path):
+            overwritten.append(path)
+            return real_secure_delete_file(path)
+
+        platform.secure_delete_file = recording_secure_delete_file
+        try:
+            platform.secure_delete_tree(self.path)
+        finally:
+            platform.secure_delete_file = real_secure_delete_file
+        # every file at every level went through the overwrite path, not
+        # just a plain unlink, and the directories are gone afterwards
+        self.assertEqual(sorted(overwritten), sorted(paths))
+        self.assertFalse(platform.file_exists(self.path))
+        self.assertFalse(platform.file_exists("%s/a" % self.path))
+        self.assertFalse(platform.file_exists("%s/a/b" % self.path))
+
+    def test_walk_holds_one_directory_handle_at_a_time(self):
+        """A recursive walk keeps every parent's directory iterator open
+        while it descends. The iterative walk must not."""
+        open_iters = []
+        max_open = []
+
+        class _Entries:
+            def __init__(self, path):
+                self.path = path
+                self.closed = False
+                open_iters.append(self)
+                max_open.append(len(
+                    [e for e in open_iters if not e.closed]
+                ))
+
+            def __iter__(self):
+                depth = self.path.count("/")
+                if depth < 4:
+                    yield ("child", 0x4000, 0, 0)
+                yield ("file.bin", 0x8000, 0, 0)
+
+            def close(self):
+                self.closed = True
+
+        real_ilistdir = os.ilistdir
+        os.ilistdir = _Entries
+        try:
+            files, _entries, _size = platform._collect_files("virtual")
+        finally:
+            os.ilistdir = real_ilistdir
+        self.assertEqual(len(files), 5)
+        self.assertEqual(max(max_open), 1)
+        self.assertTrue(all(e.closed for e in open_iters))
+
+    def test_directory_handle_is_closed_when_the_walk_aborts(self):
+        closed = []
+
+        class _Entries:
+            def __init__(self, path):
+                self.path = path
+
+            def __iter__(self):
+                for i in range(platform.SECURE_DELETE_MAX_ENTRIES + 10):
+                    yield ("file_%d.bin" % i, 0x8000, 0, 0)
+
+            def close(self):
+                closed.append(self.path)
+
+        real_ilistdir = os.ilistdir
+        os.ilistdir = _Entries
+        try:
+            with self.assertRaises(RuntimeError):
+                platform._collect_files("virtual")
+        finally:
+            os.ilistdir = real_ilistdir
+        # aborting mid-directory must still release the open handle
+        self.assertEqual(closed, ["virtual"])
+
+    def test_close_dir_iter_tolerates_entries_without_close(self):
+        # the simulator and the native stubs hand back plain generators /
+        # lists, which have no close() to call
+        platform._close_dir_iter([("a", 0x8000, 0, 0)])
+
+        class _NotCallableClose:
+            close = "not a method"
+
+        platform._close_dir_iter(_NotCallableClose())
+
+    def test_remove_empty_dirs_removes_children_before_parents(self):
+        platform.maybe_mkdir("%s/a" % self.path)
+        platform.maybe_mkdir("%s/a/b" % self.path)
+        platform.maybe_mkdir("%s/c" % self.path)
+        removed = []
+        real_rmdir = os.rmdir
+
+        def recording_rmdir(path):
+            removed.append(path)
+            return real_rmdir(path)
+
+        os.rmdir = recording_rmdir
+        try:
+            platform._remove_empty_dirs(self.path)
+        finally:
+            os.rmdir = real_rmdir
+        self.assertEqual(len(removed), 4)
+        for parent, child in (
+            (self.path, "%s/a" % self.path),
+            (self.path, "%s/c" % self.path),
+            ("%s/a" % self.path, "%s/a/b" % self.path),
+        ):
+            self.assertLess(removed.index(child), removed.index(parent))
+        self.assertFalse(platform.file_exists(self.path))
+
     def test_collector_stops_immediately_when_cap_is_exceeded(self):
         seen = []
 

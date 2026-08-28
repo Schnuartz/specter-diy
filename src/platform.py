@@ -78,6 +78,17 @@ def validate_block_geometry(block_size, block_count, what="block device"):
 
 
 class SDCard:
+    """
+    A single SD card slot: the block device, the activity LED and the
+    mount state that belong to it.
+
+    `self` here is the card, not the platform module that happens to hold
+    the module-level `sdcard` singleton - every method below (is_present,
+    mount, unmount, erase_and_format, ...) is about this one card. On the
+    simulator build there is no block device behind it and /sd is an
+    ordinary host directory instead (see has_block_device).
+    """
+
     _mounted = False
 
     def __init__(self, sd = None, led = None):
@@ -101,8 +112,10 @@ class SDCard:
     @property
     def is_present(self):
         """
-        Checks if an SD card is inserted (always true without a real
-        block device, see has_block_device)
+        True when a card is inserted in this slot. Without a real block
+        device behind it (the simulator build, see has_block_device)
+        there is nothing to ask: the /sd directory that stands in for the
+        card is always there.
         """
         if not self.has_block_device:
             return True
@@ -550,7 +563,7 @@ def _strict_file_sync(f):
 
 
 # An adversarial directory with thousands of entries would otherwise make
-# secure_delete_tree() enumerate, recurse through, and later remove entries
+# secure_delete_tree() enumerate, walk through, and later remove entries
 # for an unbounded amount of time (DoS). A BitBox backup directory has only a
 # few entries, so this leaves ample room for legitimate trees.
 SECURE_DELETE_MAX_FILES = 200
@@ -562,9 +575,9 @@ SECURE_DELETE_MAX_TOTAL_BYTES = 8 * 1024 * 1024
 
 def secure_delete_tree(path):
     """
-    Recursively secure_delete_file()s every regular file under `path`
-    (see its docstring), then removes the now-empty directories,
-    including `path` itself. Used for multi-file items such as a BitBox
+    Walks the whole tree under `path` and secure_delete_file()s every
+    regular file in it (see its docstring), then removes the now-empty
+    directories, including `path` itself. Used for multi-file items such as a BitBox
     backup directory, where each of the redundant copies must be
     overwritten, not just unlinked.
 
@@ -589,10 +602,28 @@ def secure_delete_tree(path):
     _remove_empty_dirs(path)
 
 
+def _close_dir_iter(entries):
+    """
+    Releases whatever os.ilistdir() handed back.
+
+    On the STM32 build this is a real iterator holding an open directory
+    handle, which has to be closed even when the traversal is abandoned
+    half way through (a cap was exceeded, a stat() failed). Elsewhere -
+    the simulator, the native test stubs - it can be a plain generator or
+    a list, so the close method may not exist at all.
+
+    Shared by every directory walk below so the "close it if it can be
+    closed" dance exists in exactly one place.
+    """
+    close = getattr(entries, "close", None)
+    if callable(close):
+        close()
+
+
 def _collect_files(
         path, max_entries=SECURE_DELETE_MAX_ENTRIES,
-        max_depth=SECURE_DELETE_MAX_DEPTH, depth=0, entry_count=0,
-        total_bytes=0, max_file_bytes=None, max_total_bytes=None):
+        max_depth=SECURE_DELETE_MAX_DEPTH,
+        max_file_bytes=None, max_total_bytes=None):
     """Returns `(files, entry_count, total_bytes)`, where `files` is a list
     of the full paths of all regular files under `path`. Aborts before
     traversing more than `max_entries` total entries or descending beyond
@@ -600,99 +631,118 @@ def _collect_files(
     with `os.stat()` before their paths are retained. Does not modify or
     delete anything.
 
-    `entry_count` / `total_bytes` are the running totals a recursive call
-    inherits from its parent; top-level callers leave them at 0."""
-    if depth > max_depth:
-        raise RuntimeError(
-            "directory is deeper than %d levels - use 'Format entire SD "
-            "card' instead" % max_depth
-        )
+    The walk is iterative (an explicit stack of (directory, depth) pairs)
+    rather than recursive: on this device the Python stack is small and a
+    deep tree is attacker-controlled input, so nesting must not consume
+    call frames. It also means only one directory iterator is open at a
+    time - a recursive walk keeps the whole chain of parent handles open
+    while it descends."""
     files = []
-    entries = os.ilistdir(path)
-    try:
-        for name, entry_type, *_rest in entries:
-            if name in (".", ".."):
-                continue
-            entry_path = "%s/%s" % (path, name)
-            entry_count += 1
-            if entry_count > max_entries:
-                raise RuntimeError(
-                    "directory contains more than %d entries - use "
-                    "'Format entire SD card' instead" % max_entries
-                )
-            if entry_type == 0x8000:
-                if max_file_bytes is not None or max_total_bytes is not None:
-                    try:
-                        size = os.stat(entry_path)[6]
-                    except Exception as e:
-                        raise RuntimeError(
-                            "Could not inspect file before secure delete: %s"
-                            % entry_path
-                        ) from e
-                    if (
-                        not isinstance(size, int)
-                        or isinstance(size, bool)
-                        or size < 0
-                    ):
-                        raise RuntimeError(
-                            "file has invalid size metadata: %s" % entry_path
-                        )
-                    if max_file_bytes is not None and size > max_file_bytes:
-                        raise RuntimeError(
-                            "file is %d bytes (maximum %d) - use 'Format "
-                            "entire SD card' instead"
-                            % (size, max_file_bytes)
-                        )
-                    total_bytes += size
-                    if (
-                        max_total_bytes is not None
-                        and total_bytes > max_total_bytes
-                    ):
-                        raise RuntimeError(
-                            "tree contains more than %d bytes - use "
-                            "'Format entire SD card' instead" % max_total_bytes
-                        )
-                files.append(entry_path)
-            elif entry_type == 0x4000:
-                sub_files, entry_count, total_bytes = _collect_files(
-                    entry_path,
-                    max_entries,
-                    max_depth,
-                    depth=depth + 1,
-                    entry_count=entry_count,
-                    total_bytes=total_bytes,
-                    max_file_bytes=max_file_bytes,
-                    max_total_bytes=max_total_bytes,
-                )
-                files.extend(sub_files)
-    finally:
-        close = getattr(entries, "close", None)
-        if close is not None:
-            close()
+    entry_count = 0
+    total_bytes = 0
+    stack = [(path, 0)]
+    while stack:
+        dir_path, depth = stack.pop()
+        if depth > max_depth:
+            raise RuntimeError(
+                "directory is deeper than %d levels - use 'Format entire SD "
+                "card' instead" % max_depth
+            )
+        entries = os.ilistdir(dir_path)
+        try:
+            for name, entry_type, *_rest in entries:
+                if name in (".", ".."):
+                    continue
+                entry_path = "%s/%s" % (dir_path, name)
+                entry_count += 1
+                if entry_count > max_entries:
+                    raise RuntimeError(
+                        "directory contains more than %d entries - use "
+                        "'Format entire SD card' instead" % max_entries
+                    )
+                if entry_type == 0x8000:
+                    if (max_file_bytes is not None
+                            or max_total_bytes is not None):
+                        try:
+                            size = os.stat(entry_path)[6]
+                        except Exception as e:
+                            raise RuntimeError(
+                                "Could not inspect file before secure "
+                                "delete: %s" % entry_path
+                            ) from e
+                        if (
+                            not isinstance(size, int)
+                            or isinstance(size, bool)
+                            or size < 0
+                        ):
+                            raise RuntimeError(
+                                "file has invalid size metadata: %s"
+                                % entry_path
+                            )
+                        if (max_file_bytes is not None
+                                and size > max_file_bytes):
+                            raise RuntimeError(
+                                "file is %d bytes (maximum %d) - use 'Format "
+                                "entire SD card' instead"
+                                % (size, max_file_bytes)
+                            )
+                        total_bytes += size
+                        if (
+                            max_total_bytes is not None
+                            and total_bytes > max_total_bytes
+                        ):
+                            raise RuntimeError(
+                                "tree contains more than %d bytes - use "
+                                "'Format entire SD card' instead"
+                                % max_total_bytes
+                            )
+                    files.append(entry_path)
+                elif entry_type == 0x4000:
+                    stack.append((entry_path, depth + 1))
+        finally:
+            _close_dir_iter(entries)
     return files, entry_count, total_bytes
 
 
-def _remove_empty_dirs(path, max_depth=SECURE_DELETE_MAX_DEPTH, depth=0):
-    """Recursively removes every empty directory under `path`, then
-    `path` itself. Must be called after secure_delete_file() has already
-    unlinked every regular file, so each directory is in fact empty."""
-    if depth > max_depth:
-        raise RuntimeError(
-            "directory is deeper than %d levels - use 'Format entire SD "
-            "card' instead" % max_depth
-        )
-    entries = os.ilistdir(path)
-    try:
-        for name, entry_type, *_rest in entries:
-            if name in (".", ".."):
-                continue
-            if entry_type == 0x4000:
-                _remove_empty_dirs("%s/%s" % (path, name), max_depth, depth + 1)
-    finally:
-        close = getattr(entries, "close", None)
-        if close is not None:
-            close()
-    os.rmdir(path)
+def _remove_empty_dirs(path, max_entries=SECURE_DELETE_MAX_ENTRIES,
+                       max_depth=SECURE_DELETE_MAX_DEPTH):
+    """Removes every empty directory under `path`, then `path` itself.
+    Must be called after secure_delete_file() has already unlinked every
+    regular file, so each directory is in fact empty.
+
+    Iterative for the same reason as _collect_files(): the directories are
+    gathered top-down onto an explicit stack and then removed in reverse,
+    which is the post-order a recursive walk would have produced, without
+    the recursion. A parent is always recorded before the children it
+    pushes, so walking the list backwards always removes children first.
+    The same entry cap applies, so an adversarial tree cannot grow this
+    list without bound either."""
+    dirs = []
+    stack = [(path, 0)]
+    while stack:
+        dir_path, depth = stack.pop()
+        if depth > max_depth:
+            raise RuntimeError(
+                "directory is deeper than %d levels - use 'Format entire SD "
+                "card' instead" % max_depth
+            )
+        dirs.append(dir_path)
+        if len(dirs) > max_entries:
+            raise RuntimeError(
+                "directory contains more than %d entries - use 'Format "
+                "entire SD card' instead" % max_entries
+            )
+        entries = os.ilistdir(dir_path)
+        try:
+            for name, entry_type, *_rest in entries:
+                if name in (".", ".."):
+                    continue
+                if entry_type == 0x4000:
+                    stack.append(("%s/%s" % (dir_path, name), depth + 1))
+        finally:
+            _close_dir_iter(entries)
+    for i in range(len(dirs) - 1, -1, -1):
+        os.rmdir(dirs[i])
 
 
 if not simulator:

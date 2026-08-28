@@ -8,5 +8,6 @@ sys.path.append('../f469-disco/tests')
 import unittest
 from tests import util
 
+util.print_environment()
 util.clear_testdir()
 unittest.main('tests')

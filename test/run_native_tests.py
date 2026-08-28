@@ -22,5 +22,6 @@ setup_native_stubs()
 import unittest
 from tests import util
 
+util.print_environment()
 util.clear_testdir()
 unittest.main('tests_native', verbosity=2)
