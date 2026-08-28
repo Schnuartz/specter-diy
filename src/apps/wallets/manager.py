@@ -62,6 +62,8 @@ class WalletManager(BaseApp):
     # supported networks
     Networks = NETWORKS
     DEFAULT_SIGHASH = SIGHASH.ALL
+    # Fixed threshold matching BitBox; deliberately not a user setting.
+    HIGH_FEE_THRESHOLD = 0.1
 
     def __init__(self, path):
         self.root_path = path
@@ -767,7 +769,28 @@ class WalletManager(BaseApp):
 
             out.write_to(fout, version=psbtv.version)
         meta["fee"] = fee
+        self.add_warnings(meta)
         return wallets, meta
+
+    def add_warnings(self, meta):
+        """Add transaction-level warnings without replacing existing ones."""
+        fee = meta.get("fee")
+        send_amount = sum(
+            out["value"]
+            for out in meta.get("outputs", [])
+            if not out.get("change", False)
+        )
+        if (
+            fee is not None
+            and fee > 0
+            and send_amount > 0
+            and fee > send_amount * self.HIGH_FEE_THRESHOLD
+        ):
+            fee_percent = fee * 100 / send_amount
+            warning = "Fee is %.2f%% of the amount - unusually high!" % fee_percent
+            warnings = meta.setdefault("warnings", [])
+            if warning not in warnings:
+                warnings.append(warning)
 
     def sign_psbtview(self, psbtv, out_stream, wallets, sighash):
         for w in wallets:
