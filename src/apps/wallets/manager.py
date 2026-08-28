@@ -62,8 +62,8 @@ class WalletManager(BaseApp):
     # supported networks
     Networks = NETWORKS
     DEFAULT_SIGHASH = SIGHASH.ALL
-    # Fixed threshold matching BitBox; deliberately not a user setting.
-    HIGH_FEE_THRESHOLD = 0.1
+    # BitBox's fixed warning threshold; deliberately not a user setting.
+    HIGH_FEE_PERCENT = 10
 
     def __init__(self, path):
         self.root_path = path
@@ -634,6 +634,8 @@ class WalletManager(BaseApp):
 
         # string representation of the Bitcoin for wallet processing
         fee = 0
+        verified_input_total = 0
+        send_amount = 0
 
         # here we will store all wallets that we detect in inputs
         # {wallet: {"amount": amount, "gaps": [gaps]}}
@@ -698,6 +700,7 @@ class WalletManager(BaseApp):
 
             value = inp.utxo.value
             fee += value
+            verified_input_total += value
 
             wallets[wallet]["amount"] = wallets.get(wallet, {}).get("amount") + value
             metainp.update({
@@ -742,8 +745,11 @@ class WalletManager(BaseApp):
             # Get values and store in metadata and wallets dict
             value = out.value
             fee -= value
+            owned_by_input_wallet = wallet is not None and wallet in wallets
+            if not owned_by_input_wallet:
+                send_amount += value
             metaout.update({
-                "change": (wallet is not None and len(wallets) == 1 and wallet in wallets),
+                "change": (owned_by_input_wallet and len(wallets) == 1),
                 "value": value,
                 "address": self.get_address(out),
             })
@@ -769,24 +775,21 @@ class WalletManager(BaseApp):
 
             out.write_to(fout, version=psbtv.version)
         meta["fee"] = fee
+        meta["fee_basis"] = send_amount if send_amount > 0 else verified_input_total
         self.add_warnings(meta)
         return wallets, meta
 
     def add_warnings(self, meta):
         """Add transaction-level warnings without replacing existing ones."""
         fee = meta.get("fee")
-        send_amount = sum(
-            out["value"]
-            for out in meta.get("outputs", [])
-            if not out.get("change", False)
-        )
+        fee_basis = meta.get("fee_basis", 0)
         if (
             fee is not None
             and fee > 0
-            and send_amount > 0
-            and fee > send_amount * self.HIGH_FEE_THRESHOLD
+            and fee_basis > 0
+            and fee * 100 >= fee_basis * self.HIGH_FEE_PERCENT
         ):
-            fee_percent = fee * 100 / send_amount
+            fee_percent = fee * 100 / fee_basis
             warning = "Fee is %.2f%% of the amount - unusually high!" % fee_percent
             warnings = meta.setdefault("warnings", [])
             if warning not in warnings:
