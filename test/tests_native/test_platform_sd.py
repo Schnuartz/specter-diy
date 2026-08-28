@@ -8,8 +8,8 @@ never awaits anything itself (e.g. one that only redraws a progress bar)
 would otherwise run synchronously and starve the GUI's update loop for
 the entire format, freezing the screen on device.
 
-For secure_delete_tree: a directory with more than SECURE_DELETE_MAX_FILES
-files must be rejected BEFORE any overwrite happens, so a partial wipe
+For secure_delete_tree: a directory with more than
+SECURE_DELETE_MAX_ENTRIES entries must be rejected BEFORE any overwrite happens, so a partial wipe
 is never left behind and an adversarial directory cannot force
 unbounded overwrite+sync work.
 """
@@ -333,15 +333,52 @@ class SecureDeleteFileTest(TestCase):
         except OSError:
             pass
 
-    def test_invalid_pass_count_is_rejected_before_opening_file(self):
+    def test_overwrites_once_then_unlinks(self):
+        """One pass is deliberate (NIST SP 800-88: extra passes buy nothing
+        on flash). Assert the file's whole length is rewritten exactly once
+        and the file is then gone."""
         with open(self.path, "rb") as f:
             original = f.read()
-        for passes in (0, -1, 1.5, True):
-            with self.assertRaises(ValueError):
-                platform.secure_delete_file(self.path, passes=passes)
-            self.assertTrue(platform.file_exists(self.path))
-            with open(self.path, "rb") as f:
-                self.assertEqual(f.read(), original)
+        writes = []
+
+        class RecordingFile:
+            def __init__(self, f):
+                self._f = f
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self._f.close()
+
+            def seek(self, offset, whence=0):
+                return self._f.seek(offset, whence)
+
+            def tell(self):
+                return self._f.tell()
+
+            def flush(self):
+                return self._f.flush()
+
+            def fileno(self):
+                return self._f.fileno()
+
+            def write(self, data):
+                writes.append(len(data))
+                return self._f.write(data)
+
+        real_open = getattr(platform, "open", None)
+        platform.open = lambda path, mode: RecordingFile(open(path, mode))
+        try:
+            size = platform.secure_delete_file(self.path)
+        finally:
+            if real_open is None:
+                del platform.open
+            else:
+                platform.open = real_open
+        self.assertEqual(size, len(original))
+        self.assertEqual(sum(writes), len(original))
+        self.assertFalse(platform.file_exists(self.path))
 
     def test_short_write_aborts_without_unlinking(self):
         class ShortWriteFile:
@@ -365,7 +402,7 @@ class SecureDeleteFileTest(TestCase):
         platform.open = lambda *args, **kwargs: ShortWriteFile()
         try:
             with self.assertRaises(OSError) as ctx:
-                platform.secure_delete_file(self.path, passes=1)
+                platform.secure_delete_file(self.path)
             self.assertIn("short write", str(ctx.exception))
         finally:
             if had_open:
@@ -383,46 +420,11 @@ class SecureDeleteFileTest(TestCase):
         platform._strict_file_sync = failing_sync
         try:
             with self.assertRaises(OSError) as ctx:
-                platform.secure_delete_file(self.path, passes=1)
+                platform.secure_delete_file(self.path)
             self.assertIn("sync failure", str(ctx.exception))
         finally:
             platform._strict_file_sync = real_sync
         self.assertTrue(platform.file_exists(self.path))
-
-    def test_file_size_limit_aborts_before_overwrite(self):
-        real_open = getattr(platform, "open", None)
-        original_exists = platform.file_exists
-
-        class OversizedFile:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                pass
-
-            def seek(self, offset, whence=0):
-                pass
-
-            def tell(self):
-                return platform.SECURE_DELETE_MAX_FILE_BYTES + 1
-
-        platform.open = lambda *args, **kwargs: OversizedFile()
-        platform.file_exists = lambda path: True
-        try:
-            with self.assertRaises(RuntimeError) as ctx:
-                platform.secure_delete_file(
-                    self.path,
-                    passes=1,
-                    max_size=platform.SECURE_DELETE_MAX_FILE_BYTES,
-                )
-            self.assertIn("maximum", str(ctx.exception))
-        finally:
-            if real_open is None:
-                del platform.open
-            else:
-                platform.open = real_open
-            platform.file_exists = original_exists
-        self.assertTrue(original_exists(self.path))
 
 
 class SecureDeleteTreeTest(TestCase):
@@ -449,14 +451,14 @@ class SecureDeleteTreeTest(TestCase):
         self.assertFalse(platform.file_exists(self.path))
 
     def test_tree_at_cap_deleted(self):
-        self._make_files(platform.SECURE_DELETE_MAX_FILES)
+        self._make_files(platform.SECURE_DELETE_MAX_ENTRIES)
         platform.secure_delete_tree(self.path)
         self.assertFalse(platform.file_exists(self.path))
 
     def test_tree_over_cap_rejected_before_overwrite(self):
-        self._make_files(platform.SECURE_DELETE_MAX_FILES + 1)
+        self._make_files(platform.SECURE_DELETE_MAX_ENTRIES + 1)
         before = {}
-        for i in range(platform.SECURE_DELETE_MAX_FILES + 1):
+        for i in range(platform.SECURE_DELETE_MAX_ENTRIES + 1):
             path = "%s/file_%d.bin" % (self.path, i)
             with open(path, "rb") as f:
                 before[path] = f.read()
@@ -473,22 +475,22 @@ class SecureDeleteTreeTest(TestCase):
         seen = []
 
         def many_entries(path):
-            for i in range(platform.SECURE_DELETE_MAX_FILES + 1000):
+            for i in range(platform.SECURE_DELETE_MAX_ENTRIES + 1000):
                 seen.append(i)
                 yield ("file_%d.bin" % i, 0x8000, 0, 0)
 
         real_ilistdir = os.ilistdir
         os.ilistdir = many_entries
-        files = []
         try:
             with self.assertRaises(RuntimeError):
                 platform._collect_files(
-                    "virtual", files, platform.SECURE_DELETE_MAX_FILES
+                    "virtual", platform.SECURE_DELETE_MAX_ENTRIES
                 )
         finally:
             os.ilistdir = real_ilistdir
-        self.assertEqual(len(files), platform.SECURE_DELETE_MAX_FILES)
-        self.assertEqual(len(seen), platform.SECURE_DELETE_MAX_FILES + 1)
+        # Enumeration must abort on the first over-cap entry rather than
+        # walking the whole (adversarial) directory first.
+        self.assertEqual(len(seen), platform.SECURE_DELETE_MAX_ENTRIES + 1)
 
     def test_collector_rejects_too_many_directories(self):
         seen = []
@@ -505,7 +507,7 @@ class SecureDeleteTreeTest(TestCase):
         try:
             with self.assertRaises(RuntimeError) as ctx:
                 platform._collect_files(
-                    "virtual", [], platform.SECURE_DELETE_MAX_ENTRIES
+                    "virtual", platform.SECURE_DELETE_MAX_ENTRIES
                 )
             self.assertIn("entries", str(ctx.exception))
         finally:
@@ -527,7 +529,7 @@ class SecureDeleteTreeTest(TestCase):
         try:
             with self.assertRaises(RuntimeError) as ctx:
                 platform._collect_files(
-                    "virtual", [], platform.SECURE_DELETE_MAX_ENTRIES
+                    "virtual", platform.SECURE_DELETE_MAX_ENTRIES
                 )
             self.assertIn("deeper", str(ctx.exception))
         finally:
@@ -546,12 +548,10 @@ class SecureDeleteTreeTest(TestCase):
         os.ilistdir = one_file
         os.stat = lambda path: (0, 0, 0, 0, 0, 0,
                                 platform.SECURE_DELETE_MAX_FILE_BYTES + 1)
-        files = []
         try:
             with self.assertRaises(RuntimeError) as ctx:
                 platform._collect_files(
                     "virtual",
-                    files,
                     platform.SECURE_DELETE_MAX_ENTRIES,
                     max_file_bytes=platform.SECURE_DELETE_MAX_FILE_BYTES,
                     max_total_bytes=platform.SECURE_DELETE_MAX_TOTAL_BYTES,
@@ -560,26 +560,25 @@ class SecureDeleteTreeTest(TestCase):
         finally:
             os.ilistdir = real_ilistdir
             os.stat = real_stat
-        self.assertEqual(files, [])
 
     def test_collector_rejects_oversized_total_before_retaining_file(self):
         real_ilistdir = os.ilistdir
         real_stat = os.stat
 
+        seen = []
+
         def three_files(path):
-            yield ("first.bin", 0x8000, 0, 0)
-            yield ("second.bin", 0x8000, 0, 0)
-            yield ("third.bin", 0x8000, 0, 0)
+            for name in ("first.bin", "second.bin", "third.bin"):
+                seen.append(name)
+                yield (name, 0x8000, 0, 0)
 
         os.ilistdir = three_files
         os.stat = lambda path: (0, 0, 0, 0, 0, 0,
                                 platform.SECURE_DELETE_MAX_FILE_BYTES)
-        files = []
         try:
             with self.assertRaises(RuntimeError) as ctx:
                 platform._collect_files(
                     "virtual",
-                    files,
                     platform.SECURE_DELETE_MAX_ENTRIES,
                     max_file_bytes=platform.SECURE_DELETE_MAX_FILE_BYTES,
                     max_total_bytes=platform.SECURE_DELETE_MAX_TOTAL_BYTES,
@@ -588,7 +587,6 @@ class SecureDeleteTreeTest(TestCase):
         finally:
             os.ilistdir = real_ilistdir
             os.stat = real_stat
-        self.assertEqual(
-            files,
-            ["virtual/first.bin", "virtual/second.bin"],
-        )
+        # Two 4 MiB files fit the 8 MiB budget; the third must abort the
+        # walk immediately rather than after enumerating anything further.
+        self.assertEqual(seen, ["first.bin", "second.bin", "third.bin"])

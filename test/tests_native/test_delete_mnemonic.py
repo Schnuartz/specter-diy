@@ -68,7 +68,7 @@ class _DeleteMnemonicBase(TestCase):
         real_fn = platform.secure_delete_file
         calls = []
 
-        def failing_delete(path, passes=3):
+        def failing_delete(path):
             calls.append(path)
             raise OSError("simulated I/O failure")
 
@@ -129,7 +129,7 @@ class SDDeleteMnemonicTest(_DeleteMnemonicBase):
         real_delete = platform.secure_delete_file
         platform.sdcard = card
         platform.file_exists = lambda path: path == target
-        platform.secure_delete_file = lambda path, passes=3: None
+        platform.secure_delete_file = lambda path: None
         try:
             self.assertIs(_run(self.ks.delete_mnemonic()), True)
         finally:
@@ -154,7 +154,7 @@ class SDDeleteMnemonicTest(_DeleteMnemonicBase):
         platform.sdcard = BrokenUnmountCard()
         platform.file_exists = lambda path: path == target
 
-        def failing_delete(path, passes=3):
+        def failing_delete(path):
             raise OSError("delete failed")
 
         platform.secure_delete_file = failing_delete
