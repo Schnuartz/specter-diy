@@ -4,8 +4,11 @@ Verified block map of `pyb.Flash()` on the STM32F469 Discovery board, as built b
 Specter's firmware (`make disco USE_DBOOT=1`). `pyb.Flash()` (no args) exposes the
 whole board's storage as one block device addressed with these **absolute** block
 numbers. This is the ground truth behind the `*_BLOCK` constants in `src/platform.py`
-(`INTERNAL_FLASH_START_BLOCK`, `INTERNAL_FLASH_END_BLOCK`, `QSPI_START_BLOCK`,
-`QSPI_END_BLOCK`) and behind what `platform.wipe()` overwrites.
+(`INTERNAL_FLASH_START_BLOCK`, `INTERNAL_FLASH_END_BLOCK`, `QSPI_START_BLOCK`) and
+behind what `platform.wipe()` overwrites. Note that the block size and the end of the
+QSPI region are deliberately **not** constants: `wipe()` reads both back from the block
+device with `ioctl()`, so only the split point between the two filesystems is stated in
+the code.
 
 | Blocks        | Region                                   | Notes |
 |---------------|-------------------------------------------|-------|
@@ -38,10 +41,11 @@ driver.
 ## Keeping this current
 
 These submodule pins can move independently of this file. If `f469-disco` or the
-MicroPython fork is updated, re-check the sources above before trusting this table -
-`platform.wipe()` also runs a runtime geometry check (`f.ioctl()` block size/count
-against `FLASH_BLOCK_SIZE`/`QSPI_END_BLOCK`) and refuses to wipe on a mismatch, but
-that check can't catch every possible drift (e.g. a shifted split point that still
-adds up to the same total block count). See also the tracking issue to expose the
-partition boundary as a proper runtime API instead of a hard-coded constant:
-[diybitcoinhardware/f469-disco - Expose flash partition boundary via a queryable API](https://github.com/diybitcoinhardware/f469-disco/issues).
+MicroPython fork is updated, re-check the sources above before trusting this table.
+Block size and total block count drift is handled automatically, because `wipe()` takes
+both from the device. The split point is the part that cannot be read back: `wipe()`
+only sanity-checks that the device extends past it and refuses to touch anything if it
+does not, which will not catch a shifted split point that still leaves the total block
+count plausible. See the tracking issue to expose the partition boundary as a proper
+runtime API instead of a hard-coded constant:
+[diybitcoinhardware/f469-disco#44](https://github.com/diybitcoinhardware/f469-disco/issues/44).

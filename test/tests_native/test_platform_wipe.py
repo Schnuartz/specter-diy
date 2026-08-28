@@ -12,6 +12,12 @@ import platform
 from tests.util import clear_testdir
 
 
+# The end of the QSPI region is no longer a platform constant - wipe()
+# reads it from the block device. Tests still pin the value the block map
+# was verified against, so a change in the wiped range stays visible here.
+VERIFIED_QSPI_END_BLOCK = 33216
+
+
 class FakeFlash:
     """
     Records every writeblocks()/ioctl() call - including their relative
@@ -24,7 +30,7 @@ class FakeFlash:
     def __init__(self, block_size=512, block_count=None, fail_at_blocks=None,
                  raise_at_blocks=None, fail_sync=False, sync_error_code=None):
         self.block_size = block_size
-        self.block_count = block_count if block_count is not None else platform.QSPI_END_BLOCK
+        self.block_count = block_count if block_count is not None else VERIFIED_QSPI_END_BLOCK
         self.calls = []  # list of (block_num, num_blocks)
         self.fail_at_blocks = set(fail_at_blocks or [])
         self.raise_at_blocks = set(raise_at_blocks or [])
@@ -83,14 +89,22 @@ class BlockMapConstantsTest(TestCase):
             192,
         )
 
-    def test_qspi_range(self):
+    def test_qspi_start(self):
+        # Only the start of the QSPI region is a constant. Its end comes
+        # from the block device at run time, so there is nothing here to
+        # go stale against a differently sized chip.
         self.assertEqual(platform.QSPI_START_BLOCK, 448)
-        self.assertEqual(platform.QSPI_END_BLOCK, 33216)
         # 32768 blocks * 512 bytes == 16 MiB == the on-board QSPI chip
         self.assertEqual(
-            platform.QSPI_END_BLOCK - platform.QSPI_START_BLOCK,
+            VERIFIED_QSPI_END_BLOCK - platform.QSPI_START_BLOCK,
             32768,
         )
+
+    def test_no_hardcoded_geometry_left_in_platform(self):
+        # Guards the point of this change: block size and total block
+        # count must not creep back in as module constants.
+        self.assertFalse(hasattr(platform, "FLASH_BLOCK_SIZE"))
+        self.assertFalse(hasattr(platform, "QSPI_END_BLOCK"))
 
     def test_qspi_starts_immediately_after_internal_flash(self):
         self.assertEqual(platform.QSPI_START_BLOCK, platform.INTERNAL_FLASH_END_BLOCK)
@@ -121,16 +135,16 @@ class SecureOverwriteBlocksTest(TestCase):
     def test_wipes_full_qspi_range(self):
         f = FakeFlash()
         ok = platform._secure_overwrite_blocks(
-            f, platform.QSPI_START_BLOCK, platform.QSPI_END_BLOCK, 512
+            f, platform.QSPI_START_BLOCK, VERIFIED_QSPI_END_BLOCK, 512
         )
         self.assertTrue(ok)
         self.assertEqual(
             f.written_blocks(),
-            set(range(platform.QSPI_START_BLOCK, platform.QSPI_END_BLOCK)),
+            set(range(platform.QSPI_START_BLOCK, VERIFIED_QSPI_END_BLOCK)),
         )
         self.assertIn(platform.QSPI_START_BLOCK, f.written_blocks())
-        self.assertIn(platform.QSPI_END_BLOCK - 1, f.written_blocks())
-        self.assertNotIn(platform.QSPI_END_BLOCK, f.written_blocks())
+        self.assertIn(VERIFIED_QSPI_END_BLOCK - 1, f.written_blocks())
+        self.assertNotIn(VERIFIED_QSPI_END_BLOCK, f.written_blocks())
 
     def test_never_touches_blocks_outside_requested_range(self):
         f = FakeFlash()
@@ -274,7 +288,7 @@ class WipeHardwareTest(TestCase):
         self.assertTrue(self.rebooted)
         self.assertEqual(sorted(self.umounted), ["/flash", "/qspi"])
         expected = set(range(platform.INTERNAL_FLASH_START_BLOCK, platform.INTERNAL_FLASH_END_BLOCK))
-        expected |= set(range(platform.QSPI_START_BLOCK, platform.QSPI_END_BLOCK))
+        expected |= set(range(platform.QSPI_START_BLOCK, VERIFIED_QSPI_END_BLOCK))
         self.assertEqual(fake.written_blocks(), expected)
         # never touch the fake MBR or the reserved/bootloader blocks
         for start, n in fake.calls:
@@ -314,7 +328,7 @@ class WipeHardwareTest(TestCase):
         # but the raw overwrite must still have been attempted for both
         # regions, to destroy as much data as safely possible
         expected = set(range(platform.INTERNAL_FLASH_START_BLOCK, platform.INTERNAL_FLASH_END_BLOCK))
-        expected |= set(range(platform.QSPI_START_BLOCK, platform.QSPI_END_BLOCK))
+        expected |= set(range(platform.QSPI_START_BLOCK, VERIFIED_QSPI_END_BLOCK))
         self.assertEqual(fake.written_blocks(), expected)
         # /qspi unmount is independent and should still have happened
         self.assertEqual(self.umounted, ["/qspi"])
@@ -335,7 +349,7 @@ class WipeHardwareTest(TestCase):
 
         self.assertFalse(self.rebooted)
         expected = set(range(platform.INTERNAL_FLASH_START_BLOCK, platform.INTERNAL_FLASH_END_BLOCK))
-        expected |= set(range(platform.QSPI_START_BLOCK, platform.QSPI_END_BLOCK))
+        expected |= set(range(platform.QSPI_START_BLOCK, VERIFIED_QSPI_END_BLOCK))
         self.assertEqual(fake.written_blocks(), expected)
         # /flash unmount is independent and should still have happened
         self.assertEqual(self.umounted, ["/flash"])
@@ -354,7 +368,7 @@ class WipeHardwareTest(TestCase):
 
         self.assertFalse(self.rebooted)
         expected = set(range(platform.INTERNAL_FLASH_START_BLOCK, platform.INTERNAL_FLASH_END_BLOCK))
-        expected |= set(range(platform.QSPI_START_BLOCK, platform.QSPI_END_BLOCK))
+        expected |= set(range(platform.QSPI_START_BLOCK, VERIFIED_QSPI_END_BLOCK))
         self.assertEqual(fake.written_blocks(), expected)
 
     def test_sync_exception_raises_and_does_not_reboot(self):
@@ -368,7 +382,7 @@ class WipeHardwareTest(TestCase):
         self.assertFalse(self.rebooted)
         # the overwrite itself must still have completed fully
         expected = set(range(platform.INTERNAL_FLASH_START_BLOCK, platform.INTERNAL_FLASH_END_BLOCK))
-        expected |= set(range(platform.QSPI_START_BLOCK, platform.QSPI_END_BLOCK))
+        expected |= set(range(platform.QSPI_START_BLOCK, VERIFIED_QSPI_END_BLOCK))
         self.assertEqual(fake.written_blocks(), expected)
 
     def test_sync_error_return_code_raises_and_does_not_reboot(self):
@@ -384,34 +398,80 @@ class WipeHardwareTest(TestCase):
 
         self.assertFalse(self.rebooted)
         expected = set(range(platform.INTERNAL_FLASH_START_BLOCK, platform.INTERNAL_FLASH_END_BLOCK))
-        expected |= set(range(platform.QSPI_START_BLOCK, platform.QSPI_END_BLOCK))
+        expected |= set(range(platform.QSPI_START_BLOCK, VERIFIED_QSPI_END_BLOCK))
         self.assertEqual(fake.written_blocks(), expected)
 
-    def test_wrong_block_size_aborts_before_any_destructive_action(self):
-        platform.maybe_mkdir(platform.fpath("/flash"))
-        with open(platform.fpath("/flash/secret.txt"), "w") as fh:
-            fh.write("still here")
-
-        fake = FakeFlash(block_size=4096)  # hardware map assumes 512
+    def test_larger_block_size_is_taken_from_the_device(self):
+        # Block size is read back, not assumed: a device reporting 4096
+        # must still be wiped, using its own size rather than refused.
+        fake = FakeFlash(block_size=4096,
+                         block_count=platform.QSPI_START_BLOCK + 64)
         self.fake = fake
         pyb.Flash = lambda: fake
 
-        with self.assertRaises(Exception):
-            platform.wipe()
+        platform.wipe()
 
-        self.assertFalse(self.rebooted)
-        # a geometry mismatch must refuse before touching anything - not
-        # a single write, unmount, or delete
-        self.assertEqual(fake.calls, [])
-        self.assertEqual(self.umounted, [])
-        self.assertTrue(platform.file_exists(platform.fpath("/flash/secret.txt")))
+        self.assertTrue(self.rebooted)
+        for _start, _n, buf in [e[1:] for e in fake.events if e[0] == "write"]:
+            self.assertEqual(len(buf) % 4096, 0)
 
-    def test_wrong_block_count_aborts_before_any_destructive_action(self):
+    def test_smaller_chip_is_wiped_to_its_reported_end(self):
+        # A chip smaller than the one the map was verified against used
+        # to abort the whole wipe. Wiping everything the device actually
+        # has is better than leaving all of it behind.
+        end = VERIFIED_QSPI_END_BLOCK - 4096
+        fake = FakeFlash(block_count=end)
+        self.fake = fake
+        pyb.Flash = lambda: fake
+
+        platform.wipe()
+
+        self.assertTrue(self.rebooted)
+        expected = set(range(platform.INTERNAL_FLASH_START_BLOCK, platform.INTERNAL_FLASH_END_BLOCK))
+        expected |= set(range(platform.QSPI_START_BLOCK, end))
+        self.assertEqual(fake.written_blocks(), expected)
+        self.assertNotIn(end, fake.written_blocks())
+
+    def test_larger_chip_is_wiped_to_its_reported_end(self):
+        end = VERIFIED_QSPI_END_BLOCK + 1024
+        fake = FakeFlash(block_count=end)
+        self.fake = fake
+        pyb.Flash = lambda: fake
+
+        platform.wipe()
+
+        self.assertTrue(self.rebooted)
+        self.assertIn(end - 1, fake.written_blocks())
+        self.assertNotIn(end, fake.written_blocks())
+
+    def test_device_not_reaching_the_split_point_aborts(self):
+        # The internal/QSPI boundary is the one value that cannot be read
+        # back. If the device does not extend past it, the assumed layout
+        # is wrong and the block numbers mean nothing - refuse.
         platform.maybe_mkdir(platform.fpath("/qspi"))
         with open(platform.fpath("/qspi/wallet.json"), "w") as fh:
             fh.write("{}")
 
-        fake = FakeFlash(block_count=platform.QSPI_END_BLOCK - 1)  # off by one
+        fake = FakeFlash(block_count=platform.QSPI_START_BLOCK)
+        self.fake = fake
+        pyb.Flash = lambda: fake
+
+        with self.assertRaises(Exception):
+            platform.wipe()
+
+        self.assertFalse(self.rebooted)
+        # must refuse before touching anything - not a single write,
+        # unmount, or delete
+        self.assertEqual(fake.calls, [])
+        self.assertEqual(self.umounted, [])
+        self.assertTrue(platform.file_exists(platform.fpath("/qspi/wallet.json")))
+
+    def test_unusable_block_size_aborts(self):
+        platform.maybe_mkdir(platform.fpath("/flash"))
+        with open(platform.fpath("/flash/secret.txt"), "w") as fh:
+            fh.write("still here")
+
+        fake = FakeFlash(block_size=0)
         self.fake = fake
         pyb.Flash = lambda: fake
 
@@ -421,10 +481,10 @@ class WipeHardwareTest(TestCase):
         self.assertFalse(self.rebooted)
         self.assertEqual(fake.calls, [])
         self.assertEqual(self.umounted, [])
-        self.assertTrue(platform.file_exists(platform.fpath("/qspi/wallet.json")))
+        self.assertTrue(platform.file_exists(platform.fpath("/flash/secret.txt")))
 
     def test_matching_geometry_does_not_block_the_wipe(self):
-        fake = FakeFlash(block_size=512, block_count=platform.QSPI_END_BLOCK)
+        fake = FakeFlash(block_size=512, block_count=VERIFIED_QSPI_END_BLOCK)
         self.fake = fake
         pyb.Flash = lambda: fake
 

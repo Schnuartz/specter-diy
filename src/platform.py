@@ -365,13 +365,16 @@ def reboot():
 #   blocks 448 - 33215  external QSPI flash, the "/qspi" filesystem (16 MiB)
 # Full derivation, source files checked and submodule pins:
 # see docs/flash-block-map.md
-FLASH_BLOCK_SIZE = 512
-
+# The boundary between the two filesystems is the only part of the map
+# below that no ioctl() exposes: it comes from the linker script and
+# storage.h inside the pinned submodule, so it has to be stated here.
+# Block size and the end of the QSPI region are *not* restated - wipe()
+# reads both from the block device at run time (see
+# diybitcoinhardware/f469-disco#44 for making the boundary queryable too).
 INTERNAL_FLASH_START_BLOCK = 0x100                             # FLASH_PART1_START_BLOCK
 INTERNAL_FLASH_END_BLOCK = INTERNAL_FLASH_START_BLOCK + 192     # + FLASH_MEM_SEG1_NUM_BLOCKS
 
 QSPI_START_BLOCK = INTERNAL_FLASH_END_BLOCK                     # FLASH_PART2_START_BLOCK
-QSPI_END_BLOCK = QSPI_START_BLOCK + 32768                       # + QSPI flash block count
 
 # How many blocks get overwritten per writeblocks() call. Kept small, and
 # a multiple of the QSPI erase-sector size (8 blocks == 4096 bytes), so
@@ -379,9 +382,10 @@ QSPI_END_BLOCK = QSPI_START_BLOCK + 32768                       # + QSPI flash b
 # QSPI) at once.
 WIPE_CHUNK_BLOCKS = 16
 
-# extmod/vfs.h: MP_BLOCKDEV_IOCTL_BLOCK_COUNT / MP_BLOCKDEV_IOCTL_SYNC.
-MP_BLOCKDEV_IOCTL_BLOCK_COUNT = 4
+# extmod/vfs.h: MP_BLOCKDEV_IOCTL_SYNC / _BLOCK_COUNT / _BLOCK_SIZE.
 MP_BLOCKDEV_IOCTL_SYNC = 3
+MP_BLOCKDEV_IOCTL_BLOCK_COUNT = 4
+MP_BLOCKDEV_IOCTL_BLOCK_SIZE = 5
 # Both the internal-flash driver (flashbdev.c) and the QSPI driver
 # (drivers/memory/spiflash.c, built with USE_WR_DELAY) keep a
 # *write-behind* RAM cache: writeblocks() only guarantees the data
@@ -488,20 +492,27 @@ def wipe():
     """
     f = None
     block_size = None
+    qspi_end_block = None
     if not simulator:
-        # Check the actual flash geometry against what the block map
-        # above assumes, before deleting anything. The constants are
-        # correct for the hardware this was verified against, but if a
-        # future board revision, MicroPython fork update, or QSPI chip
-        # change ever shifted them, that mismatch could otherwise go
-        # unnoticed - the tests only check the code against itself, not
-        # against real hardware. Fail closed instead of guessing: refuse
-        # to touch either filesystem rather than wipe based on assumed
-        # boundaries that may no longer hold.
+        # Read the actual flash geometry, before deleting anything.
+        # Block size and the end of the QSPI region are taken from the
+        # device rather than assumed, so a larger or differently sized
+        # chip gets wiped in full instead of only up to a hardcoded
+        # bound. QSPI runs to the last block of the device: the two
+        # filesystems together cover everything above the split point.
         f = pyb.Flash()
-        block_size = f.ioctl(5, None)
+        block_size = f.ioctl(MP_BLOCKDEV_IOCTL_BLOCK_SIZE, None)
         block_count = f.ioctl(MP_BLOCKDEV_IOCTL_BLOCK_COUNT, None)
-        if block_size != FLASH_BLOCK_SIZE or block_count != QSPI_END_BLOCK:
+        qspi_end_block = block_count
+
+        # What cannot be read back is the internal/QSPI split point, so
+        # that assumption still has to be sanity-checked: if the device
+        # does not even extend past it, the layout this code was
+        # verified against no longer holds and the block numbers below
+        # are meaningless. Fail closed rather than overwrite a range
+        # picked by guesswork - a wipe that silently hits the wrong
+        # blocks would report success while leaving the seed in place.
+        if not block_size or not block_count or block_count <= QSPI_START_BLOCK:
             raise RuntimeError(
                 "Unexpected flash geometry (block_size=%r, block_count=%r); "
                 "refusing to wipe" % (block_size, block_count)
@@ -545,7 +556,7 @@ def wipe():
         internal_sync_ok = _sync_flash(f)
 
         qspi_ok = _secure_overwrite_blocks(
-            f, QSPI_START_BLOCK, QSPI_END_BLOCK, block_size
+            f, QSPI_START_BLOCK, qspi_end_block, block_size
         )
         # Final flush - see MP_BLOCKDEV_IOCTL_SYNC above for why this
         # can't be skipped.
