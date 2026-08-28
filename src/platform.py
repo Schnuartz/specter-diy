@@ -53,6 +53,30 @@ def maybe_mkdir(path):
         os.sync()
 
 
+def validate_block_geometry(block_size, block_count, what="block device"):
+    """
+    Sanity-checks the geometry a block device reports via ioctl(5)/ioctl(4)
+    before it is used to drive an overwrite loop. A negative or non-integer
+    count would silently turn `range(0, block_count, ...)` into an empty
+    loop, i.e. "wipe" a device without writing a single block.
+
+    Shared by every wipe path (SD card, internal flash, QSPI) so the check
+    lives in one place.
+    """
+    for name, value in (("block size", block_size),
+                        ("block count", block_count)):
+        if (
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or value <= 0
+        ):
+            raise RuntimeError(
+                "%s reported invalid geometry (%s %r) - cannot erase."
+                % (what, name, value)
+            )
+    return block_size, block_count
+
+
 class SDCard:
     _mounted = False
 
@@ -63,12 +87,24 @@ class SDCard:
             led.off()
 
     @property
+    def has_block_device(self):
+        """
+        False when there is no real SD block device behind this object -
+        the simulator build, where /sd is an ordinary directory on the
+        host filesystem. Prefer this over checking the module-level
+        `simulator` flag: it is the property the SD code actually depends
+        on, and it stays correct when a block device is injected into an
+        SDCard instance (as the native tests do).
+        """
+        return self._sd is not None
+
+    @property
     def is_present(self):
         """
-        Checks if SD card is inserted
+        Checks if an SD card is inserted (always true without a real
+        block device, see has_block_device)
         """
-        # simulator
-        if self._sd is None:
+        if not self.has_block_device:
             return True
         return self._sd.present()
 
@@ -146,14 +182,14 @@ class SDCard:
     async def erase_and_format(self, progress_cb=None):
         """
         Securely erases the SD card - overwrites every block with random
-        data, the same approach platform.wipe() uses for the internal
-        flash - and then creates a fresh, empty FAT filesystem on it.
+        data - and then creates a fresh, empty FAT filesystem on it.
 
-        This is irreversible and destroys EVERYTHING on the card, not
-        just files Specter-DIY created. Do not cancel or reset the device
-        while the erase is running. If the task is cancelled at an await
-        point, the method reports that the wipe was interrupted and the
-        card must be reformatted before it can be used again.
+        This is irreversible and destroys everything on the card. If the
+        task is cancelled at an await point, the erase raises instead of
+        returning, so a half-overwritten card is never reported as a
+        completed format. Warning the user before starting, and telling
+        them not to reset the device while it runs, is the caller's job -
+        see the messages raised from here for the wording.
 
         progress_cb(fraction), if given, is awaited after every chunk
         with the fraction (0..1) of blocks written so far, so a caller
@@ -167,8 +203,8 @@ class SDCard:
         if not self.is_present:
             raise RuntimeError("SD card is not present")
         self.unmount()
-        if self._sd is None:
-            # simulator: no real block device to overwrite - just clear
+        if not self.has_block_device:
+            # Simulator build: no block device to overwrite - just clear
             # out the directory that stands in for the card.
             delete_recursively(fpath("/sd"))
             if progress_cb is not None:
@@ -186,19 +222,7 @@ class SDCard:
                     "Could not access the SD card before secure erase "
                     "(card may have been removed):\n\n%s" % e
                 ) from e
-            if (
-                not isinstance(block_size, int)
-                or isinstance(block_size, bool)
-                or block_size <= 0
-                or not isinstance(block_count, int)
-                or isinstance(block_count, bool)
-                or block_count <= 0
-            ):
-                raise RuntimeError(
-                    "SD card reported invalid geometry "
-                    "(block size %r, block count %r) - cannot erase."
-                    % (block_size, block_count)
-                )
+            validate_block_geometry(block_size, block_count, "SD card")
             # Keep the temporary random-data buffer bounded. A 1 MB
             # allocation is needlessly risky on a fragmented MicroPython
             # heap; 128 KiB is still large enough to amortize SD writes
@@ -469,63 +493,48 @@ def delete_recursively(path, include_self=False):
     raise RuntimeError("Failed to delete folder %s" % path)
 
 
-def secure_delete_file(path, passes=3, max_size=None):
+def secure_delete_file(path):
     """
-    Overwrites a file's contents with fresh random data `passes` times,
-    syncing after each pass, before deleting it - the same
-    overwrite-then-unlink principle BitBox02's firmware uses when it
-    replaces a backup file (_delete_file() / sd_erase_file_in_subdir() in
-    bitbox02-firmware/src/sd.c), except that overwrites once with a fixed
-    byte (0xAC); this uses fresh random data on every one of several
-    passes instead.
+    Overwrites a file's contents with random data, syncs, and only then
+    deletes it.
 
-    A plain os.remove() only unlinks the directory entry - the file's
-    old bytes are still physically on the card until that space happens
-    to be reused, and can often be recovered with an undelete tool in
-    the meantime. This closes that gap for individual files (see
+    A plain os.remove() only unlinks the directory entry - the file's old
+    bytes are still physically on the card until that space happens to be
+    reused, and can often be recovered with an undelete tool in the
+    meantime. This closes that gap for individual files (see
     SDCard.erase_and_format() for the equivalent whole-card operation).
 
-    The file is opened once and kept open across all passes, rather than
-    stat-then-open per pass: a stat/open gap would let an attacker with
-    write access swap the path (e.g. via a hardlink on FAT variants that
-    support them) between the size check and the overwrite, causing us
-    to wipe the wrong file. The size is read from the same handle via
-    seek(0, 2)/tell(), and that handle is used for every overwrite pass.
+    A single random pass is deliberate. Multiple passes are a leftover
+    from 1990s magnetic media; on the flash storage this device writes to,
+    a second pass adds wear and time without adding recoverable-data
+    protection, and it cannot reach blocks the flash translation layer has
+    already remapped anyway. Callers that need that guarantee must erase
+    the whole card.
+
+    The file is opened once and the size is read from that same handle
+    (seek(0, 2)/tell()) rather than stat-then-open: a stat/open gap would
+    let an attacker with write access swap the path between the size check
+    and the overwrite, causing us to wipe the wrong file.
+
+    Size limits are not enforced here - a caller that needs to bound the
+    work it takes on checks that before it starts (see secure_delete_tree).
     """
-    _validate_secure_delete_passes(passes)
     with open(path, "r+b") as f:
         f.seek(0, 2)  # seek to end
         size = f.tell()
-        if max_size is not None and size > max_size:
-            raise RuntimeError(
-                "file is %d bytes (maximum %d) - use 'Format entire SD "
-                "card' instead" % (size, max_size)
-            )
-        for _ in range(passes):
-            f.seek(0)
-            remaining = size
-            while remaining > 0:
-                chunk = min(remaining, 4096)
-                written = f.write(os.urandom(chunk))
-                if written != chunk:
-                    raise OSError(
-                        "short write during secure delete (%r of %d bytes)"
-                        % (written, chunk)
-                    )
-                remaining -= written
-            _strict_file_sync(f)
+        f.seek(0)
+        remaining = size
+        while remaining > 0:
+            chunk = min(remaining, 4096)
+            written = f.write(os.urandom(chunk))
+            if written != chunk:
+                raise OSError(
+                    "short write during secure delete (%r of %d bytes)"
+                    % (written, chunk)
+                )
+            remaining -= written
+        _strict_file_sync(f)
     os.remove(path)
-    return size
-
-
-def _validate_secure_delete_passes(passes):
-    """Reject pass counts that would weaken or skip the overwrite."""
-    if (
-        not isinstance(passes, int)
-        or isinstance(passes, bool)
-        or passes <= 0
-    ):
-        raise ValueError("secure delete passes must be a positive integer")
 
 
 def _strict_file_sync(f):
@@ -551,7 +560,7 @@ SECURE_DELETE_MAX_FILE_BYTES = 4 * 1024 * 1024
 SECURE_DELETE_MAX_TOTAL_BYTES = 8 * 1024 * 1024
 
 
-def secure_delete_tree(path, passes=3):
+def secure_delete_tree(path):
     """
     Recursively secure_delete_file()s every regular file under `path`
     (see its docstring), then removes the now-empty directories,
@@ -559,57 +568,52 @@ def secure_delete_tree(path, passes=3):
     backup directory, where each of the redundant copies must be
     overwritten, not just unlinked.
 
-    Enumerates every entry under the tree BEFORE overwriting anything. A
-    tree with more than SECURE_DELETE_MAX_ENTRIES total entries, files larger
-    than SECURE_DELETE_MAX_FILE_BYTES, more than
-    SECURE_DELETE_MAX_TOTAL_BYTES of file data, or a depth greater than
-    SECURE_DELETE_MAX_DEPTH is rejected up front. This prevents a partial
-    wipe and stops an adversarial directory from forcing unbounded traversal,
-    recursion, or overwrite work. The caller can offer "Format entire SD
-    card" as the fallback for a tree that exceeds a cap.
+    Enumerates every entry under the tree BEFORE overwriting anything, and
+    rejects a tree that is too large to wipe up front: more than
+    SECURE_DELETE_MAX_ENTRIES entries, a file larger than
+    SECURE_DELETE_MAX_FILE_BYTES, more than SECURE_DELETE_MAX_TOTAL_BYTES
+    of file data in total, or a depth greater than SECURE_DELETE_MAX_DEPTH.
+    This is where those limits belong: refusing the whole operation before
+    the first overwrite is what keeps a rejected tree from being left half
+    wiped. The caller can offer "Format entire SD card" as the fallback.
     """
-    _validate_secure_delete_passes(passes)
-    files = []
-    _collect_files(
+    files, _entries, _size = _collect_files(
         path,
-        files,
-        SECURE_DELETE_MAX_ENTRIES,
-        SECURE_DELETE_MAX_DEPTH,
+        max_entries=SECURE_DELETE_MAX_ENTRIES,
+        max_depth=SECURE_DELETE_MAX_DEPTH,
         max_file_bytes=SECURE_DELETE_MAX_FILE_BYTES,
         max_total_bytes=SECURE_DELETE_MAX_TOTAL_BYTES,
     )
-    remaining_bytes = SECURE_DELETE_MAX_TOTAL_BYTES
-    for full in files:
-        size = secure_delete_file(
-            full,
-            passes=passes,
-            max_size=min(SECURE_DELETE_MAX_FILE_BYTES, remaining_bytes),
-        )
-        remaining_bytes -= size
+    for file_path in files:
+        secure_delete_file(file_path)
     _remove_empty_dirs(path)
 
 
 def _collect_files(
-        path, out, max_entries, max_depth=SECURE_DELETE_MAX_DEPTH,
-        depth=0, entry_count=0, total_bytes=0, max_file_bytes=None,
-        max_total_bytes=None):
-    """Recursively appends the full paths of all regular files under
-    `path` to `out` (a list). Aborts before traversing more than
-    `max_entries` total entries or descending beyond `max_depth`. When size
-    limits are provided, regular files are checked with `os.stat()` before
-    their paths are retained. Does not modify or delete anything. Returns
-    `(entry_count, total_bytes)` for callers recursing through a tree."""
+        path, max_entries=SECURE_DELETE_MAX_ENTRIES,
+        max_depth=SECURE_DELETE_MAX_DEPTH, depth=0, entry_count=0,
+        total_bytes=0, max_file_bytes=None, max_total_bytes=None):
+    """Returns `(files, entry_count, total_bytes)`, where `files` is a list
+    of the full paths of all regular files under `path`. Aborts before
+    traversing more than `max_entries` total entries or descending beyond
+    `max_depth`. When size limits are provided, regular files are checked
+    with `os.stat()` before their paths are retained. Does not modify or
+    delete anything.
+
+    `entry_count` / `total_bytes` are the running totals a recursive call
+    inherits from its parent; top-level callers leave them at 0."""
     if depth > max_depth:
         raise RuntimeError(
             "directory is deeper than %d levels - use 'Format entire SD "
             "card' instead" % max_depth
         )
+    files = []
     entries = os.ilistdir(path)
     try:
         for name, entry_type, *_rest in entries:
             if name in (".", ".."):
                 continue
-            full = "%s/%s" % (path, name)
+            entry_path = "%s/%s" % (path, name)
             entry_count += 1
             if entry_count > max_entries:
                 raise RuntimeError(
@@ -619,11 +623,11 @@ def _collect_files(
             if entry_type == 0x8000:
                 if max_file_bytes is not None or max_total_bytes is not None:
                     try:
-                        size = os.stat(full)[6]
+                        size = os.stat(entry_path)[6]
                     except Exception as e:
                         raise RuntimeError(
                             "Could not inspect file before secure delete: %s"
-                            % full
+                            % entry_path
                         ) from e
                     if (
                         not isinstance(size, int)
@@ -631,7 +635,7 @@ def _collect_files(
                         or size < 0
                     ):
                         raise RuntimeError(
-                            "file has invalid size metadata: %s" % full
+                            "file has invalid size metadata: %s" % entry_path
                         )
                     if max_file_bytes is not None and size > max_file_bytes:
                         raise RuntimeError(
@@ -648,11 +652,10 @@ def _collect_files(
                             "tree contains more than %d bytes - use "
                             "'Format entire SD card' instead" % max_total_bytes
                         )
-                out.append(full)
+                files.append(entry_path)
             elif entry_type == 0x4000:
-                entry_count, total_bytes = _collect_files(
-                    full,
-                    out,
+                sub_files, entry_count, total_bytes = _collect_files(
+                    entry_path,
                     max_entries,
                     max_depth,
                     depth=depth + 1,
@@ -661,11 +664,12 @@ def _collect_files(
                     max_file_bytes=max_file_bytes,
                     max_total_bytes=max_total_bytes,
                 )
+                files.extend(sub_files)
     finally:
         close = getattr(entries, "close", None)
         if close is not None:
             close()
-    return entry_count, total_bytes
+    return files, entry_count, total_bytes
 
 
 def _remove_empty_dirs(path, max_depth=SECURE_DELETE_MAX_DEPTH, depth=0):
@@ -756,6 +760,7 @@ def wipe():
         os.umount("/qspi")
         f = pyb.Flash()
         block_size = f.ioctl(5, None)
+        validate_block_geometry(block_size, f.ioctl(4, None), "internal flash")
         # wipe internal flash with random bytes
         for i in range(256, 450):
             b = os.urandom(block_size)
