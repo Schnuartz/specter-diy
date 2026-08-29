@@ -14,7 +14,7 @@ from unittest import TestCase
 # original "always show every output" behaviour against how BitBox02
 # handles the same distinction:
 #
-#   - An output that WalletManager.get_verified_change_derivation() has
+#   - An output that WalletManager.get_output_status() has
 #     cryptographically verified as change (descriptor branch 1, and an
 #     on-device re-derivation of the script_pubkey that matches the actual
 #     output) and that carries no warning is *not* shown individually on

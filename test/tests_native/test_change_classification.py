@@ -28,7 +28,7 @@ from apps.wallets.wallet import Wallet
 # That does not distinguish a receive-branch (self-payment) output from a
 # real change output, and it trusts host-supplied BIP32 derivation metadata
 # without ever checking it against the actual output script_pubkey. These
-# tests exercise WalletManager.get_verified_change_derivation() - the
+# tests exercise WalletManager.get_output_status() - the
 # function that replaced that logic - directly, plus one full
 # preprocess_psbt() pipeline test that reproduces the exact adversarial
 # scenario described in the security report.
@@ -73,7 +73,7 @@ class ChangeClassificationTest(TestCase):
             script_pubkey=self.script_for(self.wallet, 1, 3),
         )
         wallets = {self.wallet: {}}
-        derivation, is_change = self.manager.get_verified_change_derivation(
+        derivation, is_change, _ = self.manager.get_output_status(
             self.wallet, wallets, out
         )
         self.assertEqual(derivation, (3, 1))
@@ -91,7 +91,7 @@ class ChangeClassificationTest(TestCase):
             script_pubkey=self.script_for(self.wallet, 0, 5),
         )
         wallets = {self.wallet: {}}
-        derivation, is_change = self.manager.get_verified_change_derivation(
+        derivation, is_change, _ = self.manager.get_output_status(
             self.wallet, wallets, out
         )
         self.assertEqual(derivation, (5, 0))
@@ -107,7 +107,7 @@ class ChangeClassificationTest(TestCase):
             script_pubkey=wrong_script,
         )
         wallets = {self.wallet: {}}
-        derivation, is_change = self.manager.get_verified_change_derivation(
+        derivation, is_change, _ = self.manager.get_output_status(
             self.wallet, wallets, out
         )
         self.assertFalse(is_change)
@@ -120,7 +120,7 @@ class ChangeClassificationTest(TestCase):
             script_pubkey=script.p2wpkh(fake_pubkey(99)),
         )
         wallets = {self.wallet: {}}
-        derivation, is_change = self.manager.get_verified_change_derivation(
+        derivation, is_change, _ = self.manager.get_output_status(
             self.wallet, wallets, out
         )
         self.assertFalse(is_change)
@@ -130,7 +130,7 @@ class ChangeClassificationTest(TestCase):
     def test_unknown_wallet_output_is_not_change(self):
         out = self.make_out(script_pubkey=script.p2wpkh(fake_pubkey(42)))
         wallets = {self.wallet: {}}
-        derivation, is_change = self.manager.get_verified_change_derivation(
+        derivation, is_change, _ = self.manager.get_output_status(
             None, wallets, out
         )
         self.assertIsNone(derivation)
@@ -146,7 +146,7 @@ class ChangeClassificationTest(TestCase):
             script_pubkey=self.script_for(self.wallet, 1, 3),
         )
         wallets = {self.wallet: {}, other_wallet: {}}
-        derivation, is_change = self.manager.get_verified_change_derivation(
+        derivation, is_change, _ = self.manager.get_output_status(
             self.wallet, wallets, out
         )
         self.assertEqual(derivation, (3, 1))
@@ -160,7 +160,7 @@ class ChangeClassificationTest(TestCase):
             script_pubkey=self.script_for(self.wallet, 1, 3),
         )
         wallets = {}  # no wallet owns any input
-        derivation, is_change = self.manager.get_verified_change_derivation(
+        derivation, is_change, _ = self.manager.get_output_status(
             self.wallet, wallets, out
         )
         self.assertFalse(is_change)
@@ -183,7 +183,7 @@ class ChangeClassificationTest(TestCase):
             script_pubkey=self.script_for(wallet3, 2, 7),
         )
         wallets = {wallet3: {}}
-        derivation, is_change = self.manager.get_verified_change_derivation(
+        derivation, is_change, _ = self.manager.get_output_status(
             wallet3, wallets, out
         )
         self.assertEqual(derivation, (7, 2))
@@ -217,7 +217,7 @@ class ChangeClassificationTest(TestCase):
             bip32_derivations={fake_pubkey(21): odd_derivation(33, 4)},
             script_pubkey=self.script_for(odd_wallet, 1, 4),
         )
-        derivation, is_change = self.manager.get_verified_change_derivation(
+        derivation, is_change, _ = self.manager.get_output_status(
             odd_wallet, wallets, out_change
         )
         self.assertEqual(derivation, (4, 1))
@@ -228,7 +228,7 @@ class ChangeClassificationTest(TestCase):
             bip32_derivations={fake_pubkey(22): odd_derivation(22, 4)},
             script_pubkey=self.script_for(odd_wallet, 0, 4),
         )
-        derivation0, is_change0 = self.manager.get_verified_change_derivation(
+        derivation0, is_change0, _ = self.manager.get_output_status(
             odd_wallet, wallets, out_receive
         )
         self.assertEqual(derivation0, (4, 0))
@@ -253,7 +253,7 @@ class ChangeClassificationTest(TestCase):
             taproot_bip32_derivations={fake_pubkey(7): ([], change_der)},
             script_pubkey=self.script_for(tr_wallet, 1, 3),
         )
-        derivation, is_change = self.manager.get_verified_change_derivation(
+        derivation, is_change, _ = self.manager.get_output_status(
             tr_wallet, wallets, out_change
         )
         self.assertEqual(derivation, (3, 1))
@@ -264,7 +264,7 @@ class ChangeClassificationTest(TestCase):
             taproot_bip32_derivations={fake_pubkey(8): ([], recv_der)},
             script_pubkey=self.script_for(tr_wallet, 0, 3),
         )
-        derivation0, is_change0 = self.manager.get_verified_change_derivation(
+        derivation0, is_change0, _ = self.manager.get_output_status(
             tr_wallet, wallets, out_recv
         )
         self.assertEqual(derivation0, (3, 0))
@@ -290,7 +290,7 @@ class ChangeClassificationTest(TestCase):
             bip32_derivations={fake_pubkey(11): lderivation(0, 5)},
             script_pubkey=lwallet.descriptor.derive(5, branch_index=0).script_pubkey(),
         )
-        derivation, is_change = lmanager.get_verified_change_derivation(
+        derivation, is_change, _ = lmanager.get_output_status(
             lwallet, wallets, out_recv
         )
         self.assertEqual(derivation, (5, 0))
@@ -300,7 +300,7 @@ class ChangeClassificationTest(TestCase):
             bip32_derivations={fake_pubkey(12): lderivation(1, 3)},
             script_pubkey=lwallet.descriptor.derive(3, branch_index=1).script_pubkey(),
         )
-        derivation2, is_change2 = lmanager.get_verified_change_derivation(
+        derivation2, is_change2, _ = lmanager.get_output_status(
             lwallet, wallets, out_change
         )
         self.assertEqual(derivation2, (3, 1))
@@ -369,7 +369,7 @@ class ChangeClassificationTest(TestCase):
     #
     # preprocess_psbt() used to choose the output label from branch_idx
     # directly ("... change #idx" whenever branch_idx == 1), instead of
-    # from the is_change verdict that get_verified_change_derivation()
+    # from the is_change verdict that get_output_status()
     # already computed. That means an output correctly NOT treated as
     # change (still fully shown to the user) could still be captioned
     # "change" - misleading, since the trusted display would be telling
@@ -403,7 +403,7 @@ class ChangeClassificationTest(TestCase):
     def test_branch1_output_of_a_different_wallet_is_not_labeled_change(self):
         # Wallet A spends the only input. The output verifiably belongs to
         # Wallet B (also imported, but not among this transaction's
-        # spending wallets) on branch 1. get_verified_change_derivation()
+        # spending wallets) on branch 1. get_output_status()
         # correctly returns is_change=False (Wallet B isn't a spending
         # wallet here), so the output stays fully visible - but its label
         # must not claim "change" for it.
@@ -436,7 +436,7 @@ class ChangeClassificationTest(TestCase):
     def test_branch1_output_with_mixed_spending_wallets_is_not_labeled_change(self):
         # Inputs come from both Wallet A and Wallet B (ambiguous spending
         # context), and the output verifiably belongs to Wallet A on
-        # branch 1. get_verified_change_derivation() correctly returns
+        # branch 1. get_output_status() correctly returns
         # is_change=False here too (len(wallets) != 1), so again the label
         # must not say "change".
         wallet_a = self.wallet

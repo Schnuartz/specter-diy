@@ -544,50 +544,11 @@ class LWalletManager(WalletManager):
             if not (asset and value) or not (len(asset) == 32 and isinstance(value, int)):
                 asset = None
                 value = -1
-            derivation, is_change, warning = self.get_output_status(wallet, wallets, out)
             metaout.update({
-                "change": is_change,
                 "value": value,
-                "address": self.get_address(out),
                 "asset": self.asset_label(asset),
             })
-            if warning:
-                self.add_output_warning(metaout, warning)
-            if wallet:
-                metaout["label"] = wallet.name
-                res = derivation
-                if res:
-                    idx, branch_idx = res
-                    if is_change:
-                        # Verified change is hidden from the primary
-                        # confirmation screen (see TransactionScreen), so
-                        # this label is only ever seen on the details page.
-                        metaout["label"] = "%s change #%d" % (wallet.name, idx)
-                    else:
-                        # Not change - e.g. a receive-branch self-payment,
-                        # a branch-1 output of a wallet that isn't the sole
-                        # spending wallet, or a branch-1 output belonging to
-                        # a different wallet than the one spending. Label by
-                        # is_change (what actually gates hiding it), never
-                        # by branch_idx alone, so an output the security
-                        # logic did NOT accept as change can't still be
-                        # captioned "change". It still needs full
-                        # confirmation, so mark it clearly as belonging to
-                        # this wallet instead.
-                        branch_txt = "" if branch_idx == 0 else "branch %d " % branch_idx
-                        metaout["label"] = "This wallet (%s) %s#%d" % (wallet.name, branch_txt, idx)
-                    if wallet in wallets:
-                        allowed_idx = wallets[wallet]["gaps"][branch_idx]
-                    else:
-                        allowed_idx = wallet.gaps[branch_idx]
-                    if allowed_idx <= idx:
-                        self.add_output_warning(
-                            metaout,
-                            "Derivation index is by %d larger than last known used index %d!" %
-                            (idx-allowed_idx+wallet.GAP_LIMIT, allowed_idx-wallet.GAP_LIMIT),
-                        )
-                if wallet.is_watchonly:
-                    self.add_output_warning(metaout, "Watch-only wallet!")
+            self.fill_output_metadata(metaout, wallet, wallets, out)
             if asset and asset not in self.assets:
                 metaout.update({"raw_asset": asset})
             out.write_to(fout, skip_separator=True, version=psbtv.version)

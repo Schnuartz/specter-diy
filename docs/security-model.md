@@ -321,15 +321,6 @@ output as wallet change, but it does not match your wallet. Verify the
 destination.` This reports inconsistent host metadata; it does not claim that
 Bitcoin marked the output as change.
 
-The forged branch-1/script-mismatch demonstration sometimes called scenario
-#5 was already kept visible by the previous firmware: `Descriptor.owns()`
-rejected the output before it could be treated as wallet-owned. The newer
-logic additionally surfaces the rejected, inconsistent claim instead of
-making it look like an ordinary external output. The material regression
-addressed by branch-aware classification was a genuine wallet-owned receive
-branch output being treated as change merely because it belonged to the sole
-spending wallet.
-
 What the device cannot check is the *recipient* of an unverified output — so
 always verify the receive address and the transaction details (amounts, fees)
 on the device screen. The screen is the trusted output channel, the host

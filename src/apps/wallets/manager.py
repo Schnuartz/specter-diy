@@ -485,10 +485,44 @@ class WalletManager(BaseApp):
                     pass
         return derivation if wallet is not None else None, is_change, warning
 
-    def get_verified_change_derivation(self, wallet, wallets, out):
-        """Return the trusted output derivation and verified-change result."""
-        derivation, is_change, _ = self.get_output_status(wallet, wallets, out)
-        return derivation, is_change
+    def fill_output_metadata(self, metaout, wallet, wallets, out):
+        """Fill in the wallet-related output metadata shared by all networks.
+
+        Sets the change flag, address, label and warnings. The value and any
+        network-specific fields stay with the caller.
+        """
+        derivation, is_change, warning = self.get_output_status(wallet, wallets, out)
+        metaout.update({
+            "change": is_change,
+            "address": self.get_address(out),
+        })
+        if warning:
+            self.add_output_warning(metaout, warning)
+        if not wallet:
+            return
+        metaout["label"] = wallet.name
+        if derivation:
+            idx, branch_idx = derivation
+            if is_change:
+                metaout["label"] = "%s change #%d" % (wallet.name, idx)
+            else:
+                # Label by is_change, never by branch_idx alone, so an output
+                # the security logic did not accept as change can't still be
+                # captioned "change".
+                branch_txt = "" if branch_idx == 0 else "branch %d " % branch_idx
+                metaout["label"] = "This wallet (%s) %s#%d" % (wallet.name, branch_txt, idx)
+            if wallet in wallets:
+                allowed_idx = wallets[wallet]["gaps"][branch_idx]
+            else:
+                allowed_idx = wallet.gaps[branch_idx]
+            if allowed_idx <= idx:
+                self.add_output_warning(
+                    metaout,
+                    "Derivation index is by %d larger than last known used index %d!" %
+                    (idx-allowed_idx+wallet.GAP_LIMIT, allowed_idx-wallet.GAP_LIMIT),
+                )
+        if wallet.is_watchonly:
+            self.add_output_warning(metaout, "Watch-only wallet!")
 
     def get_sighash_info(self, sighash):
         if sighash not in SIGHASH_NAMES:
@@ -847,49 +881,8 @@ class WalletManager(BaseApp):
             # Get values and store in metadata and wallets dict
             value = out.value
             fee -= value
-            derivation, is_change, warning = self.get_output_status(wallet, wallets, out)
-            metaout.update({
-                "change": is_change,
-                "value": value,
-                "address": self.get_address(out),
-            })
-            if warning:
-                self.add_output_warning(metaout, warning)
-            if wallet:
-                metaout["label"] = wallet.name
-                res = derivation
-                if res:
-                    idx, branch_idx = res
-                    if is_change:
-                        # Verified change is hidden from the primary
-                        # confirmation screen (see TransactionScreen), so
-                        # this label is only ever seen on the details page.
-                        metaout["label"] = "%s change #%d" % (wallet.name, idx)
-                    else:
-                        # Not change - e.g. a receive-branch self-payment,
-                        # a branch-1 output of a wallet that isn't the sole
-                        # spending wallet, or a branch-1 output belonging to
-                        # a different wallet than the one spending. Label by
-                        # is_change (what actually gates hiding it), never
-                        # by branch_idx alone, so an output the security
-                        # logic did NOT accept as change can't still be
-                        # captioned "change". It still needs full
-                        # confirmation, so mark it clearly as belonging to
-                        # this wallet instead.
-                        branch_txt = "" if branch_idx == 0 else "branch %d " % branch_idx
-                        metaout["label"] = "This wallet (%s) %s#%d" % (wallet.name, branch_txt, idx)
-                    if wallet in wallets:
-                        allowed_idx = wallets[wallet]["gaps"][branch_idx]
-                    else:
-                        allowed_idx = wallet.gaps[branch_idx]
-                    if allowed_idx <= idx:
-                        self.add_output_warning(
-                            metaout,
-                            "Derivation index is by %d larger than last known used index %d!" %
-                            (idx-allowed_idx+wallet.GAP_LIMIT, allowed_idx-wallet.GAP_LIMIT),
-                        )
-                if wallet.is_watchonly:
-                    self.add_output_warning(metaout, "Watch-only wallet!")
+            metaout["value"] = value
+            self.fill_output_metadata(metaout, wallet, wallets, out)
 
             out.write_to(fout, version=psbtv.version)
         meta["fee"] = fee
