@@ -309,6 +309,58 @@ class EraseAndFormatTest(TestCase):
         self.assertEqual(dev.power_states, [True, False])
         self.assertEqual(dev.writes, [])
 
+    def test_power_on_returning_false_is_reported_before_any_write(self):
+        """pyb.SDCard.power() signals a failed power-on with a False return,
+        not an exception. If that is ignored, the failure resurfaces as
+        ioctl(4) == 0 - the block count of an inactive card - and a routine
+        init failure gets reported as bogus geometry."""
+        class _RefusesPowerDevice(_FakeBlockDevice):
+            def power(self, state):
+                self.power_states.append(state)
+                return False if state else True
+
+            def ioctl(self, op, arg):
+                # What the pinned firmware really reports for an inactive
+                # card: a valid block size, and zero capacity.
+                if op == 4:
+                    return 0
+                if op == 5:
+                    return 512
+                raise OSError("unsupported ioctl")
+
+        dev = _RefusesPowerDevice(block_count=4100, block_size=512)
+        sd = platform.SDCard(sd=dev)
+
+        async def main():
+            with self.assertRaises(RuntimeError) as ctx:
+                await sd.erase_and_format()
+            message = str(ctx.exception)
+            self.assertIn("Could not access", message)
+            self.assertIn("could not be initialized", message)
+            # Not the geometry error - that would misdescribe the fault.
+            self.assertNotIn("invalid geometry", message)
+
+        with _RecordingMkfs() as mkfs:
+            _run(main())
+
+        self.assertEqual(dev.writes, [])
+        self.assertEqual(mkfs.calls, [])
+        self.assertEqual(dev.power_states, [True, False])
+
+    def test_power_on_returning_none_is_accepted(self):
+        """Block devices that report no status return None from power().
+        Only an explicit False may be treated as a failure."""
+        dev = _FakeBlockDevice(block_count=8, block_size=512)
+        self.assertIsNone(dev.power(True))
+        dev.power_states.clear()
+        sd = platform.SDCard(sd=dev)
+
+        with _RecordingMkfs() as mkfs:
+            _run(sd.erase_and_format())
+
+        self.assertEqual(sum(n for _, n in dev.writes), 8 * 512)
+        self.assertEqual(len(mkfs.calls), 1)
+
     def test_power_on_error_is_translated_and_cleanup_is_attempted(self):
         class FailingPowerDevice(_FakeBlockDevice):
             def power(self, state):

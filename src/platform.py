@@ -237,7 +237,24 @@ class SDCard:
             self._led.on()
         try:
             try:
-                self._sd.power(True)
+                powered = self._sd.power(True)
+                if powered is False:
+                    # pyb.SDCard.power() reports a failed power-on by
+                    # returning False, not by raising: sd_power() in
+                    # ports/stm32/sdcard.c is
+                    # mp_obj_new_bool(sdcard_power_on()). Ignoring that
+                    # return value would let an ordinary init failure fall
+                    # through to ioctl(4), which reports 0 blocks for an
+                    # inactive card - so a routine "card would not come up"
+                    # would be reported as bogus geometry instead of what it
+                    # is. Fail-safe either way (nothing is overwritten), but
+                    # the wrong message for a destructive operation.
+                    # Only an explicit False counts as failure; block
+                    # devices that report no status return None.
+                    raise RuntimeError(
+                        "Could not access the SD card before secure erase "
+                        "(the card could not be initialized)."
+                    )
                 block_size = self._sd.ioctl(5, None)
                 block_count = self._sd.ioctl(4, None)
             except OSError as e:
@@ -266,10 +283,11 @@ class SDCard:
                         "state and must be reformatted before it can be "
                         "used again." % e
                     ) from e
-                # MicroPython block devices conventionally return None,
-                # and the STM32 binding wraps the underlying HAL status as
-                # an integer where 0 means success. True is accepted too,
-                # since a driver may report success that way. Any other
+                # pyb.SDCard.writeblocks() on the MicroPython revision
+                # Specter pins returns True/False - sdcard.c ends in
+                # mp_obj_new_bool(ret == 0). Generic MicroPython block
+                # devices instead return None, or an integer where 0 means
+                # success. Accept only those known success values; any other
                 # result must fail closed, so a missed chunk can never be
                 # reported as a successful secure erase.
                 if not (
