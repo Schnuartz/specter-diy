@@ -1038,3 +1038,142 @@ class BlockGeometryTest(TestCase):
         with self.assertRaises(RuntimeError):
             platform.validate_block_geometry(
                 platform.MAX_SANE_BLOCK_SIZE + 1, 10, "SD card")
+
+
+class _FakeFlash:
+    """pyb.Flash stand-in: writeblocks() returns the integer status the real
+    driver returns (storage.c), and ioctl(3) is the cache flush."""
+
+    def __init__(self, log, block_count=None, write_result=0, sync_result=0,
+                 fail_at=None):
+        self.log = log
+        self.block_count = (platform.WIPE_LAST_BLOCK + 1
+                            if block_count is None else block_count)
+        self.write_result = write_result
+        self.sync_result = sync_result
+        self.fail_at = fail_at
+
+    def ioctl(self, op, arg):
+        if op == 4:
+            return self.block_count
+        if op == 5:
+            return 512
+        if op == 3:
+            self.log.append("sync")
+            return self.sync_result
+        raise OSError("unsupported ioctl %r" % op)
+
+    def writeblocks(self, block, data):
+        self.log.append(("write", block))
+        if self.fail_at is not None and block == self.fail_at:
+            return -5  # -MP_EIO
+        return self.write_result
+
+
+class WipeTest(TestCase):
+    """platform.wipe() writes into pyb.Flash's RAM write cache. That cache is
+    only written out on an explicit BDEV_IOCTL_SYNC or after 5 seconds of
+    idle (flashbdev.c), and pyb.hard_reset() goes straight to
+    NVIC_SystemReset() without flushing storage. A wipe that writes ~200
+    blocks and resets immediately would therefore discard the whole
+    overwrite along with the cache."""
+
+    def setUp(self):
+        self.log = []
+        self._real_simulator = platform.simulator
+        self._real_reboot = platform.reboot
+        self._had_umount = hasattr(os, "umount")
+        self._real_umount = getattr(os, "umount", None)
+        platform.simulator = False
+        platform.reboot = lambda: self.log.append("reboot")
+        os.umount = lambda path: None
+
+    def tearDown(self):
+        platform.simulator = self._real_simulator
+        platform.reboot = self._real_reboot
+        if self._had_umount:
+            os.umount = self._real_umount
+        else:
+            del os.umount
+        if hasattr(platform.pyb, "Flash"):
+            del platform.pyb.Flash
+
+    def _install(self, **kwargs):
+        flash = _FakeFlash(self.log, **kwargs)
+        platform.pyb.Flash = lambda: flash
+        return flash
+
+    def test_cache_is_flushed_after_the_last_write_and_before_reboot(self):
+        self._install()
+        platform.wipe()
+
+        self.assertIn("sync", self.log)
+        self.assertIn("reboot", self.log)
+        sync_at = self.log.index("sync")
+        reboot_at = self.log.index("reboot")
+        last_write_at = max(
+            i for i, entry in enumerate(self.log)
+            if isinstance(entry, tuple) and entry[0] == "write"
+        )
+        # Order matters entirely: flush after every write, before the reset.
+        self.assertLess(last_write_at, sync_at)
+        self.assertLess(sync_at, reboot_at)
+
+    def test_every_block_in_the_documented_range_is_written(self):
+        self._install()
+        platform.wipe()
+
+        written = [entry[1] for entry in self.log
+                   if isinstance(entry, tuple) and entry[0] == "write"]
+        self.assertEqual(
+            written,
+            list(range(platform.WIPE_FIRST_BLOCK,
+                       platform.WIPE_LAST_BLOCK + 1)),
+        )
+
+    def test_failed_write_aborts_without_rebooting(self):
+        """A silent write failure must not be followed by a reboot that
+        presents the device as wiped."""
+        self._install(fail_at=platform.WIPE_FIRST_BLOCK + 5)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            platform.wipe()
+        message = str(ctx.exception)
+        self.assertIn("has NOT been wiped", message)
+        self.assertIn(str(platform.WIPE_FIRST_BLOCK + 5), message)
+
+        self.assertNotIn("reboot", self.log)
+        self.assertNotIn("sync", self.log)
+
+    def test_failed_sync_aborts_without_rebooting(self):
+        """If the cache could not be flushed the overwrite may not have
+        reached the flash at all - rebooting would hide that."""
+        self._install(sync_result=-5)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            platform.wipe()
+        self.assertIn("could not be flushed", str(ctx.exception))
+        self.assertIn("NOT been reliably wiped", str(ctx.exception))
+
+        self.assertIn("sync", self.log)
+        self.assertNotIn("reboot", self.log)
+
+    def test_flash_too_small_for_the_range_is_rejected(self):
+        self._install(block_count=platform.WIPE_LAST_BLOCK)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            platform.wipe()
+        self.assertIn("are required", str(ctx.exception))
+
+        self.assertEqual(self.log, [])
+
+
+class BlockOpSuccessTest(TestCase):
+    def test_known_success_values(self):
+        # pyb.Flash returns 0, pyb.SDCard returns True, generic devices None.
+        for value in (0, True, None):
+            self.assertTrue(platform.is_block_op_success(value))
+
+    def test_everything_else_fails_closed(self):
+        for value in (False, -5, 1, "0", 0.0, [], object()):
+            self.assertFalse(platform.is_block_op_success(value))

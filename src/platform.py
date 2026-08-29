@@ -72,6 +72,27 @@ def is_valid_count(value, allow_zero=False):
 MAX_SANE_BLOCK_SIZE = 64 * 1024
 
 
+def is_block_op_success(result):
+    """
+    True if a block-device call reported success.
+
+    The conventions differ between the drivers used here: pyb.SDCard's
+    writeblocks() returns True/False (sdcard.c ends in
+    mp_obj_new_bool(ret == 0)), pyb.Flash's returns the integer status
+    directly - 0, or a negative errno (storage.c) - and generic MicroPython
+    block devices return None. Accept only those known success values, so an
+    unrecognised result fails closed: a block that was never written must
+    never be reported as a successful wipe.
+    """
+    if result is None or result is True:
+        return True
+    return (
+        isinstance(result, int)
+        and not isinstance(result, bool)
+        and result == 0
+    )
+
+
 def validate_block_geometry(block_size, block_count, device="storage device",
                             min_blocks=1):
     """
@@ -345,22 +366,7 @@ class SDCard:
                     # would escape as a raw traceback and the user would
                     # never be told the card is half-overwritten.
                     raise RuntimeError(interrupted) from e
-                # pyb.SDCard.writeblocks() on the MicroPython revision
-                # Specter pins returns True/False - sdcard.c ends in
-                # mp_obj_new_bool(ret == 0). Generic MicroPython block
-                # devices instead return None, or an integer where 0 means
-                # success. Accept only those known success values; any other
-                # result must fail closed, so a missed chunk can never be
-                # reported as a successful secure erase.
-                if not (
-                    result is None
-                    or result is True
-                    or (
-                        isinstance(result, int)
-                        and not isinstance(result, bool)
-                        and result == 0
-                    )
-                ):
+                if not is_block_op_success(result):
                     raise RuntimeError(
                         "Could not write to the SD card during secure erase "
                         "(block device returned %r). The card is now in a "
@@ -917,9 +923,35 @@ def wipe():
         # wipe internal flash with random bytes
         for i in range(WIPE_FIRST_BLOCK, WIPE_LAST_BLOCK + 1):
             b = os.urandom(block_size)
-            f.writeblocks(i, b)
+            result = f.writeblocks(i, b)
             del b
             gc.collect()
+            # pyb.Flash.writeblocks() returns the integer status rather than
+            # raising (storage.c returns MP_OBJ_NEW_SMALL_INT(ret)), so a
+            # failed write is silent unless the result is checked.
+            if not is_block_op_success(result):
+                raise RuntimeError(
+                    "Wiping the device failed at block %d (the flash driver "
+                    "returned %r).\n\nThe device has NOT been wiped - data "
+                    "may still be present." % (i, result)
+                )
+        # Force the write-behind cache out to flash BEFORE resetting.
+        # pyb.Flash writes into a RAM cache (flashbdev.c sets
+        # FLASH_FLAG_DIRTY) that is only written out on an explicit
+        # BDEV_IOCTL_SYNC or after 5 seconds of idle, and pyb.hard_reset()
+        # goes straight to NVIC_SystemReset() without flushing storage. This
+        # wipe writes ~200 blocks and resets immediately, so without an
+        # explicit sync the entire overwrite could be discarded along with
+        # the cache. The same ioctl also flushes the QSPI device, whose
+        # first blocks are inside the range above (storage_flush() issues
+        # BDEV_IOCTL_SYNC and BDEV2_IOCTL_SYNC).
+        result = f.ioctl(3, None)  # MP_BLOCKDEV_IOCTL_SYNC
+        if not is_block_op_success(result):
+            raise RuntimeError(
+                "Wiping the device failed: the overwrite could not be "
+                "flushed to flash (the driver returned %r).\n\nThe device "
+                "has NOT been reliably wiped." % result
+            )
     # mpy will reformat fs on reboot
     reboot()
 
