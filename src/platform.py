@@ -151,11 +151,18 @@ class SDCard:
             # result is unknown, a later cleanup attempt must not be skipped.
             if unmounted:
                 self._mounted = False
-            try:
-                self._sd.power(False)
-            except Exception as e:
-                if error is None:
-                    error = e
+            # Cut power only once the VFS mount is really gone - or once the
+            # card is no longer there to talk to. Powering the interface down
+            # while /sd is still mounted would leave the VFS pointing at a
+            # dead block device, and the retry this method leaves open syncs
+            # before it umounts, so that retry would run against hardware
+            # that can no longer answer.
+            if unmounted or not self._present_or_gone():
+                try:
+                    self._sd.power(False)
+                except Exception as e:
+                    if error is None:
+                        error = e
             try:
                 if self._led is not None:
                     self._led.off()
@@ -164,6 +171,17 @@ class SDCard:
                     error = e
         if error is not None:
             raise error
+
+    def _present_or_gone(self):
+        """
+        is_present, but never raises. Used on cleanup paths, where a failing
+        presence check must not mask the error we are already reporting; a
+        card we cannot even interrogate is treated as gone.
+        """
+        try:
+            return self.is_present
+        except Exception:
+            return False
 
     def __enter__(self):
         self.mount()
@@ -248,11 +266,12 @@ class SDCard:
                         "state and must be reformatted before it can be "
                         "used again." % e
                     ) from e
-                # MicroPython block devices conventionally return None (or
-                # 0), while the STM32 binding used here returns True/False.
-                # Accept only those known success values; any other result
-                # must fail closed so a missed chunk can never be reported
-                # as a successful secure erase.
+                # MicroPython block devices conventionally return None,
+                # and the STM32 binding wraps the underlying HAL status as
+                # an integer where 0 means success. True is accepted too,
+                # since a driver may report success that way. Any other
+                # result must fail closed, so a missed chunk can never be
+                # reported as a successful secure erase.
                 if not (
                     result is None
                     or result is True

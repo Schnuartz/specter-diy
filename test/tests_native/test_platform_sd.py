@@ -44,6 +44,43 @@ if not hasattr(os, "VfsFat"):
     os.VfsFat = _VfsFat
 
 
+class _RecordingMkfs:
+    """Context manager that records every os.VfsFat.mkfs() call - and
+    optionally makes it fail - so tests can assert the filesystem is created
+    exactly once, against the right block device, and only after a complete
+    overwrite."""
+
+    def __init__(self, error=None):
+        self.calls = []
+        self._error = error
+        self._real = None
+
+    def __enter__(self):
+        self._real = os.VfsFat.mkfs
+
+        def fake_mkfs(bdev):
+            self.calls.append(bdev)
+            if self._error is not None:
+                raise self._error
+
+        os.VfsFat.mkfs = staticmethod(fake_mkfs)
+        return self
+
+    def __exit__(self, *args):
+        os.VfsFat.mkfs = self._real
+
+
+def _dir_exists(path):
+    """platform.file_exists() opens the path as a file, so it reports False
+    for a directory whether or not that directory is still there. Tests that
+    care about directory removal must stat instead."""
+    try:
+        os.stat(path)
+        return True
+    except OSError:
+        return False
+
+
 def _run(coro):
     loop = asyncio.new_event_loop()
     try:
@@ -166,6 +203,61 @@ class EraseAndFormatTest(TestCase):
             _run(main())
             self.assertEqual(dev.power_states, [True, False])
             self.assertEqual(len(dev.writes), 1)
+
+    def test_filesystem_created_once_on_the_same_device_after_full_erase(self):
+        dev = _FakeBlockDevice(block_count=4100, block_size=512)
+        sd = platform.SDCard(sd=dev)
+
+        with _RecordingMkfs() as mkfs:
+            _run(sd.erase_and_format())
+
+        # Exactly one filesystem, on the device we just overwrote.
+        self.assertEqual(len(mkfs.calls), 1)
+        self.assertIs(mkfs.calls[0], dev)
+        # And only after every block was written: 4100 blocks of 512 bytes
+        # in 128 KiB chunks is 16 full chunks plus a 4-block remainder.
+        self.assertEqual(sum(n for _, n in dev.writes), 4100 * 512)
+        self.assertEqual(dev.power_states, [True, False])
+
+    def test_no_filesystem_is_created_when_the_overwrite_fails(self):
+        class FailingWriteDevice(_FakeBlockDevice):
+            def writeblocks(self, start, data):
+                self.writes.append((start, len(data)))
+                raise OSError("card removed mid-erase")
+
+        dev = FailingWriteDevice(block_count=4100, block_size=512)
+        sd = platform.SDCard(sd=dev)
+
+        with _RecordingMkfs() as mkfs:
+            with self.assertRaises(RuntimeError):
+                _run(sd.erase_and_format())
+
+        # A half-overwritten card must not be handed a fresh filesystem -
+        # that would present it as clean while most of it is untouched.
+        self.assertEqual(mkfs.calls, [])
+        self.assertEqual(dev.power_states, [True, False])
+
+    def test_mkfs_failure_is_translated_and_card_is_powered_off(self):
+        dev = _FakeBlockDevice(block_count=4100, block_size=512)
+        sd = platform.SDCard(sd=dev)
+        cause = OSError("mkfs failed")
+
+        async def main():
+            with self.assertRaises(RuntimeError) as ctx:
+                await sd.erase_and_format()
+            message = str(ctx.exception)
+            # The user has to be told the data is gone but the card is not
+            # usable yet - those are different recovery steps.
+            self.assertIn("Overwrite completed", message)
+            self.assertIn("no valid filesystem", message)
+            self.assertIs(ctx.exception.__cause__, cause)
+
+        with _RecordingMkfs(error=cause) as mkfs:
+            _run(main())
+
+        self.assertEqual(len(mkfs.calls), 1)
+        self.assertEqual(sum(n for _, n in dev.writes), 4100 * 512)
+        self.assertEqual(dev.power_states, [True, False])
 
     def test_invalid_geometry_rejected_before_any_write(self):
         class _BadGeometryDevice(_FakeBlockDevice):
@@ -299,7 +391,11 @@ class SDCardUnmountTest(TestCase):
         self.assertFalse(sd._mounted)
         self.assertEqual(dev.power_states, [False])
 
-    def test_umount_failure_keeps_state_for_a_retry(self):
+    def test_umount_failure_keeps_card_powered_for_a_retry(self):
+        """If the VFS mount could not be removed, /sd is still mounted.
+        Cutting power there would leave the VFS pointing at a dead block
+        device, and the retry path syncs before it umounts - so the card
+        must stay powered while _mounted is still True."""
         dev = _FakeBlockDevice(block_count=1, block_size=512)
         sd = platform.SDCard(sd=dev)
         sd._mounted = True
@@ -314,6 +410,77 @@ class SDCardUnmountTest(TestCase):
         finally:
             self._restore_vfs(state)
         self.assertTrue(sd._mounted)
+        self.assertEqual(dev.power_states, [])
+
+    def test_retry_after_umount_failure_powers_down(self):
+        """The state left behind above must be recoverable: a second
+        unmount() on a still-powered card succeeds and powers it down."""
+        dev = _FakeBlockDevice(block_count=1, block_size=512)
+        sd = platform.SDCard(sd=dev)
+        sd._mounted = True
+        attempts = []
+
+        def flaky_umount(path):
+            attempts.append(path)
+            if len(attempts) == 1:
+                raise OSError("umount failed")
+
+        state = self._patch_vfs(lambda: None, flaky_umount)
+        try:
+            with self.assertRaises(OSError):
+                sd.unmount()
+            self.assertEqual(dev.power_states, [])
+            sd.unmount()
+        finally:
+            self._restore_vfs(state)
+        self.assertEqual(attempts, ["/sd", "/sd"])
+        self.assertFalse(sd._mounted)
+        self.assertEqual(dev.power_states, [False])
+
+    def test_umount_failure_on_removed_card_still_powers_down(self):
+        """A card that is gone cannot be retried against, so holding the
+        interface powered would serve no purpose - power it down."""
+        class _AbsentDevice(_FakeBlockDevice):
+            def present(self):
+                return False
+
+        dev = _AbsentDevice(block_count=1, block_size=512)
+        sd = platform.SDCard(sd=dev)
+        sd._mounted = True
+
+        def failing_umount(path):
+            raise OSError("umount failed")
+
+        state = self._patch_vfs(lambda: None, failing_umount)
+        try:
+            with self.assertRaises(OSError):
+                sd.unmount()
+        finally:
+            self._restore_vfs(state)
+        self.assertTrue(sd._mounted)
+        self.assertEqual(dev.power_states, [False])
+
+    def test_umount_failure_with_failing_presence_check_powers_down(self):
+        """A presence check that raises must not mask the umount error, and
+        a card we cannot interrogate is treated as gone."""
+        class _BrokenPresenceDevice(_FakeBlockDevice):
+            def present(self):
+                raise OSError("card interface unresponsive")
+
+        dev = _BrokenPresenceDevice(block_count=1, block_size=512)
+        sd = platform.SDCard(sd=dev)
+        sd._mounted = True
+
+        def failing_umount(path):
+            raise OSError("umount failed")
+
+        state = self._patch_vfs(lambda: None, failing_umount)
+        try:
+            with self.assertRaises(OSError) as ctx:
+                sd.unmount()
+            self.assertIn("umount failed", str(ctx.exception))
+        finally:
+            self._restore_vfs(state)
         self.assertEqual(dev.power_states, [False])
 
 
@@ -447,13 +614,29 @@ class SecureDeleteTreeTest(TestCase):
 
     def test_normal_tree_deleted(self):
         self._make_files(3)
+        self.assertTrue(_dir_exists(self.path))
         platform.secure_delete_tree(self.path)
-        self.assertFalse(platform.file_exists(self.path))
+        # stat, not file_exists: file_exists() opens the path as a file and
+        # so reports False for a directory that is still very much there.
+        self.assertFalse(_dir_exists(self.path))
+        self.assertNotIn("deltree", [e[0] for e in os.ilistdir("testdir")])
+
+    def test_nested_tree_deleted(self):
+        self._make_files(2)
+        platform.maybe_mkdir("%s/inner" % self.path)
+        platform.maybe_mkdir("%s/inner/deeper" % self.path)
+        with open("%s/inner/deeper/leaf.bin" % self.path, "wb") as f:
+            f.write(b"y" * 10)
+        platform.secure_delete_tree(self.path)
+        self.assertFalse(_dir_exists("%s/inner/deeper" % self.path))
+        self.assertFalse(_dir_exists("%s/inner" % self.path))
+        self.assertFalse(_dir_exists(self.path))
 
     def test_tree_at_cap_deleted(self):
         self._make_files(platform.SECURE_DELETE_MAX_ENTRIES)
         platform.secure_delete_tree(self.path)
-        self.assertFalse(platform.file_exists(self.path))
+        self.assertFalse(_dir_exists(self.path))
+        self.assertNotIn("deltree", [e[0] for e in os.ilistdir("testdir")])
 
     def test_tree_over_cap_rejected_before_overwrite(self):
         self._make_files(platform.SECURE_DELETE_MAX_ENTRIES + 1)
