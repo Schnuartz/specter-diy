@@ -259,6 +259,163 @@ class EraseAndFormatTest(TestCase):
         self.assertEqual(sum(n for _, n in dev.writes), 4100 * 512)
         self.assertEqual(dev.power_states, [True, False])
 
+    def test_write_buffer_is_allocated_once_and_reused(self):
+        """os.urandom() allocates a fresh object per call, so asking it for
+        a whole 128 KiB chunk on every iteration is the repeated large
+        allocation that fragments the MicroPython heap. Every allocation in
+        the loop must stay small."""
+        dev = _FakeBlockDevice(block_count=4100, block_size=512)
+        sd = platform.SDCard(sd=dev)
+        sizes = []
+        real_urandom = os.urandom
+
+        def counting_urandom(n):
+            sizes.append(n)
+            return real_urandom(n)
+
+        os.urandom = counting_urandom
+        try:
+            _run(sd.erase_and_format())
+        finally:
+            os.urandom = real_urandom
+
+        self.assertTrue(sizes)
+        self.assertLessEqual(max(sizes), 256)
+        # The card is still fully overwritten.
+        self.assertEqual(sum(n for _, n in dev.writes), 4100 * 512)
+
+    def test_allocation_failure_aborts_before_touching_the_card(self):
+        """The buffer is allocated before the first destructive write, so a
+        MemoryError there must report that nothing was changed - not leave
+        the user with a half-wiped card."""
+        dev = _FakeBlockDevice(block_count=4100, block_size=512)
+        sd = platform.SDCard(sd=dev)
+
+        def refuses(size):
+            raise MemoryError("out of memory")
+
+        platform.bytearray = refuses
+        try:
+            with _RecordingMkfs() as mkfs:
+                async def main():
+                    with self.assertRaises(RuntimeError) as ctx:
+                        await sd.erase_and_format()
+                    message = str(ctx.exception)
+                    self.assertIn("Not enough memory", message)
+                    self.assertIn("No data has been changed", message)
+                    self.assertIsInstance(ctx.exception.__cause__, MemoryError)
+
+                _run(main())
+        finally:
+            del platform.bytearray
+
+        self.assertEqual(dev.writes, [])
+        self.assertEqual(mkfs.calls, [])
+        self.assertEqual(dev.power_states, [True, False])
+
+    def test_memory_error_mid_wipe_is_reported_as_interrupted(self):
+        """MemoryError is not an OSError, so without an explicit handler it
+        would escape as a raw traceback and the user would never be told the
+        card is half-overwritten."""
+        dev = _FakeBlockDevice(block_count=4100, block_size=512)
+        sd = platform.SDCard(sd=dev)
+        real_fill = platform.fill_random
+        calls = []
+
+        def failing_fill(buf):
+            calls.append(len(buf))
+            if len(calls) == 3:
+                raise MemoryError("out of memory")
+            return real_fill(buf)
+
+        platform.fill_random = failing_fill
+        try:
+            with _RecordingMkfs() as mkfs:
+                async def main():
+                    with self.assertRaises(RuntimeError) as ctx:
+                        await sd.erase_and_format()
+                    self.assertIn("interrupted", str(ctx.exception))
+                    self.assertIsInstance(ctx.exception.__cause__, MemoryError)
+
+                _run(main())
+        finally:
+            platform.fill_random = real_fill
+
+        self.assertEqual(len(dev.writes), 2)
+        self.assertEqual(mkfs.calls, [])
+        self.assertEqual(dev.power_states, [True, False])
+
+    def test_cleanup_failure_does_not_mask_the_write_error(self):
+        """An exception raised in a finally block supplants the one already
+        propagating. The half-overwritten-card message must survive a
+        power-off that also fails."""
+        class _FailingCleanupDevice(_FakeBlockDevice):
+            def writeblocks(self, start, data):
+                self.writes.append((start, len(data)))
+                raise OSError("card removed mid-erase")
+
+            def power(self, state):
+                self.power_states.append(state)
+                if not state:
+                    raise OSError("power-off failed too")
+
+        dev = _FailingCleanupDevice(block_count=4100, block_size=512)
+        sd = platform.SDCard(sd=dev)
+
+        async def main():
+            with self.assertRaises(RuntimeError) as ctx:
+                await sd.erase_and_format()
+            message = str(ctx.exception)
+            self.assertIn("half-overwritten", message)
+            self.assertIn("card may have been removed", message)
+
+        _run(main())
+        self.assertEqual(dev.power_states, [True, False])
+
+    def test_cleanup_failure_is_reported_when_the_erase_succeeded(self):
+        """With no failure in flight there is nothing to mask, so a cleanup
+        error must not be swallowed either."""
+        class _FailingPowerOffDevice(_FakeBlockDevice):
+            def power(self, state):
+                self.power_states.append(state)
+                if not state:
+                    raise OSError("power-off failed")
+
+        dev = _FailingPowerOffDevice(block_count=8, block_size=512)
+        sd = platform.SDCard(sd=dev)
+
+        with _RecordingMkfs() as mkfs:
+            with self.assertRaises(OSError) as ctx:
+                _run(sd.erase_and_format())
+            self.assertIn("power-off failed", str(ctx.exception))
+
+        # The erase itself did complete before cleanup failed.
+        self.assertEqual(sum(n for _, n in dev.writes), 8 * 512)
+        self.assertEqual(len(mkfs.calls), 1)
+
+    def test_oversized_block_size_is_rejected(self):
+        """chunk_blocks falls to 1 for a huge block size, so the buffer
+        would be one block - unbounded unless the geometry check caps it."""
+        class _HugeBlockDevice(_FakeBlockDevice):
+            def ioctl(self, op, arg):
+                if op == 4:
+                    return 4
+                if op == 5:
+                    return platform.MAX_SANE_BLOCK_SIZE + 1
+                raise OSError("unsupported ioctl")
+
+        dev = _HugeBlockDevice(block_count=4, block_size=1)
+        sd = platform.SDCard(sd=dev)
+
+        async def main():
+            with self.assertRaises(RuntimeError) as ctx:
+                await sd.erase_and_format()
+            self.assertIn("invalid geometry", str(ctx.exception))
+            self.assertIn("maximum", str(ctx.exception))
+
+        _run(main())
+        self.assertEqual(dev.writes, [])
+
     def test_invalid_geometry_rejected_before_any_write(self):
         class _BadGeometryDevice(_FakeBlockDevice):
             def __init__(self, block_count, block_size):
@@ -825,3 +982,57 @@ class SecureDeleteTreeTest(TestCase):
         # Two 4 MiB files fit the 8 MiB budget; the third must abort the
         # walk immediately rather than after enumerating anything further.
         self.assertEqual(seen, ["first.bin", "second.bin", "third.bin"])
+
+
+class BlockGeometryTest(TestCase):
+    def test_min_blocks_rejects_a_device_too_small_for_the_range(self):
+        """platform.wipe() writes a hardcoded block range. A device passing
+        the size/count checks can still be too small to contain it, so the
+        required minimum has to be part of the check."""
+        with self.assertRaises(RuntimeError) as ctx:
+            platform.validate_block_geometry(
+                512, 300, "internal flash",
+                min_blocks=platform.WIPE_LAST_BLOCK + 1,
+            )
+        message = str(ctx.exception)
+        self.assertIn("only 300 blocks", message)
+        self.assertIn("450 are required", message)
+
+    def test_min_blocks_accepts_a_large_enough_device(self):
+        platform.validate_block_geometry(
+            512, platform.WIPE_LAST_BLOCK + 1, "internal flash",
+            min_blocks=platform.WIPE_LAST_BLOCK + 1,
+        )
+
+    def test_wipe_range_is_covered_by_its_own_minimum(self):
+        """The range written and the minimum geometry demanded to write it
+        must not drift apart."""
+        self.assertEqual(
+            max(range(platform.WIPE_FIRST_BLOCK,
+                      platform.WIPE_LAST_BLOCK + 1)),
+            platform.WIPE_LAST_BLOCK,
+        )
+
+    def test_block_size_upper_bound(self):
+        platform.validate_block_geometry(
+            platform.MAX_SANE_BLOCK_SIZE, 10, "SD card")
+        with self.assertRaises(RuntimeError):
+            platform.validate_block_geometry(
+                platform.MAX_SANE_BLOCK_SIZE + 1, 10, "SD card")
+
+
+class FillRandomTest(TestCase):
+    def test_fills_whole_buffer_and_changes_between_calls(self):
+        buf = bytearray(1000)
+        platform.fill_random(buf)
+        self.assertNotEqual(bytes(buf), bytes(1000))
+        first = bytes(buf)
+        platform.fill_random(buf)
+        # Fresh data every pass, not a repeat of the first fill.
+        self.assertNotEqual(first, bytes(buf))
+
+    def test_fills_a_memoryview_slice_without_touching_the_rest(self):
+        buf = bytearray(600)
+        platform.fill_random(memoryview(buf)[:300])
+        self.assertNotEqual(bytes(buf[:300]), bytes(300))
+        self.assertEqual(bytes(buf[300:]), bytes(300))

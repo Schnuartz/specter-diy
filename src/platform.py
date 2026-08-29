@@ -65,21 +65,62 @@ def is_valid_count(value, allow_zero=False):
     return value >= 0 if allow_zero else value > 0
 
 
-def validate_block_geometry(block_size, block_count, device="storage device"):
+# A block device reporting a larger block size than this is not something we
+# can wipe in bounded memory: the erase buffer can never be smaller than one
+# block. Real SD cards and the internal flash report 512 bytes; 64 KiB leaves
+# room for anything plausible while keeping the buffer cap meaningful.
+MAX_SANE_BLOCK_SIZE = 64 * 1024
+
+
+def validate_block_geometry(block_size, block_count, device="storage device",
+                            min_blocks=1):
     """
     Sanity-checks the geometry a block device reports before any
     destructive, geometry-driven operation runs against it.
 
-    A driver reporting a bogus size would make an erase loop write the
-    wrong amount of data, and a non-positive count would make it skip
-    every block while still reporting success. Kept as a shared helper so
-    the SD erase and the flash wipe reject the same cases identically.
+    A driver reporting a bogus size would make an erase loop write the wrong
+    amount of data, and a non-positive count would make it skip every block
+    while still reporting success. `min_blocks` additionally rejects a device
+    too small for the fixed block range its caller is about to write, so a
+    hardcoded range can never run past the end of the reported geometry.
+    Kept as a shared helper so every destructive path rejects the same cases
+    identically.
     """
     if not is_valid_count(block_size) or not is_valid_count(block_count):
         raise RuntimeError(
             "%s reported invalid geometry (block size %r, block count %r) "
             "- cannot erase." % (device, block_size, block_count)
         )
+    if block_size > MAX_SANE_BLOCK_SIZE:
+        raise RuntimeError(
+            "%s reported invalid geometry (block size %d exceeds the %d byte "
+            "maximum) - cannot erase." % (device, block_size,
+                                          MAX_SANE_BLOCK_SIZE)
+        )
+    if block_count < min_blocks:
+        raise RuntimeError(
+            "%s reports only %d blocks, but %d are required - cannot erase."
+            % (device, block_count, min_blocks)
+        )
+
+
+def fill_random(buf):
+    """
+    Refills `buf` in place with fresh random data.
+
+    os.urandom() allocates a new bytes object per call (moduos.c builds a
+    vstr), so asking it for a whole multi-KiB wipe buffer on every chunk is
+    exactly the repeated large allocation that fragments the MicroPython
+    heap. Filling an already-allocated buffer from a small scratch read
+    keeps every allocation in this loop tiny and short-lived.
+    """
+    size = len(buf)
+    step = 256
+    offset = 0
+    while offset < size:
+        scratch = os.urandom(min(step, size - offset))
+        buf[offset:offset + len(scratch)] = scratch
+        offset += len(scratch)
 
 
 class SDCard:
@@ -233,6 +274,7 @@ class SDCard:
             "is now in a half-overwritten, unusable state and must be "
             "reformatted before it can be used again."
         )
+        completed = False
         if self._led is not None:
             self._led.on()
         try:
@@ -266,15 +308,35 @@ class SDCard:
             # Keep the temporary random-data buffer bounded. A 1 MB
             # allocation is needlessly risky on a fragmented MicroPython
             # heap; 128 KiB is still large enough to amortize SD writes
-            # while keeping the wipe usable on the target hardware.
+            # while keeping the wipe usable on the target hardware. The
+            # geometry check above caps block_size, so this really is
+            # bounded even for a device reporting unusually large blocks.
             chunk_blocks = max(1, (128 * 1024) // block_size)
+            # Allocate the write buffer ONCE, before the first destructive
+            # write, and reuse it for every chunk. Allocating per chunk
+            # meant a fragmented heap could fail the allocation partway
+            # through - after some blocks were already overwritten - and a
+            # MemoryError is not an OSError, so it would have escaped past
+            # the handler below as a raw traceback instead of the
+            # "half-overwritten card" message. Failing here instead costs
+            # nothing: not a single block has been touched yet.
+            try:
+                buf = bytearray(chunk_blocks * block_size)
+            except MemoryError as e:
+                raise RuntimeError(
+                    "Not enough memory to start the secure erase. No data "
+                    "has been changed - reboot the device and try again."
+                ) from e
+            view = memoryview(buf)
             for start in range(0, block_count, chunk_blocks):
                 n = min(chunk_blocks, block_count - start)
                 result = None
                 try:
-                    result = self._sd.writeblocks(
-                        start, os.urandom(block_size * n)
-                    )
+                    # A memoryview slice for the short final chunk, so it
+                    # does not allocate a copy of the buffer.
+                    data = buf if n == chunk_blocks else view[:n * block_size]
+                    fill_random(data)
+                    result = self._sd.writeblocks(start, data)
                 except OSError as e:
                     raise RuntimeError(
                         "Could not write to the SD card during secure erase "
@@ -283,6 +345,12 @@ class SDCard:
                         "state and must be reformatted before it can be "
                         "used again." % e
                     ) from e
+                except MemoryError as e:
+                    # The buffer itself is already allocated, but the small
+                    # scratch reads in fill_random() can still fail on an
+                    # exhausted heap. Report it as the interrupted wipe it
+                    # is, not as a raw MemoryError.
+                    raise RuntimeError(interrupted) from e
                 # pyb.SDCard.writeblocks() on the MicroPython revision
                 # Specter pins returns True/False - sdcard.c ends in
                 # mp_obj_new_bool(ret == 0). Generic MicroPython block
@@ -332,10 +400,29 @@ class SDCard:
                     "but it has no valid filesystem and must be reformatted "
                     "on a computer before it can be used." % e
                 ) from e
+            completed = True
         finally:
-            self._sd.power(False)
-            if self._led is not None:
-                self._led.off()
+            # Cleanup must never replace the failure being reported. An
+            # exception raised in a finally block supplants the one already
+            # propagating, so a power-off that fails while we are reporting
+            # "the card is half-overwritten" would hide exactly the message
+            # the user needs. Surface a cleanup failure only when there is
+            # nothing more important in flight - same rule as unmount().
+            cleanup_error = None
+            try:
+                self._sd.power(False)
+            except Exception as e:
+                cleanup_error = e
+            try:
+                if self._led is not None:
+                    self._led.off()
+            except Exception as e:
+                if cleanup_error is None:
+                    cleanup_error = e
+            if cleanup_error is not None:
+                if completed:
+                    raise cleanup_error
+                print(cleanup_error)
 
 
 def fpath(fname):
@@ -798,6 +885,13 @@ def reboot():
         pyb.hard_reset()
 
 
+# Internal-flash block range overwritten by wipe(), from the disco board
+# block map below. Named so that the range written and the minimum geometry
+# required to write it cannot drift apart.
+WIPE_FIRST_BLOCK = 256
+WIPE_LAST_BLOCK = 449
+
+
 def wipe():
     """
     Blocks map in disco board
@@ -820,10 +914,14 @@ def wipe():
         block_size = f.ioctl(5, None)
         block_count = f.ioctl(4, None)
         # Same sanity check the SD erase uses - a driver reporting a bogus
-        # block size here would overwrite the wrong amount of flash.
-        validate_block_geometry(block_size, block_count, "internal flash")
+        # block size here would overwrite the wrong amount of flash. The
+        # loop below writes a hardcoded block range, so the device must also
+        # actually be large enough to contain it; min_blocks makes that a
+        # checked precondition rather than an assumption.
+        validate_block_geometry(block_size, block_count, "internal flash",
+                                min_blocks=WIPE_LAST_BLOCK + 1)
         # wipe internal flash with random bytes
-        for i in range(256, 450):
+        for i in range(WIPE_FIRST_BLOCK, WIPE_LAST_BLOCK + 1):
             b = os.urandom(block_size)
             f.writeblocks(i, b)
             del b
