@@ -98,6 +98,7 @@ class _FakeBlockDevice:
         self.block_count = block_count
         self.block_size = block_size
         self.writes = []
+        self.written = []
         self.power_states = []
 
     def present(self):
@@ -112,6 +113,7 @@ class _FakeBlockDevice:
 
     def writeblocks(self, start, data):
         self.writes.append((start, len(data)))
+        self.written.append(bytes(data))
         return getattr(self, "write_result", None)
 
     def power(self, state):
@@ -259,18 +261,19 @@ class EraseAndFormatTest(TestCase):
         self.assertEqual(sum(n for _, n in dev.writes), 4100 * 512)
         self.assertEqual(dev.power_states, [True, False])
 
-    def test_write_buffer_is_allocated_once_and_reused(self):
-        """os.urandom() allocates a fresh object per call, so asking it for
-        a whole 128 KiB chunk on every iteration is the repeated large
-        allocation that fragments the MicroPython heap. Every allocation in
-        the loop must stay small."""
+    def test_every_block_is_overwritten_with_zeros_without_using_the_rng(self):
+        """A full-card wipe must not touch os.urandom(). On the pinned
+        firmware it calls rng_get() once per byte, and rng_get() busy-waits
+        for RNG_SR_DRDY - "on the order of 10us" by its own comment - which
+        is hours per gigabyte of pure RNG wait. Zeros are a complete
+        overwrite for sanitization and cost nothing to produce."""
         dev = _FakeBlockDevice(block_count=4100, block_size=512)
         sd = platform.SDCard(sd=dev)
-        sizes = []
+        urandom_calls = []
         real_urandom = os.urandom
 
         def counting_urandom(n):
-            sizes.append(n)
+            urandom_calls.append(n)
             return real_urandom(n)
 
         os.urandom = counting_urandom
@@ -279,9 +282,31 @@ class EraseAndFormatTest(TestCase):
         finally:
             os.urandom = real_urandom
 
-        self.assertTrue(sizes)
-        self.assertLessEqual(max(sizes), 256)
-        # The card is still fully overwritten.
+        self.assertEqual(urandom_calls, [])
+        # Every block written, and every byte of it zero.
+        self.assertEqual(sum(n for _, n in dev.writes), 4100 * 512)
+        for block in dev.written:
+            self.assertEqual(block, bytes(len(block)))
+
+    def test_write_buffer_is_allocated_once_and_reused(self):
+        """One allocation up front, then the same buffer for every chunk -
+        no per-chunk allocation to fail on a fragmented heap."""
+        dev = _FakeBlockDevice(block_count=4100, block_size=512)
+        sd = platform.SDCard(sd=dev)
+        allocations = []
+        real_bytearray = bytearray
+
+        def counting_bytearray(*args):
+            allocations.append(args[0] if args else 0)
+            return real_bytearray(*args)
+
+        platform.bytearray = counting_bytearray
+        try:
+            _run(sd.erase_and_format())
+        finally:
+            del platform.bytearray
+
+        self.assertEqual(allocations, [128 * 1024])
         self.assertEqual(sum(n for _, n in dev.writes), 4100 * 512)
 
     def test_allocation_failure_aborts_before_touching_the_card(self):
@@ -317,29 +342,23 @@ class EraseAndFormatTest(TestCase):
         """MemoryError is not an OSError, so without an explicit handler it
         would escape as a raw traceback and the user would never be told the
         card is half-overwritten."""
-        dev = _FakeBlockDevice(block_count=4100, block_size=512)
+        class _ExhaustsHeapDevice(_FakeBlockDevice):
+            def writeblocks(self, start, data):
+                if len(self.writes) == 2:
+                    raise MemoryError("out of memory")
+                return _FakeBlockDevice.writeblocks(self, start, data)
+
+        dev = _ExhaustsHeapDevice(block_count=4100, block_size=512)
         sd = platform.SDCard(sd=dev)
-        real_fill = platform.fill_random
-        calls = []
 
-        def failing_fill(buf):
-            calls.append(len(buf))
-            if len(calls) == 3:
-                raise MemoryError("out of memory")
-            return real_fill(buf)
+        with _RecordingMkfs() as mkfs:
+            async def main():
+                with self.assertRaises(RuntimeError) as ctx:
+                    await sd.erase_and_format()
+                self.assertIn("interrupted", str(ctx.exception))
+                self.assertIsInstance(ctx.exception.__cause__, MemoryError)
 
-        platform.fill_random = failing_fill
-        try:
-            with _RecordingMkfs() as mkfs:
-                async def main():
-                    with self.assertRaises(RuntimeError) as ctx:
-                        await sd.erase_and_format()
-                    self.assertIn("interrupted", str(ctx.exception))
-                    self.assertIsInstance(ctx.exception.__cause__, MemoryError)
-
-                _run(main())
-        finally:
-            platform.fill_random = real_fill
+            _run(main())
 
         self.assertEqual(len(dev.writes), 2)
         self.assertEqual(mkfs.calls, [])
@@ -1019,20 +1038,3 @@ class BlockGeometryTest(TestCase):
         with self.assertRaises(RuntimeError):
             platform.validate_block_geometry(
                 platform.MAX_SANE_BLOCK_SIZE + 1, 10, "SD card")
-
-
-class FillRandomTest(TestCase):
-    def test_fills_whole_buffer_and_changes_between_calls(self):
-        buf = bytearray(1000)
-        platform.fill_random(buf)
-        self.assertNotEqual(bytes(buf), bytes(1000))
-        first = bytes(buf)
-        platform.fill_random(buf)
-        # Fresh data every pass, not a repeat of the first fill.
-        self.assertNotEqual(first, bytes(buf))
-
-    def test_fills_a_memoryview_slice_without_touching_the_rest(self):
-        buf = bytearray(600)
-        platform.fill_random(memoryview(buf)[:300])
-        self.assertNotEqual(bytes(buf[:300]), bytes(300))
-        self.assertEqual(bytes(buf[300:]), bytes(300))

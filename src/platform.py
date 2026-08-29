@@ -104,24 +104,6 @@ def validate_block_geometry(block_size, block_count, device="storage device",
         )
 
 
-def fill_random(buf):
-    """
-    Refills `buf` in place with fresh random data.
-
-    os.urandom() allocates a new bytes object per call (moduos.c builds a
-    vstr), so asking it for a whole multi-KiB wipe buffer on every chunk is
-    exactly the repeated large allocation that fragments the MicroPython
-    heap. Filling an already-allocated buffer from a small scratch read
-    keeps every allocation in this loop tiny and short-lived.
-    """
-    size = len(buf)
-    step = 256
-    offset = 0
-    while offset < size:
-        scratch = os.urandom(min(step, size - offset))
-        buf[offset:offset + len(scratch)] = scratch
-        offset += len(scratch)
-
 
 class SDCard:
     _mounted = False
@@ -243,8 +225,8 @@ class SDCard:
 
     async def erase_and_format(self, progress_cb=None):
         """
-        Overwrites every block of the card with random data and then
-        creates a fresh, empty FAT filesystem on it.
+        Overwrites every block of the card with zeros and then creates a
+        fresh, empty FAT filesystem on it.
 
         Irreversible: this destroys the whole card, not only the files
         Specter-DIY created. Cancelling the task at an await point leaves
@@ -320,6 +302,19 @@ class SDCard:
             # the handler below as a raw traceback instead of the
             # "half-overwritten card" message. Failing here instead costs
             # nothing: not a single block has been touched yet.
+            #
+            # The buffer stays zero-filled and is never modified. Zeros are
+            # a complete overwrite for sanitization purposes - NIST SP
+            # 800-88 asks for user-addressable data to be replaced with
+            # non-sensitive data, not for that data to be random - and on
+            # this hardware random is not a viable option at card scale:
+            # os.urandom() calls rng_get() once per byte (moduos.c), and
+            # rng_get() busy-waits for RNG_SR_DRDY, "on the order of 10us"
+            # by its own comment. That is hours per gigabyte of pure RNG
+            # wait before a single SD write, so a full-card wipe would
+            # never finish in a usable time. Whole-card erase therefore
+            # writes zeros; see secure_delete_file() for the small-file
+            # path, where the same cost is irrelevant.
             try:
                 buf = bytearray(chunk_blocks * block_size)
             except MemoryError as e:
@@ -335,7 +330,6 @@ class SDCard:
                     # A memoryview slice for the short final chunk, so it
                     # does not allocate a copy of the buffer.
                     data = buf if n == chunk_blocks else view[:n * block_size]
-                    fill_random(data)
                     result = self._sd.writeblocks(start, data)
                 except OSError as e:
                     raise RuntimeError(
@@ -346,10 +340,10 @@ class SDCard:
                         "used again." % e
                     ) from e
                 except MemoryError as e:
-                    # The buffer itself is already allocated, but the small
-                    # scratch reads in fill_random() can still fail on an
-                    # exhausted heap. Report it as the interrupted wipe it
-                    # is, not as a raw MemoryError.
+                    # Nothing in this loop allocates any more, but a driver
+                    # may. MemoryError is not an OSError, so without this it
+                    # would escape as a raw traceback and the user would
+                    # never be told the card is half-overwritten.
                     raise RuntimeError(interrupted) from e
                 # pyb.SDCard.writeblocks() on the MicroPython revision
                 # Specter pins returns True/False - sdcard.c ends in
