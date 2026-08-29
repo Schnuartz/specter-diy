@@ -287,7 +287,7 @@ class SDCard:
                     "(card may have been removed):\n\n%s" % e
                 ) from e
             validate_block_geometry(block_size, block_count, "SD card")
-            # Keep the temporary random-data buffer bounded. A 1 MB
+            # Keep the temporary wipe buffer bounded. A 1 MB
             # allocation is needlessly risky on a fragmented MicroPython
             # heap; 128 KiB is still large enough to amortize SD writes
             # while keeping the wipe usable on the target hardware. The
