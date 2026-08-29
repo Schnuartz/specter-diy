@@ -62,7 +62,7 @@ class WalletManager(BaseApp):
     # supported networks
     Networks = NETWORKS
     DEFAULT_SIGHASH = SIGHASH.ALL
-    # BitBox's fixed warning threshold; deliberately not a user setting.
+    # Transaction fee warning threshold; deliberately not a user setting.
     HIGH_FEE_PERCENT = 10
 
     def __init__(self, path):
