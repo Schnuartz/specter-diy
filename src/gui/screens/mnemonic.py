@@ -90,8 +90,8 @@ class NewMnemonicScreen(MnemonicScreen):
 
         # fix mnemonic components
         self.kb = lv.btnm(self)
-        self.kb.set_map(["1", "2", "4", "8", "16", "32", "\n",
-                         "64", "128", "256", "512", "1024", ""])
+        self.kb.set_map(["1024", "512", "256", "128", "64", "32", "\n",
+                         "16", "8", "4", "2", "1", ""])
         self.kb.set_ctrl_map([lv.btnm.CTRL.TGL_ENABLE for i in range(11)])
         self.kb.set_width(HOR_RES)
         self.kb.set_height(100)
@@ -131,7 +131,7 @@ class NewMnemonicScreen(MnemonicScreen):
         self.kb.set_hidden(False)
         word_idx = self.wordlist.index(word)
         self.kb.set_ctrl_map([
-            lv.btnm.CTRL.TGL_ENABLE | (lv.btnm.CTRL.TGL_STATE if ((word_idx>>i)&1) else 0)
+            lv.btnm.CTRL.TGL_ENABLE | (lv.btnm.CTRL.TGL_STATE if ((word_idx>>(10-i))&1) else 0)
             for i in range(11)
         ])
         # callback on toggle
@@ -143,7 +143,7 @@ class NewMnemonicScreen(MnemonicScreen):
                 return
             bits = [obj.get_btn_ctrl(i, lv.btnm.CTRL.TGL_STATE) for i in range(11)]
             num = 0
-            for i, bit in enumerate(reversed(bits)):
+            for i, bit in enumerate(bits):
                 num = num << 1
                 if bit:
                     num += 1
