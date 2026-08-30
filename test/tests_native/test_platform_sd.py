@@ -897,18 +897,18 @@ class SecureDeleteFileTest(TestCase):
         self.assertTrue(platform.file_exists(self.path))
 
     def test_sync_error_aborts_without_unlinking(self):
-        real_sync = platform._strict_file_sync
+        real_sync = platform.strict_sync
 
         def failing_sync(f):
             raise OSError("simulated sync failure")
 
-        platform._strict_file_sync = failing_sync
+        platform.strict_sync = failing_sync
         try:
             with self.assertRaises(OSError) as ctx:
                 platform.secure_delete_file(self.path)
             self.assertIn("sync failure", str(ctx.exception))
         finally:
-            platform._strict_file_sync = real_sync
+            platform.strict_sync = real_sync
         self.assertTrue(platform.file_exists(self.path))
 
 
