@@ -12,7 +12,8 @@ from binascii import hexlify, unhexlify
 from rng import get_random_bytes
 from embit import ec, bip39, bip32
 from helpers import tagged_hash
-from gui.screens import Alert, PinScreen, Menu, MnemonicScreen, InputScreen
+from gui.screens import (Alert, PinScreen, Menu, MnemonicScreen, InputScreen,
+                         Prompt)
 
 
 class FlashKeyStore(RAMKeyStore):
@@ -213,6 +214,27 @@ class FlashKeyStore(RAMKeyStore):
         return "specterdiy%s" % hexid
 
 
+    def _replace_existing(self, fullpath):
+        """
+        Destroys the file a save is about to replace, before writing over
+        it.
+
+        save_aead() opens the path "wb", and truncating a file frees its
+        cluster chain without overwriting it - so the previous encrypted
+        mnemonic stays readable in free space while the new one is written
+        somewhere else. Deleting the old encrypted mnemonic later cannot
+        reach that copy any more, and it is encrypted under the same
+        enc_secret, which a delete does not rotate. Overwrite it now, while
+        we still know where it is.
+        """
+        try:
+            platform.secure_delete_file(fullpath)
+        except Exception as e:
+            print(e)
+            raise KeyStoreError(
+                "Failed to overwrite the existing file '%s'" % fullpath
+            )
+
     async def save_mnemonic(self):
         if self.is_locked:
             raise KeyStoreError("Keystore is locked")
@@ -234,6 +256,7 @@ class FlashKeyStore(RAMKeyStore):
             res = await self.show(scr)
             if res is False:
                 return
+            self._replace_existing(fullpath)
 
         self.save_aead(fullpath, plaintext=self.mnemonic.encode(),
                        key=self.enc_secret)

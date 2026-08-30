@@ -82,6 +82,18 @@ class SDKeyStore(FlashKeyStore):
                 if fullpath.startswith(self.sdpath):
                     platform.sdcard.unmount()
                 return
+            # See FlashKeyStore._replace_existing(): the old encrypted
+            # mnemonic has to be overwritten before the new file truncates
+            # it away, or it survives in free space.
+            try:
+                self._replace_existing(fullpath)
+            except Exception:
+                if fullpath.startswith(self.sdpath):
+                    try:
+                        platform.sdcard.unmount()
+                    except Exception as e:
+                        print(e)
+                raise
 
         self.save_aead(fullpath, plaintext=self.mnemonic.encode(),
                        key=self.enc_secret)
