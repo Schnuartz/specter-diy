@@ -708,7 +708,7 @@ def secure_delete_file(path):
       it, so the file NAME - including its long-file-name records - stays
       readable in the directory sector after the contents are gone.
 
-    Persistence of the overwrite is only as strong as _strict_file_sync()
+    Persistence of the overwrite is only as strong as strict_sync()
     below can make it on this runtime; see there.
     """
     zeros = bytes(SECURE_DELETE_CHUNK)
@@ -730,15 +730,20 @@ def secure_delete_file(path):
                     % (written, chunk)
                 )
             remaining -= written
-        _strict_file_sync(f)
+        strict_sync(f)
     os.remove(path)
     return size
 
 
-def _strict_file_sync(f):
+def strict_sync(f=None):
     """
-    Flushes an overwrite as far down the stack as this runtime allows, and
-    propagates every error it does report.
+    Flushes as far down the stack as this runtime allows, and propagates
+    every error it does report - unlike sync() above, which exists to be
+    called where a failure genuinely does not matter and swallows
+    everything.
+
+    Pass the file object whose write is being flushed, if there is one, so
+    its buffer is pushed out before the filesystem is synced.
 
     How far that is, is worth stating rather than assuming. On the pinned
     MicroPython the filesystem layer is not fully fail-closed: the VFS
@@ -754,14 +759,22 @@ def _strict_file_sync(f):
     means propagating block-device status through the VFS layer in the
     MicroPython fork, not more checking here.
     """
-    f.flush()
+    if f is not None:
+        f.flush()
     if hasattr(os, "sync"):
         os.sync()
-    elif hasattr(os, "fsync"):
+        return
+    if f is not None and hasattr(os, "fsync"):
         # CPython on platforms without os.sync (notably Windows).
         os.fsync(f.fileno())
-    else:
-        raise OSError("no filesystem sync primitive is available")
+        return
+    if hasattr(os, "fsync"):
+        # A directory-level change (a rename) on a CPython host without
+        # os.sync. There is no handle to push and nothing portable to call.
+        # MicroPython - the actual target - always has os.sync, so this
+        # only ever applies to host test runs.
+        return
+    raise OSError("no filesystem sync primitive is available")
 
 
 # An adversarial directory with thousands of entries would otherwise make

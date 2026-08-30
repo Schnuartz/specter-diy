@@ -15,6 +15,12 @@ from helpers import tagged_hash
 from gui.screens import (Alert, PinScreen, Menu, MnemonicScreen, InputScreen,
                          Prompt)
 
+# Name the new file is written under while it is being verified, before it
+# replaces the file it is saved over. Deliberately without the reckless /
+# specterdiy prefix the key listings match on, so a leftover from an
+# interrupted save cannot show up as a loadable key.
+SAVE_TMP_NAME = "tmpsave"
+
 
 class FlashKeyStore(RAMKeyStore):
     """
@@ -214,25 +220,91 @@ class FlashKeyStore(RAMKeyStore):
         return "specterdiy%s" % hexid
 
 
-    def _replace_existing(self, fullpath):
+    def _save_key_file(self, fullpath, replacing):
         """
-        Destroys the file a save is about to replace, before writing over
-        it.
+        Writes the encrypted recovery phrase to `fullpath`.
 
-        save_aead() opens the path "wb", and truncating a file frees its
-        cluster chain without overwriting it - so the previous encrypted
-        mnemonic stays readable in free space while the new one is written
-        somewhere else. Deleting the old encrypted mnemonic later cannot
-        reach that copy any more, and it is encrypted under the same
-        enc_secret, which a delete does not rotate. Overwrite it now, while
-        we still know where it is.
+        For a new file that is one strict save. Replacing an existing one
+        is the interesting case, and it has two requirements that pull
+        against each other:
+
+        * The old file must not simply be truncated. save_aead() opens the
+          path "wb", and truncating frees the old cluster chain WITHOUT
+          overwriting it, so the previous encrypted phrase stays readable
+          in free space - where a later delete can no longer reach it, and
+          where the unrotated enc_secret still decrypts it.
+        * The old file must not be destroyed before the new one exists
+          either. It may be the user's only persistent copy, and a pulled
+          card, a failed write or a power cut between the two leaves them
+          with none at all.
+
+        So the new copy is written and verified first, under a temporary
+        name, and only then is the old file overwritten and the temporary
+        file renamed into place:
+
+            write tmp -> strict sync -> read back and verify
+                      -> secure-delete the old file
+                      -> rename tmp into its place -> sync
+
+        Every failure before the secure delete leaves the old file intact.
+        After it, a complete and verified copy is already on the medium -
+        the remaining window is a single directory update.
         """
+        plaintext = self.mnemonic.encode()
+        if not replacing:
+            self.save_aead(fullpath, plaintext=plaintext,
+                           key=self.enc_secret, strict=True)
+            return
+
+        directory = fullpath.rsplit("/", 1)[0]
+        tmppath = "%s/%s" % (directory, SAVE_TMP_NAME)
+        # A leftover from a save that was interrupted holds an encrypted
+        # phrase of its own - overwrite it rather than truncating over it.
+        if platform.file_exists(tmppath):
+            try:
+                platform.secure_delete_file(tmppath)
+            except Exception as e:
+                print(e)
+                raise KeyStoreError(
+                    "Failed to clear the leftover file '%s'" % SAVE_TMP_NAME
+                )
+        try:
+            self.save_aead(tmppath, plaintext=plaintext,
+                           key=self.enc_secret, strict=True)
+            _, written = self.load_aead(tmppath, self.enc_secret)
+            if written != plaintext:
+                raise KeyStoreError(
+                    "The new file did not read back as what was saved"
+                )
+        except Exception:
+            # Nothing has been destroyed yet: clean up and leave the
+            # existing file exactly as it was.
+            try:
+                if platform.file_exists(tmppath):
+                    platform.secure_delete_file(tmppath)
+            except Exception as e:
+                print(e)
+            raise
         try:
             platform.secure_delete_file(fullpath)
         except Exception as e:
             print(e)
+            try:
+                platform.secure_delete_file(tmppath)
+            except Exception as e2:
+                print(e2)
             raise KeyStoreError(
                 "Failed to overwrite the existing file '%s'" % fullpath
+            )
+        try:
+            os.rename(tmppath, fullpath)
+            platform.strict_sync()
+        except Exception as e:
+            print(e)
+            raise KeyStoreError(
+                "The new recovery phrase was written and verified, but "
+                "could not be renamed into place. It is still stored as "
+                "'%s' in the same folder." % SAVE_TMP_NAME
             )
 
     async def save_mnemonic(self):
@@ -248,6 +320,7 @@ class FlashKeyStore(RAMKeyStore):
 
         fullpath = "%s/%s.%s" % (path, self.fileprefix(path), filename)
 
+        replacing = False
         if platform.file_exists(fullpath):
             scr = Prompt(
                 "\n\nFile already exists: %s\n" % filename,
@@ -256,10 +329,9 @@ class FlashKeyStore(RAMKeyStore):
             res = await self.show(scr)
             if res is False:
                 return
-            self._replace_existing(fullpath)
+            replacing = True
 
-        self.save_aead(fullpath, plaintext=self.mnemonic.encode(),
-                       key=self.enc_secret)
+        self._save_key_file(fullpath, replacing)
         # check it's ok
         await self.load_mnemonic(fullpath)
         # return the full file name incl. prefix if saved to SD card, just the name if on flash

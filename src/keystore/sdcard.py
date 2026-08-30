@@ -72,6 +72,7 @@ class SDKeyStore(FlashKeyStore):
         if fullpath.startswith(self.sdpath):
             platform.sdcard.mount()
 
+        replacing = False
         if platform.file_exists(fullpath):
             scr = Prompt(
                 "\n\nFile already exists: %s\n" % filename,
@@ -82,21 +83,20 @@ class SDKeyStore(FlashKeyStore):
                 if fullpath.startswith(self.sdpath):
                     platform.sdcard.unmount()
                 return
-            # See FlashKeyStore._replace_existing(): the old encrypted
-            # mnemonic has to be overwritten before the new file truncates
-            # it away, or it survives in free space.
-            try:
-                self._replace_existing(fullpath)
-            except Exception:
-                if fullpath.startswith(self.sdpath):
-                    try:
-                        platform.sdcard.unmount()
-                    except Exception as e:
-                        print(e)
-                raise
+            replacing = True
 
-        self.save_aead(fullpath, plaintext=self.mnemonic.encode(),
-                       key=self.enc_secret)
+        # See FlashKeyStore._save_key_file(): replacing a key file writes
+        # and verifies the new one before the old one is destroyed.
+        try:
+            self._save_key_file(fullpath, replacing)
+        except Exception:
+            # The card must not stay mounted just because the save failed.
+            if fullpath.startswith(self.sdpath):
+                try:
+                    platform.sdcard.unmount()
+                except Exception as e:
+                    print(e)
+            raise
         if fullpath.startswith(self.sdpath):
             platform.sdcard.unmount()
         # check it's ok

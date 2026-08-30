@@ -1,16 +1,23 @@
 """
-Regression tests: saving over an existing key file must destroy the old
-file first.
+Regression tests: saving over an existing key file must neither leave the
+old one recoverable nor destroy it before the new one exists.
 
-save_aead() opens the path "wb". On FAT that truncates the file, which
-frees its cluster chain without overwriting it, and the new contents are
-then usually written elsewhere. The previous encrypted mnemonic therefore
-stays readable in free space - and a later secure delete of the current
-file cannot reach it any more, while enc_secret, which decrypts it, is not
-rotated by a delete either.
+Two failure modes pull against each other here.
 
-save_mnemonic() now overwrites the file it is about to replace, and
-refuses the save if that overwrite fails.
+`save_aead()` opens the path "wb". On FAT that truncates the file, which
+frees its cluster chain **without** overwriting it, and the new contents
+are written wherever the allocator puts them - so the previous encrypted
+mnemonic stays readable in free space, where a later secure delete can no
+longer reach it and where the unrotated `enc_secret` still decrypts it.
+
+Securely deleting the old file first fixes that and introduces the
+opposite problem: the file being replaced may be the user's only
+persistent copy, and a pulled card, a failed write or a power cut between
+the delete and the new write leaves them with none at all.
+
+`_save_key_file()` therefore writes and verifies the new copy under a
+temporary name first, then overwrites the old file, then renames the
+temporary file into place.
 """
 import sys
 
@@ -26,7 +33,7 @@ import platform
 import keystore.flash as flash_module
 import keystore.sdcard as sdcard_module
 from keystore.core import KeyStoreError
-from keystore.flash import FlashKeyStore
+from keystore.flash import FlashKeyStore, SAVE_TMP_NAME
 from keystore.sdcard import SDKeyStore
 from tests.util import clear_testdir
 
@@ -62,6 +69,8 @@ def _run(coro):
 class _SaveMnemonicBase(TestCase):
     keystore_cls = None
 
+    OLD = b"old-encrypted-key-material"
+
     def setUp(self):
         clear_testdir()
         platform.maybe_mkdir("testdir")
@@ -72,6 +81,10 @@ class _SaveMnemonicBase(TestCase):
         self.ks.mnemonic = "ability " * 11 + "acid"
         self.ks.enc_secret = b"\x00" * 32
         self.target = "testdir/reckless.mykey"
+        self.tmp = "testdir/" + SAVE_TMP_NAME
+        self.plaintext = self.ks.mnemonic.encode()
+
+        test = self
 
         async def get_input(*args, **kwargs):
             return "mykey"
@@ -82,15 +95,26 @@ class _SaveMnemonicBase(TestCase):
         async def load_mnemonic(path, *args, **kwargs):
             return None
 
-        def save_aead(path, adata=b"", plaintext=b"", key=None):
-            self.calls.append(("save_aead", path))
+        def save_aead(path, adata=b"", plaintext=b"", key=None, strict=False):
+            # Stands in for the real AEAD: recognisable on disk, readable
+            # by the load_aead() below, and it records the call order.
+            test.calls.append(("save_aead", path, strict))
             with open(path, "wb") as f:
-                f.write(b"new-encrypted-key-material")
+                f.write(b"enc:" + plaintext)
+
+        def load_aead(path, key=None):
+            test.calls.append(("load_aead", path))
+            with open(path, "rb") as f:
+                data = f.read()
+            if not data.startswith(b"enc:"):
+                raise ValueError("not an aead file: %s" % path)
+            return b"", data[4:]
 
         self.ks.get_input = get_input
         self.ks.show = show
         self.ks.load_mnemonic = load_mnemonic
         self.ks.save_aead = save_aead
+        self.ks.load_aead = load_aead
 
         self._real_prompts = (flash_module.Prompt, sdcard_module.Prompt)
         flash_module.Prompt = _FakePrompt
@@ -99,8 +123,8 @@ class _SaveMnemonicBase(TestCase):
         self._real_delete = platform.secure_delete_file
 
         def recording_delete(path):
-            self.calls.append(("secure_delete", path))
-            return self._real_delete(path)
+            test.calls.append(("secure_delete", path))
+            return test._real_delete(path)
 
         platform.secure_delete_file = recording_delete
 
@@ -114,24 +138,85 @@ class _SaveMnemonicBase(TestCase):
 
     def _write_existing(self):
         with open(self.target, "wb") as f:
-            f.write(b"old-encrypted-key-material")
+            f.write(self.OLD)
 
-    def test_existing_file_is_overwritten_before_it_is_replaced(self):
+    def _read(self, path):
+        with open(path, "rb") as f:
+            return f.read()
+
+    def _kinds(self):
+        return [(c[0], c[1]) for c in self.calls]
+
+    def test_new_copy_is_written_and_verified_before_the_old_one_dies(self):
         self._write_existing()
 
         _run(self.ks.save_mnemonic())
 
         self.assertEqual(
-            self.calls,
-            [("secure_delete", self.target), ("save_aead", self.target)],
+            self._kinds(),
+            [
+                ("save_aead", self.tmp),
+                ("load_aead", self.tmp),
+                ("secure_delete", self.target),
+            ],
         )
-        with open(self.target, "rb") as f:
-            self.assertEqual(f.read(), b"new-encrypted-key-material")
+        self.assertEqual(self._read(self.target), b"enc:" + self.plaintext)
+        self.assertFalse(platform.file_exists(self.tmp))
 
-    def test_a_failed_overwrite_aborts_the_save(self):
-        """If the old file cannot be destroyed, writing the new one over it
-        would free the old clusters unoverwritten - exactly what this
-        prevents. Nothing is written in that case."""
+    def test_the_replacing_write_is_synced_strictly(self):
+        """platform.sync() swallows every sync error. Losing this write
+        means losing the only copy of a recovery phrase, so it is the one
+        save that must hear about a failed sync."""
+        self._write_existing()
+
+        _run(self.ks.save_mnemonic())
+
+        saves = [c for c in self.calls if c[0] == "save_aead"]
+        self.assertTrue(all(c[2] for c in saves), saves)
+
+    def test_a_new_file_is_saved_strictly_and_without_a_temp_file(self):
+        self.assertFalse(platform.file_exists(self.target))
+
+        _run(self.ks.save_mnemonic())
+
+        self.assertEqual(self.calls, [("save_aead", self.target, True)])
+        self.assertFalse(platform.file_exists(self.tmp))
+
+    def test_a_failed_write_of_the_new_copy_keeps_the_old_file(self):
+        """The exact case that makes destroying the old file first
+        unacceptable: the replacement never reaches the medium."""
+        self._write_existing()
+
+        def failing_save(path, adata=b"", plaintext=b"", key=None, strict=False):
+            self.calls.append(("save_aead", path, strict))
+            raise OSError("simulated I/O failure")
+
+        self.ks.save_aead = failing_save
+
+        with self.assertRaises(OSError):
+            _run(self.ks.save_mnemonic())
+
+        self.assertEqual(self._read(self.target), self.OLD)
+        self.assertNotIn(("secure_delete", self.target), self._kinds())
+        self.assertFalse(platform.file_exists(self.tmp))
+
+    def test_a_new_copy_that_does_not_read_back_keeps_the_old_file(self):
+        self._write_existing()
+
+        def wrong_load(path, key=None):
+            self.calls.append(("load_aead", path))
+            return b"", b"something else entirely"
+
+        self.ks.load_aead = wrong_load
+
+        with self.assertRaises(KeyStoreError):
+            _run(self.ks.save_mnemonic())
+
+        self.assertEqual(self._read(self.target), self.OLD)
+        self.assertNotIn(("secure_delete", self.target), self._kinds())
+        self.assertFalse(platform.file_exists(self.tmp))
+
+    def test_a_failed_overwrite_of_the_old_file_aborts_the_save(self):
         self._write_existing()
 
         def failing_delete(path):
@@ -143,16 +228,30 @@ class _SaveMnemonicBase(TestCase):
         with self.assertRaises(KeyStoreError):
             _run(self.ks.save_mnemonic())
 
-        self.assertEqual(self.calls, [("secure_delete", self.target)])
-        with open(self.target, "rb") as f:
-            self.assertEqual(f.read(), b"old-encrypted-key-material")
+        self.assertEqual(self._read(self.target), self.OLD)
 
-    def test_a_new_file_is_not_deleted_first(self):
-        self.assertFalse(platform.file_exists(self.target))
+    def test_a_leftover_temp_file_is_overwritten_not_truncated(self):
+        """A save interrupted after the temp write leaves an encrypted
+        phrase behind under the temp name. Truncating over it would free
+        those clusters unoverwritten - the very thing this avoids."""
+        self._write_existing()
+        with open(self.tmp, "wb") as f:
+            f.write(b"enc:leftover-from-an-interrupted-save")
 
         _run(self.ks.save_mnemonic())
 
-        self.assertEqual(self.calls, [("save_aead", self.target)])
+        self.assertEqual(self._kinds()[0], ("secure_delete", self.tmp))
+        self.assertEqual(self._read(self.target), b"enc:" + self.plaintext)
+        self.assertFalse(platform.file_exists(self.tmp))
+
+    def test_the_temp_name_is_not_listed_as_a_key(self):
+        """A leftover temp file must not show up in the key menus as
+        something loadable."""
+        self.assertFalse(
+            SAVE_TMP_NAME.lower().startswith(
+                self.ks.fileprefix(self.ks.flashpath)
+            )
+        )
 
 
 class FlashSaveMnemonicTest(_SaveMnemonicBase):
@@ -161,7 +260,7 @@ class FlashSaveMnemonicTest(_SaveMnemonicBase):
 
 class SDSaveMnemonicTest(_SaveMnemonicBase):
     """SDKeyStore.save_mnemonic() has its own copy of the overwrite prompt,
-    with the SD unmount bookkeeping around it - the same guarantee has to
+    with the SD unmount bookkeeping around it - the same guarantees have to
     hold there. The target here is the internal-flash path, so the card
     handling is not involved."""
 
