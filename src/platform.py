@@ -261,7 +261,9 @@ class SDCard:
         fresh, empty FAT filesystem on it.
 
         Irreversible: this destroys the whole card, not only the files
-        Specter-DIY created. Cancelling the task at an await point leaves
+        Specter-DIY created. Best-effort, not forensic sanitization - see
+        secure_delete_file() for why a logical overwrite cannot reach every
+        historic copy on flash media. Cancelling the task at an await point leaves
         the card half-overwritten; that is reported as a RuntimeError
         rather than silently returning. The user-facing confirmation and
         the "do not remove the card" warning belong to the caller.
@@ -649,6 +651,13 @@ def secure_delete_file(path):
     meantime. This closes that gap for individual files;
     SDCard.erase_and_format() is the equivalent whole-card operation.
 
+    Best-effort, not forensic sanitization: this overwrites the logical
+    blocks the filesystem hands us. Flash media remap writes internally, so
+    an older physical copy can survive in space the controller no longer
+    exposes. NIST SP 800-88 makes the same point - reaching every historic
+    copy needs purge or destroy, not an overwrite through the normal
+    read/write interface.
+
     One pass of zeros, deliberately. NIST SP 800-88 asks for user-addressable
     data to be replaced with non-sensitive data, not for that data to be
     random, and multi-pass overwriting is a magnetic-media practice that on
@@ -909,6 +918,34 @@ def reboot():
         pyb.hard_reset()
 
 
+# errno.EINVAL - same value in MicroPython's uerrno. Spelled out rather than
+# imported so this cannot depend on which errno module a build freezes in.
+_EINVAL = 22
+
+
+def _umount_if_mounted(path):
+    """
+    Unmounts `path`, tolerating it already being unmounted.
+
+    wipe() can now fail partway and be retried, and it reaches here with
+    /flash and /qspi already detached from the previous attempt.
+    MicroPython raises OSError(EINVAL) for a mountpoint it cannot find in
+    the table (mp_vfs_umount in extmod/vfs.c), so a retry would otherwise
+    die on the first unmount and never reach the overwrite at all - on the
+    critical-error path, forever.
+
+    Only that specific case is swallowed. Any other unmount failure still
+    propagates, because it means the filesystem is still attached and the
+    wipe must not proceed.
+    """
+    try:
+        os.umount(path)
+    except OSError as e:
+        if e.args and e.args[0] == _EINVAL:
+            return
+        raise
+
+
 # Internal-flash block range overwritten by wipe(), from the disco board
 # block map below. Named so that the range written and the minimum geometry
 # required to write it cannot drift apart.
@@ -932,8 +969,8 @@ def wipe():
         pass
     # on real hardware overwrite flash with random data
     if not simulator:
-        os.umount("/flash")
-        os.umount("/qspi")
+        _umount_if_mounted("/flash")
+        _umount_if_mounted("/qspi")
         f = pyb.Flash()
         block_size = f.ioctl(5, None)
         block_count = f.ioctl(4, None)
@@ -966,9 +1003,22 @@ def wipe():
         # goes straight to NVIC_SystemReset() without flushing storage. This
         # wipe writes ~200 blocks and resets immediately, so without an
         # explicit sync the entire overwrite could be discarded along with
-        # the cache. The same ioctl also flushes the QSPI device, whose
-        # first blocks are inside the range above (storage_flush() issues
-        # BDEV_IOCTL_SYNC and BDEV2_IOCTL_SYNC).
+        # the cache. Making this call is the part that matters. The same
+        # ioctl also flushes the QSPI device, whose first blocks are inside
+        # the range above (storage_flush() issues BDEV_IOCTL_SYNC and
+        # BDEV2_IOCTL_SYNC).
+        #
+        # The status check below is defensive only, and must not be read as
+        # verification that the flush succeeded: on the pinned firmware
+        # pyb_flash_ioctl returns a hardcoded 0 for SYNC, and storage_flush()
+        # discards the results of both underlying flushes, so a low-level
+        # failure cannot reach Python here at all. It is checked anyway
+        # because other block devices do report, and because a driver that
+        # starts reporting should not be ignored. A read-back would not close
+        # the gap either: flash_cache_sector_id is not cleared by the sync,
+        # so reads of the most recently written sector still come from the
+        # RAM cache (flash_cache_get_addr_for_read) and would confirm nothing
+        # about what actually reached the flash.
         result = f.ioctl(3, None)  # MP_BLOCKDEV_IOCTL_SYNC
         if not is_block_op_success(result):
             raise RuntimeError(

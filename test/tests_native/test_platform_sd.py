@@ -1149,7 +1149,19 @@ class WipeTest(TestCase):
         self._real_umount = getattr(os, "umount", None)
         platform.simulator = False
         platform.reboot = lambda: self.log.append("reboot")
-        os.umount = lambda path: None
+        # Model the real thing: MicroPython raises OSError(EINVAL) for a
+        # mountpoint that is not in the mount table (mp_vfs_umount in
+        # extmod/vfs.c). A lambda that quietly succeeds every time makes
+        # umount look idempotent, which it is not, and hides the retry bug.
+        self.mounted = {"/flash": True, "/qspi": True}
+
+        def umount(path):
+            if not self.mounted.get(path):
+                raise OSError(22, "EINVAL")
+            self.mounted[path] = False
+            self.log.append(("umount", path))
+
+        os.umount = umount
 
     def tearDown(self):
         platform.simulator = self._real_simulator
@@ -1221,6 +1233,50 @@ class WipeTest(TestCase):
         self.assertIn("sync", self.log)
         self.assertNotIn("reboot", self.log)
 
+    def test_wipe_can_be_retried_after_a_failed_write(self):
+        """The critical-error path retries until the wipe succeeds. A first
+        attempt that fails leaves /flash and /qspi unmounted, so a retry that
+        cannot tolerate an already-unmounted mountpoint would die on the
+        first umount and never reach the overwrite again - looping forever
+        while telling the user the device was not wiped."""
+        flash = self._install(fail_at=platform.WIPE_FIRST_BLOCK + 5)
+
+        with self.assertRaises(RuntimeError):
+            platform.wipe()
+        self.assertFalse(self.mounted["/flash"])
+        self.assertFalse(self.mounted["/qspi"])
+
+        # Second attempt, this time with the write succeeding.
+        self.log.clear()
+        flash.fail_at = None
+        platform.wipe()
+
+        written = [entry[1] for entry in self.log
+                   if isinstance(entry, tuple) and entry[0] == "write"]
+        self.assertEqual(
+            written,
+            list(range(platform.WIPE_FIRST_BLOCK,
+                       platform.WIPE_LAST_BLOCK + 1)),
+        )
+        self.assertIn("sync", self.log)
+        self.assertIn("reboot", self.log)
+
+    def test_a_real_unmount_error_still_aborts_the_wipe(self):
+        """Only "already unmounted" is tolerated. Any other unmount failure
+        means the filesystem is still attached and the wipe must not run."""
+        self._install()
+
+        def failing_umount(path):
+            raise OSError(5, "EIO")
+
+        os.umount = failing_umount
+
+        with self.assertRaises(OSError) as ctx:
+            platform.wipe()
+        self.assertEqual(ctx.exception.args[0], 5)
+
+        self.assertEqual(self.log, [])
+
     def test_flash_too_small_for_the_range_is_rejected(self):
         self._install(block_count=platform.WIPE_LAST_BLOCK)
 
@@ -1228,7 +1284,12 @@ class WipeTest(TestCase):
             platform.wipe()
         self.assertIn("are required", str(ctx.exception))
 
-        self.assertEqual(self.log, [])
+        # Rejected before anything was written, synced or reset.
+        self.assertEqual(
+            [e for e in self.log if e in ("sync", "reboot")
+             or (isinstance(e, tuple) and e[0] == "write")],
+            [],
+        )
 
 
 class BlockOpSuccessTest(TestCase):
