@@ -353,10 +353,29 @@ class WalletManager(BaseApp):
         if not await self.confirm_wallets(wallets, show_screen):
             return
 
+        # an unusually high fee must be acknowledged explicitly so it can't
+        # be scrolled past on the confirmation screen
+        if not await self.confirm_fee_warning(meta, show_screen):
+            return
+
         if not await self.confirm_transaction_final(wallets, meta, show_screen):
             return
 
         return dict(sighash=sighash)
+
+    async def confirm_fee_warning(self, meta, show_screen):
+        warning = meta.get("fee_warning")
+        if not warning:
+            return True
+        scr = Prompt(
+            "Warning!",
+            "\n" + warning + "\n\n\n"
+            "The network fee is large compared to the amount this "
+            "transaction moves.\n\n\n"
+            "Double-check the fee rate before continuing.\n\n\n"
+            "Proceed anyway?",
+        )
+        return bool(await show_screen(scr))
 
     async def confirm_transaction_final(self, wallets, meta, show_screen):
         # build title for the tx screen
@@ -634,8 +653,6 @@ class WalletManager(BaseApp):
 
         # string representation of the Bitcoin for wallet processing
         fee = 0
-        verified_input_total = 0
-        send_amount = 0
 
         # here we will store all wallets that we detect in inputs
         # {wallet: {"amount": amount, "gaps": [gaps]}}
@@ -700,7 +717,6 @@ class WalletManager(BaseApp):
 
             value = inp.utxo.value
             fee += value
-            verified_input_total += value
 
             wallets[wallet]["amount"] = wallets.get(wallet, {}).get("amount") + value
             metainp.update({
@@ -746,10 +762,11 @@ class WalletManager(BaseApp):
             value = out.value
             fee -= value
             owned_by_input_wallet = wallet is not None and wallet in wallets
-            if not owned_by_input_wallet:
-                send_amount += value
             metaout.update({
                 "change": (owned_by_input_wallet and len(wallets) == 1),
+                # owned by any of the input wallets (change or wallet-to-wallet
+                # transfer); such outputs never count as "sent" for the fee basis
+                "owned": owned_by_input_wallet,
                 "value": value,
                 "address": self.get_address(out),
             })
@@ -775,14 +792,38 @@ class WalletManager(BaseApp):
 
             out.write_to(fout, version=psbtv.version)
         meta["fee"] = fee
-        meta["fee_basis"] = send_amount if send_amount > 0 else verified_input_total
         self.add_warnings(meta)
         return wallets, meta
+
+    def fee_basis(self, meta):
+        """Return (amount, is_send_amount) that the fee should be compared to.
+
+        Only cryptographically verified values are used: the recipient
+        outputs (not owned by any input wallet) if there are any, otherwise
+        the verified total of all inputs (self-transfer fallback).
+        """
+        send_amount = sum(
+            out["value"]
+            for out in meta.get("outputs", [])
+            if out.get("value", 0) > 0 and not out.get("owned", out.get("change", False))
+        )
+        if send_amount > 0:
+            return send_amount, True
+        verified_input_total = sum(
+            inp["value"]
+            for inp in meta.get("inputs", [])
+            if inp.get("value", 0) > 0
+        )
+        return verified_input_total, False
 
     def add_warnings(self, meta):
         """Add transaction-level warnings without replacing existing ones."""
         fee = meta.get("fee")
-        fee_basis = meta.get("fee_basis", 0)
+        fee_basis, is_send_amount = self.fee_basis(meta)
+        # expose the basis so the confirmation screen shows the same
+        # percentage that the warning is based on
+        meta["fee_basis"] = fee_basis
+        meta["fee_basis_is_send_amount"] = is_send_amount
         if (
             fee is not None
             and fee > 0
@@ -790,7 +831,11 @@ class WalletManager(BaseApp):
             and fee * 100 >= fee_basis * self.HIGH_FEE_PERCENT
         ):
             fee_percent = fee * 100 / fee_basis
-            warning = "Fee is %.2f%% of the amount - unusually high!" % fee_percent
+            if is_send_amount:
+                warning = "Fee is %.2f%% of the send amount - unusually high!" % fee_percent
+            else:
+                warning = "Fee is %.2f%% of total inputs (self-transfer) - unusually high!" % fee_percent
+            meta["fee_warning"] = warning
             warnings = meta.setdefault("warnings", [])
             if warning not in warnings:
                 warnings.append(warning)
