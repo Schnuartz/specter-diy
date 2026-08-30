@@ -688,9 +688,13 @@ class SDCardUnmountTest(TestCase):
         self.assertTrue(sd._mounted)
         self.assertEqual(dev.power_states, [False])
 
-    def test_umount_failure_with_failing_presence_check_powers_down(self):
-        """A presence check that raises must not mask the umount error, and
-        a card we cannot interrogate is treated as gone."""
+    def test_umount_failure_with_failing_presence_check_keeps_power(self):
+        """Double fault: umount fails AND the presence probe raises. A probe
+        that raises proves nothing - the bus may have glitched - so it must
+        not count as proof the card is gone. Cutting power on an unknown
+        answer would recreate the very inconsistent state (VFS mounted, card
+        dead) that keeping it powered exists to avoid. The probe error must
+        also not mask the umount error being reported."""
         class _BrokenPresenceDevice(_FakeBlockDevice):
             def present(self):
                 raise OSError("card interface unresponsive")
@@ -709,7 +713,8 @@ class SDCardUnmountTest(TestCase):
             self.assertIn("umount failed", str(ctx.exception))
         finally:
             self._restore_vfs(state)
-        self.assertEqual(dev.power_states, [False])
+        self.assertTrue(sd._mounted)
+        self.assertEqual(dev.power_states, [])
 
 
 class SecureDeleteFileTest(TestCase):
@@ -773,6 +778,64 @@ class SecureDeleteFileTest(TestCase):
                 platform.open = real_open
         self.assertEqual(size, len(original))
         self.assertEqual(sum(writes), len(original))
+        self.assertFalse(platform.file_exists(self.path))
+
+    def test_overwrite_is_zeros_and_never_touches_the_rng(self):
+        """os.urandom() costs one busy-waiting rng_get() per byte on the
+        pinned firmware. secure_delete_tree() is synchronous and yields to
+        nothing, so at the SECURE_DELETE_MAX_TOTAL_BYTES cap random data
+        would block the firmware for over a minute. Zeros are a complete
+        overwrite for sanitization and cost nothing."""
+        written = []
+        urandom_calls = []
+        real_urandom = os.urandom
+
+        class RecordingFile:
+            def __init__(self, f):
+                self._f = f
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self._f.close()
+
+            def seek(self, offset, whence=0):
+                return self._f.seek(offset, whence)
+
+            def tell(self):
+                return self._f.tell()
+
+            def flush(self):
+                return self._f.flush()
+
+            def fileno(self):
+                return self._f.fileno()
+
+            def write(self, data):
+                written.append(bytes(data))
+                return self._f.write(data)
+
+        def counting_urandom(n):
+            urandom_calls.append(n)
+            return real_urandom(n)
+
+        real_open = getattr(platform, "open", None)
+        platform.open = lambda path, mode: RecordingFile(open(path, mode))
+        os.urandom = counting_urandom
+        try:
+            platform.secure_delete_file(self.path)
+        finally:
+            os.urandom = real_urandom
+            if real_open is None:
+                del platform.open
+            else:
+                platform.open = real_open
+
+        self.assertEqual(urandom_calls, [])
+        self.assertTrue(written)
+        for block in written:
+            self.assertEqual(block, bytes(len(block)))
         self.assertFalse(platform.file_exists(self.path))
 
     def test_short_write_aborts_without_unlinking(self):

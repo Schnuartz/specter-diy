@@ -196,12 +196,13 @@ class SDCard:
             if unmounted:
                 self._mounted = False
             # Cut power only once the VFS mount is really gone - or once the
-            # card is no longer there to talk to. Powering the interface down
-            # while /sd is still mounted would leave the VFS pointing at a
-            # dead block device, and the retry this method leaves open syncs
-            # before it umounts, so that retry would run against hardware
-            # that can no longer answer.
-            if unmounted or not self._present_or_gone():
+            # card is positively known to be absent, so there is nothing left
+            # to retry against. Powering the interface down while /sd is
+            # still mounted would leave the VFS pointing at a dead block
+            # device, and the retry this method leaves open syncs before it
+            # umounts, so that retry would run against hardware that can no
+            # longer answer.
+            if unmounted or self._card_is_absent():
                 try:
                     self._sd.power(False)
                 except Exception as e:
@@ -216,15 +217,25 @@ class SDCard:
         if error is not None:
             raise error
 
-    def _present_or_gone(self):
+    def _card_is_absent(self):
         """
-        is_present, but never raises. Used on cleanup paths, where a failing
-        presence check must not mask the error we are already reporting; a
-        card we cannot even interrogate is treated as gone.
+        True only when the card is POSITIVELY known to be gone.
+
+        A presence probe that raises proves nothing - the bus may simply
+        have glitched - so an unknown answer must count as "still there".
+        Treating a failed probe as proof of absence would let a double fault
+        (umount fails AND the probe fails) cut power while /sd is still
+        mounted, which is exactly the inconsistent state the caller above
+        exists to avoid. Erring the other way at worst leaves the interface
+        powered until a retry succeeds.
+
+        Never raises: a failing probe must not mask the error already being
+        reported.
         """
         try:
-            return self.is_present
-        except Exception:
+            return not self.is_present
+        except Exception as e:
+            print(e)
             return False
 
     def __enter__(self):
@@ -623,11 +634,14 @@ def delete_recursively(path, include_self=False):
     raise RuntimeError("Failed to delete folder %s" % path)
 
 
+SECURE_DELETE_CHUNK = 4096
+
+
 def secure_delete_file(path):
     """
-    Overwrites a file's contents with random data, flushes that overwrite
-    to the storage device and only then unlinks it. Returns the number of
-    bytes overwritten.
+    Overwrites a file's contents with zeros, flushes that overwrite to the
+    storage device and only then unlinks it. Returns the number of bytes
+    overwritten.
 
     A plain os.remove() only unlinks the directory entry - the file's old
     bytes are still physically on the card until that space happens to be
@@ -635,24 +649,34 @@ def secure_delete_file(path):
     meantime. This closes that gap for individual files;
     SDCard.erase_and_format() is the equivalent whole-card operation.
 
-    One pass, deliberately. Multi-pass overwriting is a magnetic-media
-    practice; NIST SP 800-88 does not ask for it on flash, where the extra
-    passes only spend write cycles and, on wear-levelled media, cannot
-    reach retired physical blocks anyway.
+    One pass of zeros, deliberately. NIST SP 800-88 asks for user-addressable
+    data to be replaced with non-sensitive data, not for that data to be
+    random, and multi-pass overwriting is a magnetic-media practice that on
+    flash only spends write cycles. Zeros also keep this off the hardware
+    RNG: os.urandom() calls rng_get() once per byte on the pinned firmware,
+    and rng_get() busy-waits for RNG_SR_DRDY, so random data would make a
+    tree at the SECURE_DELETE_MAX_TOTAL_BYTES cap block for over a minute -
+    this function is synchronous and yields to nothing. Matches
+    erase_and_format(), which writes zeros for the same reason.
 
     The file is opened once and its size read from that same handle via
     seek(0, 2)/tell() rather than stat-then-open: a stat/open gap would let
     an attacker with write access swap the path between the size check and
     the overwrite, causing us to wipe the wrong file.
     """
+    zeros = bytes(SECURE_DELETE_CHUNK)
+    view = memoryview(zeros)
     with open(path, "r+b") as f:
         f.seek(0, 2)  # seek to end
         size = f.tell()
         f.seek(0)
         remaining = size
         while remaining > 0:
-            chunk = min(remaining, 4096)
-            written = f.write(os.urandom(chunk))
+            chunk = min(remaining, SECURE_DELETE_CHUNK)
+            # A memoryview slice for the short final chunk, so it does not
+            # allocate a copy.
+            data = zeros if chunk == SECURE_DELETE_CHUNK else view[:chunk]
+            written = f.write(data)
             if written != chunk:
                 raise OSError(
                     "short write during secure delete (%r of %d bytes)"
