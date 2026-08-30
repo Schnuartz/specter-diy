@@ -781,7 +781,12 @@ class WalletManager(BaseApp):
             for i in range(psbtv.num_inputs):
                 self.show_loader(title="Signing input %d of %d" % (i+1, psbtv.num_inputs))
                 inp = psbtv.input(i)
-                inp_sighash = sighash or inp.sighash_type or self.DEFAULT_SIGHASH
+                if sighash is not None:
+                    inp_sighash = sighash
+                elif inp.sighash_type is not None:
+                    inp_sighash = inp.sighash_type
+                else:
+                    inp_sighash = self.DEFAULT_SIGHASH
                 for w in wallets:
                     if w is None:
                         continue
