@@ -35,6 +35,7 @@ BASE64_STREAM = 0x64
 RAW_STREAM = 0xFF
 
 SIGHASH_NAMES = {
+    SIGHASH.DEFAULT: "DEFAULT",
     SIGHASH.ALL: "ALL",
     SIGHASH.NONE: "NONE",
     SIGHASH.SINGLE: "SINGLE",
@@ -659,7 +660,7 @@ class WalletManager(BaseApp):
             inp.verify(ignore_missing=True)
 
             # check sighash in the input
-            if inp.sighash_type is not None and inp.sighash_type != self.DEFAULT_SIGHASH:
+            if inp.sighash_type is not None and inp.sighash_type not in (self.DEFAULT_SIGHASH, SIGHASH.DEFAULT):
                 metainp["sighash"] = self.get_sighash_info(inp.sighash_type)["name"]
 
             self.fill_zero_fingerprint(inp)
