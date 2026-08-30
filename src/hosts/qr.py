@@ -599,7 +599,12 @@ class QRHost(Host):
             return bool(res)
         
         if self.scanner_model == MODEL_GM65:
-            return bool(self.query(FACTORY_RESET_CMD))
+            res = bool(self.query(FACTORY_RESET_CMD))
+            # factory reset reverts the scanner to its default baud (9600);
+            # switch the host to match so configure() can reconfigure it
+            if res and self.baudrate != BAUD_RATE_9600:
+                self._set_baud(BAUD_RATE_9600)
+            return res
         return False
     
     def _pre_reset_scanner(self):
