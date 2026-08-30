@@ -357,6 +357,7 @@ class SDCard:
                     "has been changed - reboot the device and try again."
                 ) from e
             view = memoryview(buf)
+            data = None
             for start in range(0, block_count, chunk_blocks):
                 n = min(chunk_blocks, block_count - start)
                 result = None
@@ -404,6 +405,16 @@ class SDCard:
                     raise RuntimeError(interrupted) from e
                 if progress_error is not None:
                     print(progress_error)
+            # Release the erase buffer BEFORE formatting. mkfs() builds
+            # VFS/FatFs structures of its own, and holding on to 128 KiB
+            # that is not needed any more makes that allocation fail first
+            # on a fragmented MicroPython heap - at the one moment where
+            # failing is most expensive, with the whole card already
+            # overwritten.
+            data = None
+            view = None
+            buf = None
+            gc.collect()
             try:
                 os.VfsFat.mkfs(self._sd)
             except OSError as e:
@@ -412,6 +423,16 @@ class SDCard:
                     "failed:\n\n%s\n\nThe card's old data has been wiped, "
                     "but it has no valid filesystem and must be reformatted "
                     "on a computer before it can be used." % e
+                ) from e
+            except MemoryError as e:
+                # MemoryError is not an OSError, so without this it would
+                # escape as a raw traceback and the user would never be
+                # told that the erase itself did complete.
+                raise RuntimeError(
+                    "Overwrite completed, but there was not enough memory "
+                    "to create a fresh filesystem. The card's old data has "
+                    "been wiped, but it has no valid filesystem and must be "
+                    "reformatted on a computer before it can be used."
                 ) from e
             completed = True
         finally:

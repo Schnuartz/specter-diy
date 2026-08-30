@@ -261,6 +261,33 @@ class EraseAndFormatTest(TestCase):
         self.assertEqual(sum(n for _, n in dev.writes), 4100 * 512)
         self.assertEqual(dev.power_states, [True, False])
 
+    def test_mkfs_running_out_of_memory_is_reported_as_a_completed_erase(self):
+        """The erase buffer is 128 KiB and mkfs() allocates FatFs structures
+        of its own, so this is the one allocation most likely to fail - and
+        it fails after the whole card has already been overwritten.
+        MemoryError is not an OSError, so without its own handler it would
+        escape as a raw traceback and the user would never be told that the
+        data is in fact gone and only the filesystem is missing."""
+        dev = _FakeBlockDevice(block_count=4100, block_size=512)
+        sd = platform.SDCard(sd=dev)
+        cause = MemoryError()
+
+        async def main():
+            with self.assertRaises(RuntimeError) as ctx:
+                await sd.erase_and_format()
+            message = str(ctx.exception)
+            self.assertIn("Overwrite completed", message)
+            self.assertIn("not enough memory", message)
+            self.assertIn("no valid filesystem", message)
+            self.assertIs(ctx.exception.__cause__, cause)
+
+        with _RecordingMkfs(error=cause) as mkfs:
+            _run(main())
+
+        self.assertEqual(len(mkfs.calls), 1)
+        self.assertEqual(sum(n for _, n in dev.writes), 4100 * 512)
+        self.assertEqual(dev.power_states, [True, False])
+
     def test_every_block_is_overwritten_with_zeros_without_using_the_rng(self):
         """A full-card wipe must not touch os.urandom(). On the pinned
         firmware it calls rng_get() once per byte, and rng_get() busy-waits
