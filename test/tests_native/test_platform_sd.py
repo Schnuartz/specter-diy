@@ -1142,6 +1142,7 @@ class _FakeFlash:
         self.write_result = write_result
         self.sync_result = sync_result
         self.fail_at = fail_at
+        self.written = []
 
     def ioctl(self, op, arg):
         if op == 4:
@@ -1155,6 +1156,7 @@ class _FakeFlash:
 
     def writeblocks(self, block, data):
         self.log.append(("write", block))
+        self.written.append((block, bytes(data)))
         if self.fail_at is not None and block == self.fail_at:
             return -5  # -MP_EIO
         return self.write_result
@@ -1303,6 +1305,34 @@ class WipeTest(TestCase):
         self.assertEqual(ctx.exception.args[0], 5)
 
         self.assertEqual(self.log, [])
+
+    def test_every_block_is_overwritten_with_zeros_without_using_the_rng(self):
+        """The emergency wipe must not depend on the RNG. It is reached from
+        CriticalErrorWipeImmediately, i.e. after something already went
+        wrong, and os.urandom() puts the RNG peripheral and its driver
+        between that state and the overwrite. A constant pattern is not the
+        weaker choice - NIST SP 800-88 asks for non-sensitive replacement
+        data, not for random - and it allocates once instead of once per
+        block."""
+        flash = self._install()
+        urandom_calls = []
+        real_urandom = os.urandom
+
+        def counting_urandom(n):
+            urandom_calls.append(n)
+            return real_urandom(n)
+
+        os.urandom = counting_urandom
+        try:
+            platform.wipe()
+        finally:
+            os.urandom = real_urandom
+
+        self.assertEqual(urandom_calls, [])
+        expected = platform.WIPE_LAST_BLOCK - platform.WIPE_FIRST_BLOCK + 1
+        self.assertEqual(len(flash.written), expected)
+        for block, data in flash.written:
+            self.assertEqual(data, bytes(512))
 
     def test_flash_too_small_for_the_range_is_rejected(self):
         self._install(block_count=platform.WIPE_LAST_BLOCK)

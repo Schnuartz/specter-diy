@@ -693,6 +693,23 @@ def secure_delete_file(path):
     seek(0, 2)/tell() rather than stat-then-open: a stat/open gap would let
     an attacker with write access swap the path between the size check and
     the overwrite, causing us to wipe the wrong file.
+
+    What this reaches is the file's CURRENT allocation, and nothing else.
+    Two residues on FAT are worth naming, because both are ordinary
+    filesystem behaviour rather than exotic flash effects:
+
+    * Earlier versions of the same file. Opening a path "wb" truncates it,
+      which frees its old cluster chain without overwriting it, and the
+      rewrite is then usually placed elsewhere. Overwriting the file that
+      exists today does not touch clusters an earlier version was written
+      to. A caller replacing a sensitive file should secure-delete it first
+      and create it fresh, rather than truncating over it.
+    * The directory entry. FatFs marks a deleted entry rather than clearing
+      it, so the file NAME - including its long-file-name records - stays
+      readable in the directory sector after the contents are gone.
+
+    Persistence of the overwrite is only as strong as _strict_file_sync()
+    below can make it on this runtime; see there.
     """
     zeros = bytes(SECURE_DELETE_CHUNK)
     view = memoryview(zeros)
@@ -719,7 +736,24 @@ def secure_delete_file(path):
 
 
 def _strict_file_sync(f):
-    """Flushes an overwrite and propagates every persistence error."""
+    """
+    Flushes an overwrite as far down the stack as this runtime allows, and
+    propagates every error it does report.
+
+    How far that is, is worth stating rather than assuming. On the pinned
+    MicroPython the filesystem layer is not fully fail-closed: the VFS
+    adapter calls the block device's writeblocks() and discards its return
+    value ("TODO handle error return" in vfs_blockdev.c), pyb.SDCard reports
+    a failed write by returning False rather than raising, and the SD
+    driver's IOCTL_SYNC is a no-op that always reports success. A physical
+    write that the card rejected can therefore reach Python as a successful
+    write followed by a successful sync.
+
+    So this raises on every failure the runtime surfaces, but a clean return
+    is not proof that the overwrite reached the medium. Closing that gap
+    means propagating block-device status through the VFS layer in the
+    MicroPython fork, not more checking here.
+    """
     f.flush()
     if hasattr(os, "sync"):
         os.sync()
@@ -751,9 +785,14 @@ def secure_delete_tree(path):
 
     The tree is enumerated and size-checked BEFORE anything is overwritten,
     so a tree exceeding one of the SECURE_DELETE_* caps is rejected up front
-    and can never be left half-wiped. All cap decisions live here rather
-    than in secure_delete_file(), which just overwrites the file it is
-    given.
+    and can never be left half-wiped by a cap. All cap decisions live here
+    rather than in secure_delete_file(), which just overwrites the file it
+    is given.
+
+    That is a guarantee about the caps, not atomicity: once the overwrite
+    loop starts, an I/O error on the third file leaves the first two gone
+    and the rest in place. Atomic destruction of a whole FAT tree is not
+    something this can offer.
     """
     files = _collect_files(
         path,
@@ -981,6 +1020,28 @@ def wipe():
     1   - 255:   reserved
     256 - 447:   internal flash
     448 - 33215: QSPI
+
+    What this does and does not overwrite, precisely, because "wipe"
+    suggests more than the block range above delivers:
+
+    * Internal flash (256-447) is overwritten in full. That is where the
+      keystore secret, the PIN state and the encryption secret live, so the
+      key material itself is destroyed.
+    * Of the QSPI only its first blocks (448-449) are overwritten. The
+      filesystem there is destroyed with them, but the ~16 MiB behind it -
+      wallet descriptors, wallet metadata, host and global settings - is
+      not raw-overwritten. Those files are deleted through the filesystem
+      above and are stored encrypted under keys derived from the secret in
+      the internal flash, so destroying that secret is what makes them
+      unrecoverable. This is cryptographic erasure of the QSPI, not an
+      overwrite of it, and it is only as good as the internal-flash
+      overwrite that precedes it.
+    * Volatile memory is not scrubbed. The reboot below is
+      pyb.hard_reset() -> NVIC_SystemReset(), which does not clear SRAM,
+      and MicroPython's gc_init() only resets the allocation tables rather
+      than the heap itself. Secrets held in RAM can therefore survive the
+      reset in the physical SRAM until they are overwritten by ordinary
+      allocation.
     """
     # delete files normally in simulator
     try:
@@ -988,7 +1049,7 @@ def wipe():
         delete_recursively(fpath("/qspi"))
     except:
         pass
-    # on real hardware overwrite flash with random data
+    # on real hardware overwrite the raw flash blocks
     if not simulator:
         _umount_if_mounted("/flash")
         _umount_if_mounted("/qspi")
@@ -1002,12 +1063,32 @@ def wipe():
         # checked precondition rather than an assumption.
         validate_block_geometry(block_size, block_count, "internal flash",
                                 min_blocks=WIPE_LAST_BLOCK + 1)
-        # wipe internal flash with random bytes
+        # One zero-filled block, allocated once before the first write and
+        # reused for every block.
+        #
+        # Zeros rather than random data. NIST SP 800-88 asks for
+        # user-addressable data to be replaced with non-sensitive data, not
+        # for that data to be random, so a constant pattern is not the
+        # weaker choice here - and it matches secure_delete_file() and
+        # erase_and_format(), which write zeros for the same reason. What
+        # decides it on this path is the dependency: this is the emergency
+        # wipe, reached from CriticalErrorWipeImmediately because something
+        # already went badly wrong, and os.urandom() puts the RNG
+        # peripheral and its driver between that state and the overwrite.
+        # A constant pattern needs none of that, allocates once instead of
+        # once per block (a MemoryError partway through a wipe is a wipe
+        # that did not happen), and is deterministic enough to compare
+        # against.
+        try:
+            zeros = bytes(block_size)
+        except MemoryError as e:
+            raise RuntimeError(
+                "Wiping the device failed: not enough memory to "
+                "start the overwrite.\n\nThe device has NOT been "
+                "wiped - data may still be present."
+            ) from e
         for i in range(WIPE_FIRST_BLOCK, WIPE_LAST_BLOCK + 1):
-            b = os.urandom(block_size)
-            result = f.writeblocks(i, b)
-            del b
-            gc.collect()
+            result = f.writeblocks(i, zeros)
             # pyb.Flash.writeblocks() returns the integer status rather than
             # raising (storage.c returns MP_OBJ_NEW_SMALL_INT(ret)), so a
             # failed write is silent unless the result is checked.
