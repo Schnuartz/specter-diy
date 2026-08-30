@@ -318,6 +318,9 @@ class XpubApp(BaseApp):
             "taproot": ("tr(%s%s/{0,1}/*)" % (prefix, xpub), "Taproot"),
             # multisig is not supported yet - requires cosigners app
         })
+        # Only offer taproot for BIP-86 derivation paths
+        if "/86h/" not in derivation:
+            descriptors.pop("taproot", None)
 
         if version == net["ypub"]:
             buttons = [
