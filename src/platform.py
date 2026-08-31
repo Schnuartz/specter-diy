@@ -625,7 +625,23 @@ def file_exists(fname: str) -> bool:
         return False
 
 
-def delete_recursively(path, include_self=False):
+def delete_recursively(path, include_self=False, secure=False):
+    """
+    Removes every entry under `path`.
+
+    With `secure=True` each regular file is handed to secure_delete_file()
+    - its bytes overwritten with zeros and flushed before the unlink -
+    rather than just os.remove()'d. Use it wherever the tree holds secrets:
+    an encrypted wallet descriptor in QSPI free space is still decryptable
+    with the unrotated enc_secret, and a signed PSBT left in the SDRAM
+    ramdisk survives a warm reset. See secure_delete_file() for what a
+    logical overwrite can and cannot reach.
+
+    `secure=True` has no traversal caps of its own - unlike
+    secure_delete_tree(), which guards against an adversarial host-supplied
+    directory. The trees deleted here are Specter's own app folders, whose
+    size is bounded by what Specter itself wrote.
+    """
     # remove trailing slash
     if path is None:
         raise RuntimeError("Path is not specified")
@@ -637,10 +653,13 @@ def delete_recursively(path, include_self=False):
         f = "%s/%s" % (path, _file[0])
         # regular file
         if _file[1] == 0x8000:
-            os.remove(f)
+            if secure:
+                secure_delete_file(f)
+            else:
+                os.remove(f)
         # directory
         elif _file[1] == 0x4000:
-            delete_recursively(f)
+            delete_recursively(f, secure=secure)
             os.rmdir(f)
 
     files = os.ilistdir(path)

@@ -1123,6 +1123,75 @@ class SecureDeleteTreeTest(TestCase):
         self.assertEqual(seen, ["first.bin", "second.bin", "third.bin"])
 
 
+class DeleteRecursivelySecureTest(TestCase):
+    """delete_recursively(secure=True) must route every regular file through
+    secure_delete_file() - the overwrite-then-unlink path - and still remove
+    the directories. The default (secure=False) must not overwrite: it is on
+    the hot path for the ramdisk and for large non-sensitive trees."""
+
+    def setUp(self):
+        clear_testdir()
+        platform.maybe_mkdir("testdir")
+        self.path = "testdir/tree"
+        platform.maybe_mkdir(self.path)
+        platform.maybe_mkdir("%s/inner" % self.path)
+        for p in ("%s/a.bin" % self.path,
+                  "%s/b.bin" % self.path,
+                  "%s/inner/c.bin" % self.path):
+            with open(p, "wb") as f:
+                f.write(b"secret-bytes")
+
+    def tearDown(self):
+        try:
+            platform.delete_recursively("testdir", include_self=True)
+        except OSError:
+            pass
+
+    def _patch_secure_delete(self):
+        seen = []
+        real = platform.secure_delete_file
+
+        def recording(path):
+            seen.append(path)
+            return real(path)
+
+        platform.secure_delete_file = recording
+        self.addCleanup(setattr, platform, "secure_delete_file", real)
+        return seen
+
+    def test_secure_true_overwrites_every_file_and_removes_the_tree(self):
+        seen = self._patch_secure_delete()
+        platform.delete_recursively(self.path, include_self=True, secure=True)
+        self.assertEqual(
+            sorted(p.rsplit("/", 1)[-1] for p in seen),
+            ["a.bin", "b.bin", "c.bin"],
+        )
+        self.assertNotIn("tree", [e[0] for e in os.ilistdir("testdir")])
+
+    def test_secure_false_never_overwrites(self):
+        seen = self._patch_secure_delete()
+        platform.delete_recursively(self.path, include_self=True)
+        self.assertEqual(seen, [])
+        self.assertNotIn("tree", [e[0] for e in os.ilistdir("testdir")])
+
+    def test_a_failed_overwrite_propagates_and_stops_the_delete(self):
+        real = platform.secure_delete_file
+
+        def failing(path):
+            if path.endswith("b.bin"):
+                raise OSError("short write during secure delete")
+            return real(path)
+
+        platform.secure_delete_file = failing
+        self.addCleanup(setattr, platform, "secure_delete_file", real)
+        with self.assertRaises(OSError):
+            platform.delete_recursively(self.path, include_self=True,
+                                        secure=True)
+        # The tree is still there - a wipe that could not finish must not
+        # report success by silently swallowing the error.
+        self.assertIn("tree", [e[0] for e in os.ilistdir("testdir")])
+
+
 class BlockGeometryTest(TestCase):
     def test_min_blocks_rejects_a_device_too_small_for_the_range(self):
         """platform.wipe() writes a hardcoded block range. A device passing

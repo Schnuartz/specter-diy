@@ -35,7 +35,10 @@ class SDHost(Host):
     def reset_and_mount(self):
         if self.f is not None:
             self.f.close()
-            os.remove(self.fram)
+            # self.fram is the copy of the previous transaction pulled off
+            # the card into the SDRAM ramdisk - overwrite it, don't just
+            # unlink it.
+            platform.secure_delete_file(self.fram)
             self.f = None
         if not platform.sdcard.is_present:
             raise HostError("SD card is not inserted")
