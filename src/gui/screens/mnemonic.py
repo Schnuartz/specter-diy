@@ -90,8 +90,8 @@ class NewMnemonicScreen(MnemonicScreen):
 
         # fix mnemonic components
         self.kb = lv.btnm(self)
-        self.kb.set_map(["1024", "512", "256", "128", "64", "32", "\n",
-                         "16", "8", "4", "2", "1", ""])
+        self.kb.set_map(["1024", "512", "256", "128", "64", "\n",
+                         "32", "16", "8", "4", "2", "1", ""])
         self.kb.set_ctrl_map([lv.btnm.CTRL.TGL_ENABLE for i in range(11)])
         self.kb.set_width(HOR_RES)
         self.kb.set_height(100)
