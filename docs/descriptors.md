@@ -23,6 +23,35 @@ If the descriptor contains master public keys but doesn't contain wildcard deriv
 
 The descriptor `wpkh(xpub)` will be converted into `wpkh(xpub/{0,1}/*)`.
 
+## Single-sig wallet types and their derivations
+
+When you create a single-sig wallet from **Master public keys -> ... -> Create
+wallet**, the script type you pick fixes the account derivation, so the
+key-origin in the descriptor always matches the key that actually signs:
+
+| Wallet type            | Descriptor   | Account derivation        |
+|------------------------|--------------|---------------------------|
+| Legacy                 | `pkh()`      | `m/44h/coin_type_h/account_h` |
+| Nested Segwit          | `sh(wpkh())` | `m/49h/coin_type_h/account_h` |
+| Native Segwit          | `wpkh()`     | `m/84h/coin_type_h/account_h` |
+| Taproot                | `tr()`       | `m/86h/coin_type_h/account_h` (BIP86) |
+| Legacy Specter Taproot | `tr()`       | `m/84h/coin_type_h/account_h` (recovery only) |
+
+`coin_type` is `0` on mainnet and `1` on testnet/regtest.
+
+### Legacy Specter Taproot
+
+Older Specter DIY versions could create a Taproot (`tr()`) wallet on top of an
+`m/84h` (BIP84) account key instead of the BIP86 `m/86h` key. Those wallets are
+non-standard but their addresses are valid and may hold funds. The
+**Legacy Specter Taproot** option under "Recovery only" recreates exactly that
+`m/84h + tr()` wallet so the funds stay recoverable. Do not use it for new
+wallets - new Taproot wallets must use BIP86.
+
+If you repeat the old "Single key -> Create wallet -> Taproot" flow (Single key
+is an `m/84h` key), the device asks whether you want a standard BIP86 wallet
+(it re-derives the `m/86h` key) or the legacy `m/84h` recovery wallet.
+
 ## Miniscript
 
 Specter supports miniscript, but doesn't support policy-to-miniscript compilation (because it's way too expensive). We perform some checks on the miniscipt, so only `B` scripts are allowed on the top level and all arguments in sub-miniscripts have to have properties according to the [spec](http://bitcoin.sipa.be/miniscript/).

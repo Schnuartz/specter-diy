@@ -10,6 +10,42 @@ from io import BytesIO
 import platform
 from collections import OrderedDict
 
+# --- Standard single-sig wallet types --------------------------------------
+# Each script type is bound to the BIP purpose whose account key it MUST be
+# derived from. Older Specter DIY firmware let the wallet-creation menu pair
+# the currently displayed key with an arbitrary script wrapper, which made it
+# possible to build a Taproot tr() wallet on top of an m/84' (BIP84) account
+# key instead of the BIP86 m/86' key (issue #393). Keeping this mapping
+# explicit makes that class of mismatch impossible for the standard flow.
+# value: (bip_purpose, descriptor_template, human_name)
+WALLET_TYPES = OrderedDict([
+    ("wpkh",    (84, "wpkh(%s%s/{0,1}/*)",     "Native Segwit")),
+    ("nested",  (49, "sh(wpkh(%s%s/{0,1}/*))", "Nested Segwit")),
+    ("legacy",  (44, "pkh(%s%s/{0,1}/*)",      "Legacy")),
+    ("taproot", (86, "tr(%s%s/{0,1}/*)",       "Taproot")),
+])
+_PURPOSE_TO_TYPE = {84: "wpkh", 49: "nested", 44: "legacy", 86: "taproot"}
+
+# Legacy Specter Taproot: recovery only. Older Specter DIY versions could
+# create P2TR wallets using an m/84' account key. This derivation is kept
+# ONLY so those wallets (and any funds on them) stay recoverable. New Taproot
+# wallets must use BIP86 (m/86').
+LEGACY_SPECTER_TAPROOT = (84, "tr(%s%s/{0,1}/*)", "Legacy Specter Taproot")
+
+_HARDENED = 0x80000000
+
+
+def _parse_account_path(derivation):
+    """Return ``(purpose, coin, account)`` for an ``m/P'/C'/A'`` path, else None."""
+    try:
+        idxs = bip32.parse_path(derivation)
+    except Exception:
+        return None
+    if len(idxs) != 3 or not all(i >= _HARDENED for i in idxs):
+        return None
+    return tuple(i - _HARDENED for i in idxs)
+
+
 class XpubApp(BaseApp):
     """
     WalletManager class manages your wallets.
@@ -296,7 +332,7 @@ class XpubApp(BaseApp):
             XPubScreen(xpub=canonical, slip132=slip132, prefix=prefix)
         )
         if res == XPubScreen.CREATE_WALLET:
-            await self.create_wallet(derivation, canonical, prefix, ver, show_screen)
+            await self.create_wallet(derivation, canonical, prefix, show_screen)
         elif res:
             filename = "%s-%s.txt" % (fingerprint, derivation[2:].replace("/", "-"))
             with platform.sdcard as sd:
@@ -308,83 +344,121 @@ class XpubApp(BaseApp):
                       button_text="Close")
             )
 
-    async def create_wallet(self, derivation, xpub, prefix, version, show_screen):
-        """Shows a wallet creation menu and passes descriptor to the wallets app"""
-        net = NETWORKS[self.network]
-        descriptors = OrderedDict({
-            "zpub": ("wpkh(%s%s/{0,1}/*)" % (prefix, xpub), "Native Segwit"),
-            "ypub": ("sh(wpkh(%s%s/{0,1}/*))" % (prefix, xpub), "Nested Segwit"),
-            "legacy": ("pkh(%s%s/{0,1}/*)" % (prefix, xpub), "Legacy"),
-            "taproot": ("tr(%s%s/{0,1}/*)" % (prefix, xpub), "Taproot"),
-            # multisig is not supported yet - requires cosigners app
-        })
+    async def create_wallet(self, derivation, xpub, prefix, show_screen):
+        """Shows a wallet-creation menu and passes a descriptor to the wallets app.
 
-        if version == net["ypub"]:
-            buttons = [
-                (None, "Recommended"),
-                descriptors.pop("ypub"),
-                (None, "Other"),
-            ]
-        elif version == net["zpub"]:
-            buttons = [
-                (None, "Recommended"),
-                descriptors.pop("zpub"),
-                (None, "Other"),
-            ]
-        elif "/86h/" in derivation:
-            buttons = [
-                (None, "Recommended"),
-                descriptors.pop("taproot"),
-                (None, "Other"),
-            ]
-        elif "/44h/" in derivation:
-            buttons = [
-                (None, "Recommended"),
-                descriptors.pop("legacy"),
-                (None, "Other"),
-            ]
-        else:
-            buttons = []
-        buttons += [descriptors[k] for k in descriptors]
-        menuitem = await show_screen(Menu(buttons, last=(255, None),
-                                     title="Select wallet type to create"))
-        if menuitem == 255:
+        The wallet type the user picks determines the derivation: standard
+        wallets are always (re-)derived from the BIP purpose that matches their
+        script type (see ``WALLET_TYPES``), so the descriptor key-origin and the
+        actual signing key can never disagree. ``m/84' + tr()`` is only reachable
+        through the explicit "Legacy Specter Taproot" recovery option.
+        """
+        net = NETWORKS[self.network]
+        parsed = _parse_account_path(derivation)
+        recommended = _PURPOSE_TO_TYPE.get(parsed[0]) if parsed else None
+
+        buttons = []
+        if recommended:
+            buttons.append((None, "Recommended"))
+            buttons.append((recommended, WALLET_TYPES[recommended][2]))
+        buttons.append((None, "Other"))
+        for key in WALLET_TYPES:
+            if key != recommended:
+                buttons.append((key, WALLET_TYPES[key][2]))
+        buttons.append((None, "Recovery only"))
+        buttons.append(("legacy_taproot", LEGACY_SPECTER_TAPROOT[2]))
+
+        menuitem = await show_screen(Menu(
+            buttons, last=(255, None),
+            title="Select wallet type to create",
+            note="Standard Taproot uses BIP86 (m/86h)",
+        ))
+        if menuitem == 255 or menuitem is None:
             return
-        else:
-            # get wallet names from the wallets app
-            s, _ = await self.communicate(BytesIO(b"listwallets"), app="wallets")
-            names = json.load(s)
-            if menuitem.startswith("pkh("):
-                name_suggestion = "Legacy %d" % self.account
-            elif menuitem.startswith("wpkh("):
-                name_suggestion = "Native %d" % self.account
-            elif menuitem.startswith("sh(wpkh("):
-                name_suggestion = "Nested %d" % self.account
-            elif menuitem.startswith("tr("):
-                name_suggestion = "Taproot %d" % self.account
-            else:
-                name_suggestion = "Wallet %d" % self.account
-            nn = name_suggestion
-            i = 1
-            # make sure we don't suggest existing name
-            while name_suggestion in names:
-                name_suggestion = "%s (%d)" % (nn, i)
-                i += 1
-            name = await show_screen(InputScreen(title="Name your wallet",
-                    note="",
-                    suggestion=name_suggestion,
-                    min_length=1, strip=True
+
+        legacy = (menuitem == "legacy_taproot")
+
+        # Repeating the historical "Single key -> Create Wallet -> Taproot" flow
+        # ("Single key" is an m/84' key) must not silently create a legacy
+        # wallet - offer an explicit migration/recovery choice instead.
+        if menuitem == "taproot" and parsed is not None and parsed[0] == 84:
+            choice = await show_screen(Menu(
+                [
+                    ("standard", "Standard Taproot\nm/86h (BIP86)"),
+                    ("legacy", "Recover legacy Specter Taproot\nm/84h"),
+                ],
+                last=(255, None),
+                title="Taproot derivation",
+                note=("Standard Taproot wallets use BIP86 (m/86h). Older "
+                      "Specter DIY versions could create Taproot wallets "
+                      "using m/84h."),
             ))
-            if not name:
+            if choice == 255 or choice is None:
                 return
-            # send the wallets app addwallet command with descriptor
-            desc = menuitem
-            # add blinding key on liquid
-            if is_liquid(self.network):
-                desc = "blinded(slip77(%s),%s)" % (self.keystore.slip77_key, desc)
-            data = "addwallet %s&%s" % (name, desc)
-            stream = BytesIO(data.encode())
-            await self.communicate(stream, app="wallets")
+            legacy = (choice == "legacy")
+
+        if legacy:
+            purpose, template, type_name = LEGACY_SPECTER_TAPROOT
+            confirm = await show_screen(Prompt(
+                "Legacy Specter Taproot",
+                "This recreates a Taproot wallet from the non-standard m/84h "
+                "derivation used by older Specter DIY firmware.\n\n"
+                "Use it only to recover existing funds. New Taproot wallets "
+                "must use BIP86 (m/86h).\n\nContinue?",
+                warning="Recovery only - not for new wallets",
+            ))
+            if not confirm:
+                return
+        else:
+            purpose, template, type_name = WALLET_TYPES[menuitem]
+
+        # coin type / account: reuse the ones from the displayed path when it is
+        # a standard account path, otherwise fall back to the selected account
+        # and the network-default coin type.
+        if parsed is not None:
+            coin, account = parsed[1], parsed[2]
+        else:
+            coin, account = net["bip32"], self.account
+
+        target = "m/%dh/%dh/%dh" % (purpose, coin, account)
+        if _parse_account_path(target) == parsed:
+            key_prefix, key_xpub = prefix, xpub
+        else:
+            self.show_loader(title="Deriving %s key..." % type_name)
+            hdkey = self.keystore.get_xpub(target)
+            key_xpub = hdkey.to_base58(net["xpub"])
+            fingerprint = hexlify(self.keystore.fingerprint).decode()
+            key_prefix = "[%s/%s]" % (fingerprint, target[2:])
+
+        desc = template % (key_prefix, key_xpub)
+
+        # get wallet names from the wallets app
+        s, _ = await self.communicate(BytesIO(b"listwallets"), app="wallets")
+        names = json.load(s)
+        sel = "legacy_taproot" if legacy else menuitem
+        name_bases = {
+            "wpkh": "Native", "nested": "Nested", "legacy": "Legacy",
+            "taproot": "Taproot", "legacy_taproot": "Legacy Taproot",
+        }
+        nn = "%s %d" % (name_bases.get(sel, "Wallet"), account)
+        name_suggestion = nn
+        i = 1
+        # make sure we don't suggest an existing name
+        while name_suggestion in names:
+            name_suggestion = "%s (%d)" % (nn, i)
+            i += 1
+        name = await show_screen(InputScreen(title="Name your wallet",
+                note="",
+                suggestion=name_suggestion,
+                min_length=1, strip=True
+        ))
+        if not name:
+            return
+        # add blinding key on liquid
+        if is_liquid(self.network):
+            desc = "blinded(slip77(%s),%s)" % (self.keystore.slip77_key, desc)
+        data = "addwallet %s&%s" % (name, desc)
+        await self.communicate(BytesIO(data.encode()), app="wallets")
 
 
     async def save_menu(self, show_screen):
