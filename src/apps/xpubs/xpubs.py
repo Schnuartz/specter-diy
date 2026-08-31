@@ -440,7 +440,7 @@ class XpubApp(BaseApp):
                 "not discover it from your seed automatically. Only continue "
                 "if you are deliberately recovering an existing wallet."
                 "\n\nContinue?" % (type_name, derivation),
-                warning="Recovery only - non-standard derivation",
+                warning="Non-standard - recovery only",
             ))
             if not confirm:
                 return
