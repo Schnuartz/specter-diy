@@ -308,6 +308,20 @@ class XpubApp(BaseApp):
                       button_text="Close")
             )
 
+    @staticmethod
+    def _purpose(derivation):
+        """Return the BIP-43 purpose as a plain integer, i.e. the first path
+        element with the hardened flag stripped. Returns None if the path is
+        empty, unparseable, or its first element is not hardened (all standard
+        purposes - 44h/49h/84h/86h/48h - are hardened)."""
+        try:
+            path = bip32.parse_path(derivation)
+        except Exception:
+            return None
+        if not path or path[0] < 0x80000000:
+            return None
+        return path[0] - 0x80000000
+
     async def create_wallet(self, derivation, xpub, prefix, version, show_screen):
         """Shows a wallet creation menu and passes descriptor to the wallets app"""
         net = NETWORKS[self.network]
@@ -318,6 +332,16 @@ class XpubApp(BaseApp):
             "taproot": ("tr(%s%s/{0,1}/*)" % (prefix, xpub), "Taproot"),
             # multisig is not supported yet - requires cosigners app
         })
+
+        # BIP-86 defines 86h strictly as the purpose, i.e. the first path
+        # element (m/86h/coin_type_h/account_h/...). Detect it by inspecting
+        # that first component rather than with a substring match, which would
+        # also fire on non-BIP-86 paths such as m/44h/86h/0h.
+        purpose = self._purpose(derivation)
+
+        # Only offer taproot for BIP-86 derivation paths
+        if purpose != 86:
+            descriptors.pop("taproot", None)
 
         if version == net["ypub"]:
             buttons = [
@@ -331,13 +355,13 @@ class XpubApp(BaseApp):
                 descriptors.pop("zpub"),
                 (None, "Other"),
             ]
-        elif "/86h/" in derivation:
+        elif purpose == 86:
             buttons = [
                 (None, "Recommended"),
                 descriptors.pop("taproot"),
                 (None, "Other"),
             ]
-        elif "/44h/" in derivation:
+        elif purpose == 44:
             buttons = [
                 (None, "Recommended"),
                 descriptors.pop("legacy"),
