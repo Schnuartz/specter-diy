@@ -6,6 +6,8 @@ if sys.implementation.name != "micropython":
 
     setup_native_stubs()
 
+import asyncio
+
 from unittest import TestCase
 
 from tests.util import clear_testdir, get_keystore, get_wallets_app
@@ -108,13 +110,70 @@ class WalletManagerWarningsTest(TestCase):
         self.manager.add_warnings(meta)
         self.assertEqual(meta.get("warnings", []), [])
 
-    # --- explicit acknowledgement before signing --------------------------
-
     def test_high_fee_sets_acknowledgement_flag(self):
-        # confirm_transaction() gates signing on meta["fee_warning"];
-        # a normal fee must not raise that gate
+        # a normal fee must not set the gate that confirm_transaction() checks
         normal = self.warnings_for(10, [{"value": 10_000, "change": False}])
         self.assertIsNone(normal.get("fee_warning"))
 
         high = self.warnings_for(1_000, [{"value": 10_000, "change": False}])
         self.assertEqual(high["fee_warning"], HIGH_FEE)
+
+    # --- explicit acknowledgement before signing --------------------------
+
+    @staticmethod
+    def _run(coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def _confirm_transaction(self, fee_ack, meta_extra=None):
+        """Drive confirm_transaction() with everything stubbed except the
+        fee-warning gate, and record whether the final confirmation is
+        reached. Returns (result, final_reached)."""
+        manager = self.manager
+        reached = []
+
+        async def show_screen(scr):
+            return True
+
+        async def fake_fee_warning(meta, show):
+            return fee_ack
+
+        async def fake_final(wallets, meta, show):
+            reached.append(True)
+            return True
+
+        manager.confirm_fee_warning = fake_fee_warning
+        manager.confirm_transaction_final = fake_final
+
+        meta = {"inputs": [{}], "outputs": [], "signed_inputs": 0}
+        if meta_extra:
+            meta.update(meta_extra)
+        wallets = {object(): {"amount": 0}}
+        result = self._run(manager.confirm_transaction(wallets, meta, show_screen))
+        return result, bool(reached)
+
+    def test_confirm_transaction_aborts_when_high_fee_not_acknowledged(self):
+        result, final_reached = self._confirm_transaction(fee_ack=False)
+        self.assertIsNone(result)
+        self.assertFalse(final_reached)
+
+    def test_confirm_transaction_proceeds_once_high_fee_acknowledged(self):
+        result, final_reached = self._confirm_transaction(fee_ack=True)
+        self.assertEqual(result, {"sighash": None})
+        self.assertTrue(final_reached)
+
+    def test_confirm_fee_warning_is_noop_without_warning(self):
+        shown = []
+
+        async def show_screen(scr):
+            shown.append(scr)
+            return True
+
+        proceed = self._run(
+            self.manager.confirm_fee_warning({}, show_screen)
+        )
+        self.assertTrue(proceed)
+        self.assertEqual(shown, [])
