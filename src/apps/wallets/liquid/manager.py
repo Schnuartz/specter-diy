@@ -569,12 +569,44 @@ class LWalletManager(WalletManager):
                     metaout["warning"] = "Watch-only wallet!"
             if asset and asset not in self.assets:
                 metaout.update({"raw_asset": asset})
+            # the L-BTC fee is an explicit (unblinded) output with an empty
+            # scriptpubkey; record it so the high-fee warning has a basis
+            if out.script_pubkey.data == b"" and isinstance(value, int) and value > 0:
+                metaout["fee_output"] = True
+                meta["fee"] = meta.get("fee", 0) + value
+                meta["fee_asset"] = metaout["asset"]
             out.write_to(fout, skip_separator=True, version=psbtv.version)
             # write rangeproofs and surjection proofs
             # separator
             fout.write(b"\x00")
 
+        self.add_warnings(meta)
         return wallets, meta
+
+    def fee_basis(self, meta):
+        """Same verified basis as the base class, but restricted to the
+        L-BTC (fee) asset so multi-asset transfers are not mixed in."""
+        fee_asset = meta.get("fee_asset")
+
+        def is_fee_asset(sc):
+            return fee_asset is None or sc.get("asset") == fee_asset
+
+        send_amount = sum(
+            out["value"]
+            for out in meta.get("outputs", [])
+            if out.get("value", 0) > 0
+            and not out.get("fee_output", False)
+            and not out.get("owned", out.get("change", False))
+            and is_fee_asset(out)
+        )
+        if send_amount > 0:
+            return send_amount, True
+        verified_input_total = sum(
+            inp["value"]
+            for inp in meta.get("inputs", [])
+            if inp.get("value", 0) > 0 and is_fee_asset(inp)
+        )
+        return verified_input_total, False
 
 
     ##### assets stuff ######

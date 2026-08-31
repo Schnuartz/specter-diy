@@ -72,11 +72,10 @@ class TransactionScreen(Prompt):
 
         fee = meta.get("fee")
         if fee:
-            # use the same verified basis the high-fee warning is computed
-            # from, so the displayed percentage can never disagree with it
-            fee_basis = meta.get("fee_basis", 0)
-            if fee_basis > 0:
-                fee_percent = fee * 100 / fee_basis
+            # reuse the exact percentage the high-fee warning was computed
+            # from, so the displayed number can never disagree with it
+            fee_percent = meta.get("fee_percent")
+            if fee_percent is not None:
                 if meta.get("fee_basis_is_send_amount", True):
                     basis_txt = "of send amount"
                 else:

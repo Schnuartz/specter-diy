@@ -82,6 +82,33 @@ class WalletManagerWarningsTest(TestCase):
         self.assertTrue(meta["fee_basis_is_send_amount"])
         self.assertEqual(meta["warnings"], [HIGH_FEE])
 
+    def test_fee_percent_is_precomputed_for_reuse_by_the_screen(self):
+        # the confirmation screen must not recompute the percentage; it
+        # reads meta["fee_percent"] so it can never disagree with the warning
+        meta = self.warnings_for(1_000, [{"value": 10_000, "change": False}])
+        self.assertEqual(meta["fee_percent"], 10.0)
+
+        below = self.warnings_for(500, [{"value": 10_000, "change": False}])
+        self.assertEqual(below["fee_percent"], 5.0)
+        self.assertNotIn("fee_warning", below)
+
+        nofee = {"outputs": [{"value": 10_000, "change": False}], "inputs": []}
+        self.manager.add_warnings(nofee)
+        self.assertIsNone(nofee["fee_percent"])
+
+    def test_fee_output_excluded_from_send_amount_basis(self):
+        # an explicit fee output (as on Liquid) must not count as "sent"
+        meta = self.warnings_for(
+            1_000,
+            [
+                {"value": 10_000, "change": False, "owned": False},
+                {"value": 1_000, "change": False, "fee_output": True},
+            ],
+        )
+        self.assertEqual(meta["fee_basis"], 10_000)
+        self.assertTrue(meta["fee_basis_is_send_amount"])
+        self.assertEqual(meta["warnings"], [HIGH_FEE])
+
     # --- warning list handling ------------------------------------------
 
     def test_existing_warnings_are_preserved(self):

@@ -805,7 +805,9 @@ class WalletManager(BaseApp):
         send_amount = sum(
             out["value"]
             for out in meta.get("outputs", [])
-            if out.get("value", 0) > 0 and not out.get("owned", out.get("change", False))
+            if out.get("value", 0) > 0
+            and not out.get("fee_output", False)
+            and not out.get("owned", out.get("change", False))
         )
         if send_amount > 0:
             return send_amount, True
@@ -824,13 +826,16 @@ class WalletManager(BaseApp):
         # percentage that the warning is based on
         meta["fee_basis"] = fee_basis
         meta["fee_basis_is_send_amount"] = is_send_amount
+        # precompute the percentage once so the warning text and the
+        # confirmation screen can never show a different number
+        fee_percent = None
+        if fee is not None and fee > 0 and fee_basis > 0:
+            fee_percent = fee * 100 / fee_basis
+        meta["fee_percent"] = fee_percent
         if (
-            fee is not None
-            and fee > 0
-            and fee_basis > 0
+            fee_percent is not None
             and fee * 100 >= fee_basis * self.HIGH_FEE_PERCENT
         ):
-            fee_percent = fee * 100 / fee_basis
             if is_send_amount:
                 warning = "Fee is %.2f%% of the send amount - unusually high!" % fee_percent
             else:
