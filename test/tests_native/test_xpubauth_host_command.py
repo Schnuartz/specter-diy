@@ -11,6 +11,7 @@ from binascii import hexlify
 import gc
 
 from tests.util import get_keystore, get_xpubs_app, clear_testdir
+from apps.xpubs.xpubs import MAX_XPUB_PATH_LEN
 from embit import bip32
 from embit.liquid.networks import NETWORKS
 from gui.screens import Prompt
@@ -243,12 +244,42 @@ class XpubAuthHostCommandTest(TestCase):
         self._xpub("m/86h/0h/0h", show_screen2)
         self.assertEqual(seen2, [])
 
-    def test_cancelled_second_begin_keeps_first_authorization(self):
+    def test_cancelled_second_begin_revokes_first_authorization(self):
+        # fail closed: a new begin drops the old authorization up front,
+        # so cancelling the new request leaves NO authorization active
         self._begin("m/84h/0h/{0-9}h", self._show_screen(True)[0])
         res = self._begin("m/86h/0h/{0-9}h", self._show_screen(False)[0])
         self.assertFalse(res)
+        self.assertIsNone(self.app._authorization)
         show_screen, seen = self._show_screen(True)
         self._xpub("m/84h/0h/0h", show_screen)
+        self.assertEqual(len(seen), 1)
+
+    def test_invalid_second_begin_revokes_first_authorization(self):
+        # a malformed replacement scope also leaves no authorization
+        self._begin("m/84h/0h/{0-9}h", self._show_screen(True)[0])
+        with self.assertRaises(Exception):
+            self._begin("garbage", self._show_screen(True)[0])
+        self.assertIsNone(self.app._authorization)
+
+    # ---- host input is bounded before it is decoded/parsed ----
+
+    def test_oversized_xpubauth_request_rejected_before_parsing(self):
+        from apps.xpubs import scope as scope_mod
+        # a valid-looking prefix followed by megabytes of padding
+        huge = "begin m/84h/0h/0h" + ("A" * (scope_mod.MAX_SCOPE_COMMAND_LEN + 4096))
+        show_screen, seen = self._show_screen(True)
+        stream = BytesIO(b"xpubauth " + huge.encode())
+        with self.assertRaises(Exception):
+            self._run(self.app.process_host_command(stream, show_screen))
+        self.assertEqual(seen, [])
+        self.assertIsNone(self.app._authorization)
+
+    def test_oversized_xpub_path_rejected_before_parsing(self):
+        show_screen, seen = self._show_screen(True)
+        stream = BytesIO(b"xpub m/84h/0h/" + b"1" * (MAX_XPUB_PATH_LEN + 4096))
+        with self.assertRaises(Exception):
+            self._run(self.app.process_host_command(stream, show_screen))
         self.assertEqual(seen, [])
 
     # ---- invalidation ----

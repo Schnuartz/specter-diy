@@ -11,6 +11,11 @@ from io import BytesIO
 import platform
 from collections import OrderedDict
 
+# A single derivation-path request ("xpub <path>") is tiny. Cap the host
+# input well above any realistic path but far below anything that could
+# exhaust RAM on the STM32F469, and enforce it before .decode()/parsing.
+MAX_XPUB_PATH_LEN = 1024
+
 class XpubApp(BaseApp):
     """
     WalletManager class manages your wallets.
@@ -279,8 +284,15 @@ class XpubApp(BaseApp):
         # get xpub,
         # data: derivation path in human-readable form like m/44h/1h/0
         elif prefix == b"xpub":
+            # bound the host input before decoding - a derivation path is
+            # tiny, anything larger is malformed or a memory-exhaustion
+            # attempt and must be rejected before it becomes a str
+            raw = stream.read(MAX_XPUB_PATH_LEN + 1)
+            if len(raw) > MAX_XPUB_PATH_LEN:
+                raise AppError("Path request too large")
+            path = raw
             try:
-                path = stream.read().strip()
+                path = raw.strip()
                 # convert to list of indexes
                 path = bip32.parse_path(path.decode())
             except:
@@ -315,7 +327,13 @@ class XpubApp(BaseApp):
         # xpubauth begin <scope> / xpubauth end -
         # one confirmation for a bounded, explicit set of paths, see scope.py
         elif prefix == b"xpubauth":
-            data = stream.read().strip().decode()
+            # bound the request as it is read, before .decode()/parsing,
+            # so a hostile host cannot force a huge string allocation
+            # ahead of the MAX_SCOPE_LEN check inside parse_scope
+            raw = stream.read(xpubauth_scope.MAX_SCOPE_COMMAND_LEN + 1)
+            if len(raw) > xpubauth_scope.MAX_SCOPE_COMMAND_LEN:
+                raise AppError("xpubauth request too large")
+            data = raw.strip().decode()
             if data == "end":
                 self._authorization = None
                 return True
@@ -326,6 +344,13 @@ class XpubApp(BaseApp):
         raise AppError("Unknown command")
 
     async def xpubauth_begin(self, scope_str, show_screen):
+        # Fail closed: a fresh "begin" revokes any prior authorization
+        # up front, before the new scope is even parsed or displayed.
+        # Whatever happens next - parse error, cancel, or a successful
+        # confirm - the old scope is already gone, so a user who cancels
+        # a suspicious new request is never silently left with a stale
+        # (possibly broader) permission still active.
+        self._authorization = None
         try:
             entries, total = xpubauth_scope.parse_scope(
                 scope_str, self.network, NETWORKS[self.network]["bip32"]
@@ -353,11 +378,12 @@ class XpubApp(BaseApp):
             )
         )
         if not confirm:
-            # fail closed: nothing is approved, any prior authorization
-            # (if this was a replacement request) is left untouched
+            # any prior authorization was already dropped at the top of
+            # this method; nothing new is approved, so the device is now
+            # left with no authorization at all
             return False
-        # commit only now that the user has approved this exact scope -
-        # this also replaces (never merges with) any prior authorization
+        # commit the freshly approved scope (any prior authorization was
+        # already cleared above - begin never merges or falls back)
         self._authorization = xpubauth_scope.Authorization(entries, self.network)
         return True
 

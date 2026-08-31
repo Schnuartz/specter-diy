@@ -32,6 +32,14 @@ allocation or a slow/huge confirmation screen.
 from embit import bip32
 
 MAX_SCOPE_LEN = 1024  # raw "begin <scope>" argument, bytes
+# Hard cap on the whole "xpubauth ..." payload (the "begin <scope>" or
+# "end" text after the command prefix) as it is read from the host.
+# Enforced *before* the bytes are decoded to a str or parsed, so a
+# multi-megabyte line from a hostile host cannot be materialized as a
+# Python string first. "begin " is 6 bytes; the extra slack absorbs
+# surrounding whitespace / EOL without ever letting scope_str itself
+# exceed MAX_SCOPE_LEN (parse_scope still rejects anything longer).
+MAX_SCOPE_COMMAND_LEN = MAX_SCOPE_LEN + 32
 MAX_ENTRIES = 16  # scope entries per authorization
 MAX_PATH_DEPTH = 8  # bip32 components per entry
 MAX_RANGE_WIDTH = 200  # (hi - lo + 1) for a single range component

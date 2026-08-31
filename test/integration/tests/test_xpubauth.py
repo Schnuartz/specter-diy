@@ -71,6 +71,20 @@ class XpubAuthIntegrationTest(TestCase):
         res = sim.query(b"xpubauth begin m/84h/0h/*")
         self.assertTrue(res.startswith(b"error:"), res)
 
+    def test_cancelled_replacement_begin_revokes_prior_authorization(self):
+        # an authorization is active...
+        res = sim.query(b"xpubauth begin m/84h/1h/{0-2}h", [True])
+        self.assertEqual(res, b"success")
+
+        # ...a new begin arrives and the user cancels it
+        res = sim.query(b"xpubauth begin m/86h/1h/{0-2}h", [False])
+        self.assertEqual(res, b"error: User cancelled")
+
+        # fail closed: the prior authorization is gone too, so a
+        # formerly in-scope path now requires normal confirmation again
+        res = sim.query(b"xpub m/84h/1h/0h", [True])
+        self.assertTrue(res.startswith(b"tpub"), res)
+
     def test_bip138_like_discovery_flow(self):
         scope = b";".join([
             b"m/44h/1h/{0-9}h", b"m/49h/1h/{0-9}h", b"m/84h/1h/{0-9}h",

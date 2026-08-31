@@ -97,6 +97,7 @@ range     := "{" digits "-" digits "}" ["h" | "H" | "'"]
 - Duplicate or overlapping entries (e.g. `m/84h/0h/{0-9}h` together with `m/84h/0h/5h`) make the whole `begin` request invalid - overlap is rejected rather than silently merged, so the displayed and enforced count are always identical.
 - For recognizable standard purposes (`44h`, `48h`, `49h`, `84h`, `86h`, `87h`), the coin-type component must be a fixed value matching the network active on the device at the time of the request (see "Network binding" below); a scope mixing e.g. a mainnet and a testnet-style entry is rejected as a whole. Non-standard/custom paths carry no such implied network semantics and are left alone.
 - Hard limits (named constants in `apps/xpubs/scope.py`): at most 16 entries, at most 8 path components per entry, at most 200 values per range, at most 200 total xpubs per authorization, at most 1024 bytes for the whole `begin` argument. These comfortably cover the ~70-path BIP-138 discovery scope with headroom while keeping worst-case parsing, display and memory use trivial on the STM32F469.
+- The raw `xpubauth` payload is capped (`MAX_SCOPE_COMMAND_LEN`) by the command handler as it is read from the host - before it is decoded to text or handed to the parser - so an over-long line is rejected without first being buffered as a Python string. The plain `xpub <derivation>` request is bounded the same way (`MAX_XPUB_PATH_LEN` in `apps/xpubs/xpubs.py`).
 
 Example - the approximate BIP-138 mainnet discovery scope:
 
@@ -104,7 +105,7 @@ Example - the approximate BIP-138 mainnet discovery scope:
 xpubauth begin m/44h/0h/{0-9}h;m/49h/0h/{0-9}h;m/84h/0h/{0-9}h;m/86h/0h/{0-9}h;m/87h/0h/{0-9}h;m/48h/0h/{0-9}h/1h;m/48h/0h/{0-9}h/2h
 ```
 
-The device shows the network, the list of allowed path patterns and the maximum possible number of xpubs, then waits for Confirm/Cancel. `success` is returned on confirmation, `error: User cancelled` on cancellation (and no authorization is created either way in that case).
+The device shows the network, the list of allowed path patterns and the maximum possible number of xpubs, then waits for Confirm/Cancel. `success` is returned on confirmation, `error: User cancelled` on cancellation. On cancellation no authorization is left active - not the requested one, and not any authorization that happened to be active before this `begin` (see "When an authorization is cleared").
 
 #### Network binding
 
@@ -123,9 +124,10 @@ An authorization exists only in RAM and is never written to flash, SD card or an
 - the active network changing;
 - a new key/seed being loaded, or the current one being replaced (including a passphrase change);
 - every path covered by it having been used once (self-exhaustion, see above);
-- the authorization request itself being cancelled, failing validation, or failing to display.
+- the authorization request itself being cancelled, failing validation, or failing to display;
+- a new `xpubauth begin` request arriving - the existing authorization is dropped immediately, before the new scope is parsed or displayed, regardless of whether the new request is ultimately approved.
 
-Starting a new `xpubauth begin` while an authorization is already active never merges or widens the existing permission: the new scope is parsed, validated and shown for a fresh confirmation exactly like any other `begin` request, and only replaces the previous authorization once that confirmation succeeds. If the second request is cancelled or invalid, the original authorization is left untouched.
+Starting a new `xpubauth begin` while an authorization is already active is **fail-closed**: the existing permission is revoked up front, before the new scope is even parsed. The new scope is then parsed, validated and shown for a fresh confirmation exactly like any other `begin` request, and installed only if that confirmation succeeds. If the new request is cancelled - or malformed - the device is left with **no** authorization at all, never the previous one. A cancelled replacement request therefore cannot silently leave an older, broader permission in force. `begin` never merges, widens or falls back to a prior scope.
 
 #### Compatibility
 
