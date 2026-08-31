@@ -911,6 +911,36 @@ class SecureDeleteFileTest(TestCase):
             platform.strict_sync = real_sync
         self.assertTrue(platform.file_exists(self.path))
 
+    def test_a_runtime_without_any_sync_call_still_works(self):
+        """A missing sync primitive is a property of the runtime, not a
+        sync that failed.
+
+        The device firmware binds os.sync (ports/stm32/moduos.c), but the
+        unix simulator build binds neither os.sync nor os.fsync. Raising
+        there made every secure delete - and, once the save path started
+        syncing strictly, every save of a recovery phrase - fail on the
+        simulator with a traceback, while saying nothing about the
+        hardware."""
+        import os as _os
+
+        had_sync = hasattr(_os, "sync")
+        had_fsync = hasattr(_os, "fsync")
+        real_sync = getattr(_os, "sync", None)
+        real_fsync = getattr(_os, "fsync", None)
+        if had_sync:
+            del _os.sync
+        if had_fsync:
+            del _os.fsync
+        try:
+            platform.secure_delete_file(self.path)
+            platform.strict_sync()
+        finally:
+            if had_sync:
+                _os.sync = real_sync
+            if had_fsync:
+                _os.fsync = real_fsync
+        self.assertFalse(platform.file_exists(self.path))
+
 
 class SecureDeleteTreeTest(TestCase):
     def setUp(self):

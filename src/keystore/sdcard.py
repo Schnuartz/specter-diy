@@ -72,6 +72,11 @@ class SDKeyStore(FlashKeyStore):
         if fullpath.startswith(self.sdpath):
             platform.sdcard.mount()
 
+        # Recover from a save of this name that a power cut left half done,
+        # before asking whether there is anything to replace. After the
+        # mount, so the card's own scratch files are visible.
+        self.reconcile_scratch(fullpath)
+
         replacing = False
         if platform.file_exists(fullpath):
             scr = Prompt(

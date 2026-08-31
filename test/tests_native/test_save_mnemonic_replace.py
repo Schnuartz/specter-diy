@@ -33,7 +33,7 @@ import platform
 import keystore.flash as flash_module
 import keystore.sdcard as sdcard_module
 from keystore.core import KeyStoreError
-from keystore.flash import FlashKeyStore, SAVE_TMP_NAME
+from keystore.flash import FlashKeyStore, SAVE_TMP_SUFFIX, SAVE_OLD_SUFFIX
 from keystore.sdcard import SDKeyStore
 from tests.util import clear_testdir
 
@@ -81,7 +81,8 @@ class _SaveMnemonicBase(TestCase):
         self.ks.mnemonic = "ability " * 11 + "acid"
         self.ks.enc_secret = b"\x00" * 32
         self.target = "testdir/reckless.mykey"
-        self.tmp = "testdir/" + SAVE_TMP_NAME
+        self.tmp = "testdir/.reckless.mykey" + SAVE_TMP_SUFFIX
+        self.old = "testdir/.reckless.mykey" + SAVE_OLD_SUFFIX
         self.plaintext = self.ks.mnemonic.encode()
 
         test = self
@@ -157,11 +158,12 @@ class _SaveMnemonicBase(TestCase):
             [
                 ("save_aead", self.tmp),
                 ("load_aead", self.tmp),
-                ("secure_delete", self.target),
+                ("secure_delete", self.old),
             ],
         )
         self.assertEqual(self._read(self.target), b"enc:" + self.plaintext)
         self.assertFalse(platform.file_exists(self.tmp))
+        self.assertFalse(platform.file_exists(self.old))
 
     def test_the_replacing_write_is_synced_strictly(self):
         """platform.sync() swallows every sync error. Losing this write
@@ -193,11 +195,14 @@ class _SaveMnemonicBase(TestCase):
 
         self.ks.save_aead = failing_save
 
-        with self.assertRaises(OSError):
+        # Reported as a KeyStoreError rather than a bare OSError: the
+        # device shows an unhandled exception as a raw traceback, and "the
+        # write failed" is something the user can act on.
+        with self.assertRaises(KeyStoreError):
             _run(self.ks.save_mnemonic())
 
         self.assertEqual(self._read(self.target), self.OLD)
-        self.assertNotIn(("secure_delete", self.target), self._kinds())
+        self.assertNotIn(("secure_delete", self.old), self._kinds())
         self.assertFalse(platform.file_exists(self.tmp))
 
     def test_a_new_copy_that_does_not_read_back_keeps_the_old_file(self):
@@ -213,10 +218,40 @@ class _SaveMnemonicBase(TestCase):
             _run(self.ks.save_mnemonic())
 
         self.assertEqual(self._read(self.target), self.OLD)
-        self.assertNotIn(("secure_delete", self.target), self._kinds())
+        self.assertNotIn(("secure_delete", self.old), self._kinds())
         self.assertFalse(platform.file_exists(self.tmp))
 
-    def test_a_failed_overwrite_of_the_old_file_aborts_the_save(self):
+    def test_the_replacement_is_in_place_before_the_old_copy_dies(self):
+        """The reason the swap renames instead of deleting: when the copy
+        being replaced is destroyed, the new one must already be under the
+        real name. Otherwise a fault in between leaves the key only under a
+        scratch name that no picker shows."""
+        self._write_existing()
+        seen = {}
+
+        real_delete = platform.secure_delete_file
+
+        def watching_delete(path):
+            if platform.file_exists(self.target):
+                with open(self.target, "rb") as f:
+                    seen[path] = f.read()
+            else:
+                seen[path] = None
+            self.calls.append(("secure_delete", path))
+            return self._real_delete(path)
+
+        platform.secure_delete_file = watching_delete
+        try:
+            _run(self.ks.save_mnemonic())
+        finally:
+            platform.secure_delete_file = real_delete
+
+        self.assertEqual(seen.get(self.old), b"enc:" + self.plaintext)
+
+    def test_a_failed_overwrite_of_the_old_file_still_stores_the_key(self):
+        """Once the swap is done the save has succeeded. A failure to
+        retire the replaced copy is a residue problem worth reporting, but
+        it must not cost the user the key they just saved."""
         self._write_existing()
 
         def failing_delete(path):
@@ -228,7 +263,56 @@ class _SaveMnemonicBase(TestCase):
         with self.assertRaises(KeyStoreError):
             _run(self.ks.save_mnemonic())
 
+        self.assertEqual(self._read(self.target), b"enc:" + self.plaintext)
+
+    def test_a_failed_swap_rolls_the_existing_key_back(self):
+        self._write_existing()
+
+        real_rename = os.rename
+        state = {"n": 0}
+
+        def failing_rename(src, dst):
+            state["n"] += 1
+            if state["n"] == 2:  # tmp -> target
+                raise OSError("simulated rename failure")
+            return real_rename(src, dst)
+
+        os.rename = failing_rename
+        try:
+            with self.assertRaises(KeyStoreError):
+                _run(self.ks.save_mnemonic())
+        finally:
+            os.rename = real_rename
+
         self.assertEqual(self._read(self.target), self.OLD)
+        self.assertFalse(platform.file_exists(self.tmp))
+        self.assertFalse(platform.file_exists(self.old))
+
+    def test_an_interrupted_swap_restores_the_only_surviving_copy(self):
+        """Power cut between the two renames: the target is gone and .old
+        is the only copy of the key. It has to come back, not be discarded."""
+        with open(self.old, "wb") as f:
+            f.write(b"enc:interrupted-key")
+        self.assertFalse(platform.file_exists(self.target))
+
+        _run(self.ks.save_mnemonic())
+
+        self.assertEqual(self._read(self.target), b"enc:" + self.plaintext)
+        self.assertFalse(platform.file_exists(self.old))
+        self.assertFalse(platform.file_exists(self.tmp))
+
+    def test_a_stale_old_copy_is_retired_when_the_target_survived(self):
+        """Power cut after the swap but before the overwrite: the target is
+        current, so .old is stale and gets overwritten, not restored."""
+        self._write_existing()
+        with open(self.old, "wb") as f:
+            f.write(b"enc:stale-replaced-key")
+
+        _run(self.ks.save_mnemonic())
+
+        self.assertIn(("secure_delete", self.old), self._kinds())
+        self.assertEqual(self._read(self.target), b"enc:" + self.plaintext)
+        self.assertFalse(platform.file_exists(self.old))
 
     def test_a_leftover_temp_file_is_overwritten_not_truncated(self):
         """A save interrupted after the temp write leaves an encrypted
@@ -244,14 +328,13 @@ class _SaveMnemonicBase(TestCase):
         self.assertEqual(self._read(self.target), b"enc:" + self.plaintext)
         self.assertFalse(platform.file_exists(self.tmp))
 
-    def test_the_temp_name_is_not_listed_as_a_key(self):
-        """A leftover temp file must not show up in the key menus as
+    def test_the_scratch_names_are_not_listed_as_keys(self):
+        """A leftover scratch file must not show up in the key menus as
         something loadable."""
-        self.assertFalse(
-            SAVE_TMP_NAME.lower().startswith(
-                self.ks.fileprefix(self.ks.flashpath)
-            )
-        )
+        prefix = self.ks.fileprefix(self.ks.flashpath)
+        for path in (self.tmp, self.old):
+            name = path.rsplit("/", 1)[1]
+            self.assertFalse(name.lower().startswith(prefix), name)
 
 
 class FlashSaveMnemonicTest(_SaveMnemonicBase):

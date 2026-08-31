@@ -771,10 +771,17 @@ def strict_sync(f=None):
     if hasattr(os, "fsync"):
         # A directory-level change (a rename) on a CPython host without
         # os.sync. There is no handle to push and nothing portable to call.
-        # MicroPython - the actual target - always has os.sync, so this
-        # only ever applies to host test runs.
         return
-    raise OSError("no filesystem sync primitive is available")
+    # No sync call at all. That is a property of the runtime, not a sync
+    # that failed, so it is not an error.
+    #
+    # "MicroPython always has os.sync" is true of the device firmware,
+    # which binds it in ports/stm32/moduos.c - but NOT of the unix
+    # simulator build, which binds neither os.sync nor os.fsync. Raising
+    # here made every save of a recovery phrase fail on the simulator with
+    # a traceback, and every secure delete with it, while saying nothing
+    # about the hardware. Where there is nothing to sync with, the flush
+    # above is genuinely all there is to do.
 
 
 # An adversarial directory with thousands of entries would otherwise make
