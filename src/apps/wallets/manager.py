@@ -416,8 +416,13 @@ class WalletManager(BaseApp):
         - False - interrupt signing process (user cancel)
         """
         sighash_name = self.get_sighash_info(self.DEFAULT_SIGHASH)["name"]
-        # check if there are any custom sighashes
-        used_custom_sighashes = any([inp.get("sighash", sighash_name) != sighash_name for inp in meta["inputs"]])
+        # preprocess_psbt() already compared every input against its own
+        # per-input default (self.default_sighash(inp)) and only set
+        # metainp["sighash"] when it differs. So a taproot input carrying
+        # an explicit SIGHASH_ALL is "custom" here even though ALL is the
+        # manager-wide default - comparing against a single global name
+        # would silently miss it.
+        used_custom_sighashes = any(["sighash" in inp for inp in meta["inputs"]])
 
         # no custom sighashes - just continue
         if not used_custom_sighashes:
@@ -425,9 +430,9 @@ class WalletManager(BaseApp):
 
         # ask the user if they want to sign in case of non-default sighashes
         custom_sighashes = [
-                ("Input %d: %s" % (i, inp.get("sighash", sighash_name)))
+                ("Input %d: %s" % (i, inp["sighash"]))
                 for (i, inp) in enumerate(meta["inputs"])
-                if inp.get("sighash", sighash_name) != sighash_name
+                if "sighash" in inp
         ]
         canceltxt = (
             ("Only sign %s" % sighash_name)
