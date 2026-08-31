@@ -590,10 +590,19 @@ class WalletManager(BaseApp):
     def fill_zero_fingerprint(self, scope):
         """Blue Wallet hack - zeroes in fingerprint should be checked and replaced by our fingerprint"""
         for pub in scope.bip32_derivations:
-            if scope.bip32_derivations[pub].fingerprint == b"\x00\x00\x00\x00":
+            der = scope.bip32_derivations[pub]
+            if der.fingerprint == b"\x00\x00\x00\x00":
                 # check if pubkey matches
-                if self.keystore.get_xpub(scope.bip32_derivations[pub].derivation).key == pub:
-                    scope.bip32_derivations[pub].fingerprint = self.keystore.fingerprint
+                if self.keystore.get_xpub(der.derivation).key == pub:
+                    der.fingerprint = self.keystore.fingerprint
+        # Blue Wallet emits the same zero fingerprint in taproot (BIP-371)
+        # key derivations. Only trust the claimed path if it actually derives
+        # the x-only key present in the scope from our seed - same rule as above.
+        for pub in scope.taproot_bip32_derivations:
+            _leaf_hashes, der = scope.taproot_bip32_derivations[pub]
+            if der.fingerprint == b"\x00\x00\x00\x00":
+                if self.keystore.get_xpub(der.derivation).key.xonly() == pub.xonly():
+                    der.fingerprint = self.keystore.fingerprint
 
     def check_signed_inputs(self, psbtv):
         """Goes through all input scopes and checks if they are already signed"""
