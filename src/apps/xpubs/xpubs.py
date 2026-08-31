@@ -11,39 +11,67 @@ import platform
 from collections import OrderedDict
 
 # --- Standard single-sig wallet types --------------------------------------
-# Each script type is bound to the BIP purpose whose account key it MUST be
-# derived from. Older Specter DIY firmware let the wallet-creation menu pair
-# the currently displayed key with an arbitrary script wrapper, which made it
-# possible to build a Taproot tr() wallet on top of an m/84' (BIP84) account
-# key instead of the BIP86 m/86' key (issue #393). Keeping this mapping
-# explicit makes that class of mismatch impossible for the standard flow.
-# value: (bip_purpose, descriptor_template, human_name)
+# Each script type has exactly one standard BIP purpose and account-key
+# derivation. Fresh wallets are always built from that derivation - the
+# account key is re-derived when the key currently on screen sits on a
+# different path - so the descriptor key-origin and the signing key can never
+# disagree (issue #393).
+#
+# Older Specter DIY firmware instead wrapped *whatever key was on screen* in
+# the chosen script (issues #393, #281), so valid-but-non-standard wallets
+# exist in the wild: tr(m/84'...), pkh(m/84'...), wpkh(m/48'.../2'...),
+# tr(<custom>...), ... Those stay reproducible through a single generic
+# "recover using the displayed key" choice, shown only when the displayed
+# path differs from the standard one and guarded by a warning - never as an
+# ordinary wallet type.
+# value: (bip_purpose, descriptor_template, menu_label, name_prefix)
 WALLET_TYPES = OrderedDict([
-    ("wpkh",    (84, "wpkh(%s%s/{0,1}/*)",     "Native Segwit")),
-    ("nested",  (49, "sh(wpkh(%s%s/{0,1}/*))", "Nested Segwit")),
-    ("legacy",  (44, "pkh(%s%s/{0,1}/*)",      "Legacy")),
-    ("taproot", (86, "tr(%s%s/{0,1}/*)",       "Taproot")),
+    ("wpkh",    (84, "wpkh(%s%s/{0,1}/*)",     "Native Segwit", "Native")),
+    ("nested",  (49, "sh(wpkh(%s%s/{0,1}/*))", "Nested Segwit", "Nested")),
+    ("legacy",  (44, "pkh(%s%s/{0,1}/*)",      "Legacy",        "Legacy")),
+    ("taproot", (86, "tr(%s%s/{0,1}/*)",       "Taproot",       "Taproot")),
 ])
-_PURPOSE_TO_TYPE = {84: "wpkh", 49: "nested", 44: "legacy", 86: "taproot"}
-
-# Legacy Specter Taproot: recovery only. Older Specter DIY versions could
-# create P2TR wallets using an m/84' account key. This derivation is kept
-# ONLY so those wallets (and any funds on them) stay recoverable. New Taproot
-# wallets must use BIP86 (m/86').
-LEGACY_SPECTER_TAPROOT = (84, "tr(%s%s/{0,1}/*)", "Legacy Specter Taproot")
+_PURPOSE_TO_TYPE = {v[0]: k for k, v in WALLET_TYPES.items()}
 
 _HARDENED = 0x80000000
 
 
-def _parse_account_path(derivation):
-    """Return ``(purpose, coin, account)`` for an ``m/P'/C'/A'`` path, else None."""
+def _parse_path(derivation):
+    """Parsed index list for a derivation string, or None if unparseable."""
     try:
-        idxs = bip32.parse_path(derivation)
+        return bip32.parse_path(derivation)
     except Exception:
         return None
-    if len(idxs) != 3 or not all(i >= _HARDENED for i in idxs):
+
+
+def _same_path(a, b):
+    """True when two derivation strings denote the same BIP32 path."""
+    pa = _parse_path(a)
+    return pa is not None and pa == _parse_path(b)
+
+
+def _account_index(derivation):
+    """Best-effort account number: element [2] when the first three levels are
+    hardened. Covers ``m/P'/C'/A'`` and deeper paths (e.g. BIP48
+    ``m/48'/C'/A'/script'``). Returns None when there is no such element."""
+    idxs = _parse_path(derivation)
+    if idxs is None or len(idxs) < 3 or not all(i >= _HARDENED for i in idxs[:3]):
         return None
-    return tuple(i - _HARDENED for i in idxs)
+    return idxs[2] - _HARDENED
+
+
+def _standard_wallet_type(derivation, coin):
+    """The WALLET_TYPES key whose *standard* derivation the displayed path
+    already matches: exactly three hardened levels, a known purpose, and this
+    network's coin_type. None for non-standard / deeper / custom paths (so the
+    UI never calls a wrong-coin_type or multisig key "recommended")."""
+    idxs = _parse_path(derivation)
+    if idxs is None or len(idxs) != 3 or not all(i >= _HARDENED for i in idxs):
+        return None
+    purpose, coin_type = idxs[0] - _HARDENED, idxs[1] - _HARDENED
+    if coin_type != coin:
+        return None
+    return _PURPOSE_TO_TYPE.get(purpose)
 
 
 class XpubApp(BaseApp):
@@ -347,16 +375,16 @@ class XpubApp(BaseApp):
     async def create_wallet(self, derivation, xpub, prefix, show_screen):
         """Shows a wallet-creation menu and passes a descriptor to the wallets app.
 
-        The wallet type the user picks determines the derivation: standard
-        wallets are always (re-)derived from the BIP purpose that matches their
-        script type (see ``WALLET_TYPES``), so the descriptor key-origin and the
-        actual signing key can never disagree. ``m/84' + tr()`` is only reachable
-        by picking Taproot from an m/84' key and choosing recovery in the
-        follow-up dialog.
+        The script type the user picks fixes the derivation (see
+        ``WALLET_TYPES``). When the key on screen is not already on that path,
+        the user explicitly chooses between the standard wallet (account key
+        re-derived from the standard path) and a warned recovery wallet built
+        from the displayed key verbatim - the only way to reproduce the
+        non-standard script/derivation pairs older firmware could create.
         """
         net = NETWORKS[self.network]
-        parsed = _parse_account_path(derivation)
-        recommended = _PURPOSE_TO_TYPE.get(parsed[0]) if parsed else None
+        coin = net["bip32"]
+        recommended = _standard_wallet_type(derivation, coin)
 
         buttons = []
         if recommended:
@@ -374,74 +402,68 @@ class XpubApp(BaseApp):
         if menuitem == 255 or menuitem is None or menuitem not in WALLET_TYPES:
             return
 
-        legacy = False
+        purpose, template, type_name, name_prefix = WALLET_TYPES[menuitem]
+        # Standard wallets follow the BIP44 layout: purpose fixed by the script
+        # type, coin_type fixed by the active network, account carried over from
+        # the displayed key (or the account selected in the menu).
+        account = _account_index(derivation)
+        std_account = account if account is not None else self.account
+        std_target = "m/%dh/%dh/%dh" % (purpose, coin, std_account)
 
-        # Repeating the historical "Single key -> Create Wallet -> Taproot" flow
-        # ("Single key" is an m/84' key) must not silently create a legacy
-        # wallet - offer an explicit standard/recovery choice instead. This is
-        # also the only way to reach the legacy m/84' + tr() derivation.
-        if menuitem == "taproot" and parsed is not None and parsed[0] == 84:
+        use_displayed = False
+        if not _same_path(derivation, std_target):
+            # The displayed key would be discarded for a standard wallet. Make
+            # the choice - and the non-standard option - explicit.
             choice = await show_screen(Menu(
                 [
-                    ("standard", "Standard Taproot\nm/86h (BIP86)"),
-                    ("legacy", "Recover legacy Specter Taproot\nm/84h"),
+                    ("standard",
+                     "Standard %s\n%s" % (type_name, std_target)),
+                    ("recover",
+                     "Recover using displayed key\n%s\nNon-standard - recovery only"
+                     % derivation),
                 ],
                 last=(255, None),
-                title="Taproot derivation",
-                note=("Standard Taproot wallets use BIP86 (m/86h). Older "
-                      "Specter DIY versions could create Taproot wallets "
-                      "using m/84h."),
+                title="%s derivation" % type_name,
+                note=("New wallets use the standard path. Recovery reproduces a "
+                      "wallet made with older Specter DIY versions."),
             ))
             if choice == 255 or choice is None:
                 return
-            legacy = (choice == "legacy")
+            use_displayed = (choice == "recover")
 
-        if legacy:
-            purpose, template, type_name = LEGACY_SPECTER_TAPROOT
+        if use_displayed:
             confirm = await show_screen(Prompt(
-                "Legacy Specter Taproot",
-                "This recreates a Taproot wallet from the non-standard m/84h "
-                "derivation used by older Specter DIY firmware.\n\n"
-                "Use it only to recover existing funds. New Taproot wallets "
-                "must use BIP86 (m/86h).\n\nContinue?",
-                warning="Recovery only - not for new wallets",
+                "Recover non-standard wallet",
+                "This builds a %s wallet from the key you are viewing:\n\n"
+                "%s\n\n"
+                "This derivation is NOT standard. Other wallet software may "
+                "not discover it from your seed automatically. Only continue "
+                "if you are deliberately recovering an existing wallet."
+                "\n\nContinue?" % (type_name, derivation),
+                warning="Recovery only - non-standard derivation",
             ))
             if not confirm:
                 return
-            # Recovery must reproduce the displayed m/84' path *exactly*, incl.
-            # a non-standard coin_type from a custom derivation - that is what
-            # the older firmware signed with. `legacy` is only ever set when
-            # `parsed` is a hardened m/84'/coin'/account' path.
-            coin, account = parsed[1], parsed[2]
-        else:
-            purpose, template, type_name = WALLET_TYPES[menuitem]
-            # Standard wallets follow the BIP44 structure: coin_type is fixed by
-            # the active network (0 mainnet / 1 testnet), never taken from the
-            # displayed key. Only the account index is carried over.
-            coin = net["bip32"]
-            account = parsed[2] if parsed is not None else self.account
-
-        target = "m/%dh/%dh/%dh" % (purpose, coin, account)
-        if _parse_account_path(target) == parsed:
+            # displayed key + its exact key-origin path, wrapped in the chosen
+            # script - byte-for-byte what the older firmware produced.
+            key_prefix, key_xpub = prefix, xpub
+        elif _same_path(derivation, std_target):
             key_prefix, key_xpub = prefix, xpub
         else:
             self.show_loader(title="Deriving %s key..." % type_name)
-            hdkey = self.keystore.get_xpub(target)
+            hdkey = self.keystore.get_xpub(std_target)
             key_xpub = hdkey.to_base58(net["xpub"])
             fingerprint = hexlify(self.keystore.fingerprint).decode()
-            key_prefix = "[%s/%s]" % (fingerprint, target[2:])
+            key_prefix = "[%s/%s]" % (fingerprint, std_target[2:])
 
         desc = template % (key_prefix, key_xpub)
 
         # get wallet names from the wallets app
         s, _ = await self.communicate(BytesIO(b"listwallets"), app="wallets")
         names = json.load(s)
-        sel = "legacy_taproot" if legacy else menuitem
-        name_bases = {
-            "wpkh": "Native", "nested": "Nested", "legacy": "Legacy",
-            "taproot": "Taproot", "legacy_taproot": "Legacy Taproot",
-        }
-        nn = "%s %d" % (name_bases.get(sel, "Wallet"), account)
+        base_account = account if account is not None else std_account
+        nn = "%s %d%s" % (name_prefix, base_account,
+                          " recovery" if use_displayed else "")
         name_suggestion = nn
         i = 1
         # make sure we don't suggest an existing name

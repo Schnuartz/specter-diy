@@ -26,36 +26,54 @@ The descriptor `wpkh(xpub)` will be converted into `wpkh(xpub/{0,1}/*)`.
 ## Single-sig wallet types and their derivations
 
 When you create a single-sig wallet from **Master public keys -> ... -> Create
-wallet**, the script type you pick fixes the account derivation, so the
-key-origin in the descriptor always matches the key that actually signs:
+wallet**, the script type you pick fixes the derivation, so the key-origin in
+the descriptor always matches the key that actually signs:
 
-| Wallet type            | Descriptor   | Account derivation        |
-|------------------------|--------------|---------------------------|
-| Legacy                 | `pkh()`      | `m/44h/coin_type_h/account_h` |
-| Nested Segwit          | `sh(wpkh())` | `m/49h/coin_type_h/account_h` |
-| Native Segwit          | `wpkh()`     | `m/84h/coin_type_h/account_h` |
-| Taproot                | `tr()`       | `m/86h/coin_type_h/account_h` (BIP86) |
-| Legacy Specter Taproot | `tr()`       | `m/84h/coin_type_h/account_h` (recovery only) |
+| Wallet type   | Descriptor   | Standard derivation                   |
+|---------------|--------------|---------------------------------------|
+| Legacy        | `pkh()`      | `m/44h/coin_type_h/account_h` (BIP44) |
+| Nested Segwit | `sh(wpkh())` | `m/49h/coin_type_h/account_h` (BIP49) |
+| Native Segwit | `wpkh()`     | `m/84h/coin_type_h/account_h` (BIP84) |
+| Taproot       | `tr()`       | `m/86h/coin_type_h/account_h` (BIP86) |
 
-`coin_type` is `0` on mainnet and `1` on testnet/regtest — it is always taken
-from the active network, never from the key you were looking at. The account
-index is carried over from that key (or the account selected in the menu).
-The one exception is **Legacy Specter Taproot**, which reproduces the displayed
-`m/84h` path verbatim (a non-standard `coin_type` included) so an old wallet is
-recreated exactly.
+`coin_type` is always taken from the **active network**, never from the key you
+were looking at: `0` on Bitcoin mainnet, `1` on testnet/regtest/signet, and the
+network's registered value on Liquid (`1776` on Liquid mainnet, `1` on Liquid
+testnet/regtest). The account index is carried over from the displayed key
+(element `[2]`, so `m/48h/0h/3h/2h` gives account `3`) or the account selected
+in the menu. If the key on screen is not already on the standard path, the
+account key is genuinely re-derived from it — the descriptor never carries one
+path's key-origin over another path's key.
 
-### Legacy Specter Taproot
+### Recovering a non-standard wallet
 
-Older Specter DIY versions could create a Taproot (`tr()`) wallet on top of an
-`m/84h` (BIP84) account key instead of the BIP86 `m/86h` key. Those wallets are
-non-standard but their addresses are valid and may hold funds.
+Older Specter DIY versions built the descriptor by wrapping *whatever key was on
+screen* in the chosen script, so valid but non-standard wallets exist in the
+wild — for example `tr()` over an `m/84h` key, `pkh()` over an `m/84h` key,
+`wpkh()` over an `m/48h/.../2h` key, or any script over a custom path.
 
-To recover such a wallet, repeat the flow you used originally:
-**Master public keys -> Single key -> Create wallet -> Taproot** (the "Single
-key" entry is an `m/84h` key). The device then asks whether you want a standard
-BIP86 wallet (it re-derives the `m/86h` key) or the legacy `m/84h` recovery
-wallet, and the legacy choice is confirmed with a warning. This dialog is the
-only way to get an `m/84h + tr()` wallet; it is never offered for new wallets.
+Fresh wallets never do this. But if you pick a wallet type whose standard path
+differs from the key you are viewing, the device offers a choice:
+
+```
+<type> derivation
+[ Standard <type>            m/<purpose>h/<coin>h/<account>h ]
+[ Recover using displayed key   <the path on screen>          ]
+```
+
+`Recover using displayed key` wraps the exact displayed key (its full
+key-origin path preserved — purpose, coin type, account, and deeper levels such
+as BIP48) in the selected script, reproducing the historical wallet
+byte-for-byte. It is confirmed with a warning: this derivation is non-standard,
+other wallet software may not discover it from the seed alone, and it should
+only be used to recover an existing wallet. Cancelling or declining creates
+nothing.
+
+The BIP86 fix from issue #393 is a special case of this: from the `m/84h`
+"Single key", **Create wallet -> Taproot** offers *Standard Taproot* (re-derives
+`m/86h`) and *Recover using displayed key* (`tr(m/84h...)`, the wallet older
+firmware would have made). Keep your wallet descriptors/backups so recovery is
+never guesswork.
 
 ## Miniscript
 
