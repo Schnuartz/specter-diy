@@ -290,13 +290,19 @@ class XpubApp(BaseApp):
             raw = stream.read(MAX_XPUB_PATH_LEN + 1)
             if len(raw) > MAX_XPUB_PATH_LEN:
                 raise AppError("Path request too large")
-            path = raw
+            path_str = None
             try:
-                path = raw.strip()
+                path_str = raw.strip().decode()
                 # convert to list of indexes
-                path = bip32.parse_path(path.decode())
-            except:
-                raise AppError('Invalid path: "%s"' % path.decode())
+                path = bip32.parse_path(path_str)
+            except (ValueError, IndexError):
+                # narrow, not bare: decode() raises UnicodeError (a
+                # ValueError subclass) on non-UTF-8 input, and
+                # bip32.parse_path raises ValueError / IndexError on a
+                # malformed or empty path component. Anything else is a
+                # real bug and should propagate, not be masked as
+                # "Invalid path".
+                raise AppError('Invalid path: "%s"' % (path_str or raw))
             # normalize to the canonical string representation
             derivation = bip32.path_to_str(path)
             # derive the xpub so we can show the user exactly what would be shared

@@ -282,6 +282,15 @@ class XpubAuthHostCommandTest(TestCase):
             self._run(self.app.process_host_command(stream, show_screen))
         self.assertEqual(seen, [])
 
+    def test_malformed_xpub_path_raises_apperror_not_bare_exception(self):
+        from app import AppError
+        show_screen, seen = self._show_screen(True)
+        for bad in (b"m/84h/zz", b"m/84h//0h", b"\xff\xfe not utf-8"):
+            stream = BytesIO(b"xpub " + bad)
+            with self.assertRaises(AppError):
+                self._run(self.app.process_host_command(stream, show_screen))
+        self.assertEqual(seen, [])
+
     # ---- invalidation ----
 
     def test_lock_clears_authorization(self):
