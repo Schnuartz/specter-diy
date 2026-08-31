@@ -351,7 +351,8 @@ class XpubApp(BaseApp):
         wallets are always (re-)derived from the BIP purpose that matches their
         script type (see ``WALLET_TYPES``), so the descriptor key-origin and the
         actual signing key can never disagree. ``m/84' + tr()`` is only reachable
-        through the explicit "Legacy Specter Taproot" recovery option.
+        by picking Taproot from an m/84' key and choosing recovery in the
+        follow-up dialog.
         """
         net = NETWORKS[self.network]
         parsed = _parse_account_path(derivation)
@@ -365,22 +366,20 @@ class XpubApp(BaseApp):
         for key in WALLET_TYPES:
             if key != recommended:
                 buttons.append((key, WALLET_TYPES[key][2]))
-        buttons.append((None, "Recovery only"))
-        buttons.append(("legacy_taproot", LEGACY_SPECTER_TAPROOT[2]))
 
         menuitem = await show_screen(Menu(
             buttons, last=(255, None),
             title="Select wallet type to create",
-            note="Standard Taproot uses BIP86 (m/86h)",
         ))
-        if menuitem == 255 or menuitem is None:
+        if menuitem == 255 or menuitem is None or menuitem not in WALLET_TYPES:
             return
 
-        legacy = (menuitem == "legacy_taproot")
+        legacy = False
 
         # Repeating the historical "Single key -> Create Wallet -> Taproot" flow
         # ("Single key" is an m/84' key) must not silently create a legacy
-        # wallet - offer an explicit migration/recovery choice instead.
+        # wallet - offer an explicit standard/recovery choice instead. This is
+        # also the only way to reach the legacy m/84' + tr() derivation.
         if menuitem == "taproot" and parsed is not None and parsed[0] == 84:
             choice = await show_screen(Menu(
                 [

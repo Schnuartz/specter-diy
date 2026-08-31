@@ -43,14 +43,14 @@ key-origin in the descriptor always matches the key that actually signs:
 
 Older Specter DIY versions could create a Taproot (`tr()`) wallet on top of an
 `m/84h` (BIP84) account key instead of the BIP86 `m/86h` key. Those wallets are
-non-standard but their addresses are valid and may hold funds. The
-**Legacy Specter Taproot** option under "Recovery only" recreates exactly that
-`m/84h + tr()` wallet so the funds stay recoverable. Do not use it for new
-wallets - new Taproot wallets must use BIP86.
+non-standard but their addresses are valid and may hold funds.
 
-If you repeat the old "Single key -> Create wallet -> Taproot" flow (Single key
-is an `m/84h` key), the device asks whether you want a standard BIP86 wallet
-(it re-derives the `m/86h` key) or the legacy `m/84h` recovery wallet.
+To recover such a wallet, repeat the flow you used originally:
+**Master public keys -> Single key -> Create wallet -> Taproot** (the "Single
+key" entry is an `m/84h` key). The device then asks whether you want a standard
+BIP86 wallet (it re-derives the `m/86h` key) or the legacy `m/84h` recovery
+wallet, and the legacy choice is confirmed with a warning. This dialog is the
+only way to get an `m/84h + tr()` wallet; it is never offered for new wallets.
 
 ## Miniscript
 

@@ -163,17 +163,15 @@ class TaprootWalletCreationTest(TestCase):
         indep = _address(expected, "main", 0, 0)
         self.assertEqual(_address(desc, "main", 0, 0), indep)
 
-    def test_legacy_taproot_menu_entry_without_migration(self):
+    def test_no_dedicated_legacy_menu_entry(self):
+        # the legacy m/84' + tr() derivation is only reachable through the
+        # migration dialog - there is no standalone wallet-type entry for it
         sink, _ = self._create(
             "m/86h/0h/0h",
             {"Menu": ["legacy_taproot"], "Prompt": [True],
              "InputScreen": ["l"]},
         )
-        _, desc = sink.added[0]
-        self.assertIn("/84h/0h/0h]", desc)
-        self.assertEqual(
-            desc, _expected_descriptor(self.app, "m/84h/0h/0h", "tr(%s%s/{0,1}/*)")
-        )
+        self.assertEqual(sink.added, [])
 
     # -- D: standard and legacy differ ------------------------------
     def test_standard_and_legacy_addresses_differ(self):
@@ -281,8 +279,8 @@ class TaprootWalletCreationTest(TestCase):
 
     def test_legacy_prompt_decline_creates_no_wallet(self):
         sink, _ = self._create(
-            "m/86h/0h/0h",
-            {"Menu": ["legacy_taproot"], "Prompt": [False]},
+            "m/84h/0h/0h",
+            {"Menu": ["taproot", "legacy"], "Prompt": [False]},
         )
         self.assertEqual(sink.added, [])
 
