@@ -185,6 +185,29 @@ class ChangeSecurityTest(TestCase):
             self.manager.get_output_status(wallet, {wallet: {}}, out)[1]
         )
 
+    def test_three_branch_forged_position_one_metadata_does_not_warn(self):
+        # Sole spending wallet has a <0;1;2> descriptor, the host supplies a
+        # descriptor-valid position-1 derivation, but the real output script
+        # is unrelated. The output stays visible and non-change (as always
+        # for a >2-branch descriptor), and because position 1 has no defined
+        # "change" meaning here the device must NOT raise the invalid-change-
+        # metadata warning: the host never claimed change, only a derivation.
+        xpub = self.keystore.get_xpub(self.origin)
+        desc = "wpkh([%s%s]%s/<0;1;2>/*)" % (
+            self.fingerprint.hex(),
+            self.origin[1:],
+            xpub.to_base58(self.manager.Networks["regtest"]["xpub"]),
+        )
+        wallet = Wallet.from_descriptor(desc, None)
+        wallet.name = "Three branch"
+        out = self.output(1, 9, script.p2wpkh(fake_pubkey(99)))
+        derivation, change, warning = self.manager.get_output_status(
+            None, {wallet: {}}, out
+        )
+        self.assertIsNone(derivation)
+        self.assertFalse(change)
+        self.assertIsNone(warning)
+
     def test_one_branch_descriptor_never_auto_change(self):
         xpub = self.keystore.get_xpub(self.origin)
         desc = "wpkh([%s%s]%s/<0>/*)" % (

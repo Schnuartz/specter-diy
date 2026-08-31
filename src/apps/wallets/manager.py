@@ -440,7 +440,15 @@ class WalletManager(BaseApp):
         warning = None
         if wallet is None:
             spending_wallets = [w for w in wallets if w is not None]
-            if len(spending_wallets) == 1:
+            # Only a two-branch descriptor gives branch-list position 1 the
+            # "change" meaning. For <0;1;2> and other unusual layouts we do
+            # not know what position 1 is, so a host derivation for it is not
+            # a change claim and must not raise INVALID_CHANGE_METADATA - same
+            # rule the is_change classification below uses.
+            if (
+                len(spending_wallets) == 1
+                and spending_wallets[0].descriptor.num_branches == 2
+            ):
                 candidate = spending_wallets[0]
                 branch1_claims = [
                     claim for claim in self.get_wallet_derivation_claims(candidate, out)
