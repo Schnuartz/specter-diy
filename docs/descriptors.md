@@ -37,7 +37,12 @@ key-origin in the descriptor always matches the key that actually signs:
 | Taproot                | `tr()`       | `m/86h/coin_type_h/account_h` (BIP86) |
 | Legacy Specter Taproot | `tr()`       | `m/84h/coin_type_h/account_h` (recovery only) |
 
-`coin_type` is `0` on mainnet and `1` on testnet/regtest.
+`coin_type` is `0` on mainnet and `1` on testnet/regtest — it is always taken
+from the active network, never from the key you were looking at. The account
+index is carried over from that key (or the account selected in the menu).
+The one exception is **Legacy Specter Taproot**, which reproduces the displayed
+`m/84h` path verbatim (a non-standard `coin_type` included) so an old wallet is
+recreated exactly.
 
 ### Legacy Specter Taproot
 

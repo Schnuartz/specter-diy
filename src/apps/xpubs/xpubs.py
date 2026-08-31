@@ -408,16 +408,18 @@ class XpubApp(BaseApp):
             ))
             if not confirm:
                 return
-        else:
-            purpose, template, type_name = WALLET_TYPES[menuitem]
-
-        # coin type / account: reuse the ones from the displayed path when it is
-        # a standard account path, otherwise fall back to the selected account
-        # and the network-default coin type.
-        if parsed is not None:
+            # Recovery must reproduce the displayed m/84' path *exactly*, incl.
+            # a non-standard coin_type from a custom derivation - that is what
+            # the older firmware signed with. `legacy` is only ever set when
+            # `parsed` is a hardened m/84'/coin'/account' path.
             coin, account = parsed[1], parsed[2]
         else:
-            coin, account = net["bip32"], self.account
+            purpose, template, type_name = WALLET_TYPES[menuitem]
+            # Standard wallets follow the BIP44 structure: coin_type is fixed by
+            # the active network (0 mainnet / 1 testnet), never taken from the
+            # displayed key. Only the account index is carried over.
+            coin = net["bip32"]
+            account = parsed[2] if parsed is not None else self.account
 
         target = "m/%dh/%dh/%dh" % (purpose, coin, account)
         if _parse_account_path(target) == parsed:

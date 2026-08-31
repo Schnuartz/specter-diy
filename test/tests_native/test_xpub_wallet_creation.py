@@ -249,6 +249,41 @@ class TaprootWalletCreationTest(TestCase):
         _, desc = sink.added[0]
         self.assertIn("/84h/1h/0h]", desc)
 
+    def test_standard_wallet_normalizes_coin_type_to_network(self):
+        # A displayed custom path with a foreign coin_type must not leak into a
+        # standard wallet: coin_type is fixed by the active network, the account
+        # index is carried over.
+        sink, _ = self._create(
+            "m/84h/1h/5h",
+            {"Menu": ["taproot", "standard"], "InputScreen": ["x"]},
+            account=5,
+        )
+        _, desc = sink.added[0]
+        self.assertIn("/86h/0h/5h]", desc)
+        self.assertNotIn("/1h/", desc.split("]", 1)[0])
+
+        sink, _ = self._create(
+            "m/84h/0h/5h",
+            {"Menu": ["taproot", "standard"], "InputScreen": ["x"]},
+            network="test", account=5,
+        )
+        _, desc = sink.added[0]
+        self.assertIn("/86h/1h/5h]", desc)
+
+    def test_legacy_recovery_preserves_displayed_coin_type(self):
+        # The explicit legacy path is the one place the exact historical
+        # derivation (incl. a non-standard coin_type) is reproduced.
+        sink, _ = self._create(
+            "m/84h/1h/0h",
+            {"Menu": ["taproot", "legacy"], "Prompt": [True],
+             "InputScreen": ["x"]},
+        )
+        _, desc = sink.added[0]
+        self.assertIn("/84h/1h/0h]", desc)
+        self.assertEqual(
+            desc, _expected_descriptor(self.app, "m/84h/1h/0h", "tr(%s%s/{0,1}/*)")
+        )
+
     # -- H: UI / menu behaviour --------------------------------
     def test_taproot_from_m84_shows_migration_choice(self):
         sink, screens = self._create(
