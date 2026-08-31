@@ -40,8 +40,10 @@ SIGHASH_NAMES = {
     SIGHASH.NONE: "NONE",
     SIGHASH.SINGLE: "SINGLE",
 }
-# add sighash | anyonecanpay
-for sh in list(SIGHASH_NAMES):
+# add sighash | anyonecanpay - only for ALL/NONE/SINGLE.
+# DEFAULT | ANYONECANPAY (0x80) is not a valid BIP341 sighash and must
+# not become an accepted value here.
+for sh in [SIGHASH.ALL, SIGHASH.NONE, SIGHASH.SINGLE]:
     SIGHASH_NAMES[sh | SIGHASH.ANYONECANPAY] = SIGHASH_NAMES[sh] + " | ANYONECANPAY"
 
 class WalletManager(BaseApp):
@@ -391,6 +393,20 @@ class WalletManager(BaseApp):
             raise WalletError("Unknown sighash type: %d!" % sighash)
         return { "name": SIGHASH_NAMES[sighash], "warning": "" }
 
+    def default_sighash(self, inp):
+        """
+        Sighash to use for an input that carries no explicit
+        PSBT_IN_SIGHASH_TYPE and no user-forced sighash.
+
+        Taproot inputs default to SIGHASH_DEFAULT (0x00), which produces a
+        64-byte Schnorr signature with no trailing sighash byte (BIP341).
+        Everything else keeps the manager-wide default (SIGHASH_ALL for
+        Bitcoin, ALL | RANGEPROOF for Liquid).
+        """
+        if getattr(inp, "is_taproot", False):
+            return SIGHASH.DEFAULT
+        return self.DEFAULT_SIGHASH
+
     async def confirm_sighashes(self, meta, show_screen):
         """
         Checks if custom sighashes are used, warns the user and asks for confirmation.
@@ -660,7 +676,7 @@ class WalletManager(BaseApp):
             inp.verify(ignore_missing=True)
 
             # check sighash in the input
-            if inp.sighash_type is not None and inp.sighash_type not in (self.DEFAULT_SIGHASH, SIGHASH.DEFAULT):
+            if inp.sighash_type is not None and inp.sighash_type != self.default_sighash(inp):
                 metainp["sighash"] = self.get_sighash_info(inp.sighash_type)["name"]
 
             self.fill_zero_fingerprint(inp)
@@ -787,7 +803,7 @@ class WalletManager(BaseApp):
                 elif inp.sighash_type is not None:
                     inp_sighash = inp.sighash_type
                 else:
-                    inp_sighash = self.DEFAULT_SIGHASH
+                    inp_sighash = self.default_sighash(inp)
                 for w in wallets:
                     if w is None:
                         continue
