@@ -346,11 +346,11 @@ class XpubApp(BaseApp):
                 # the UX win is real.
                 await show_screen(
                     Alert(
-                        "Host tried to get access\nto the following key",
+                        "Host tried to get access\nto the following Xpub",
                         "Derivation:\n%s\n\n"
                         "This device is currently on %s.\n"
-                        "This key cannot be shared from here.\n\n"
-                        "To share it, switch the device to\n%s first." % (
+                        "This Xpub cannot be shared from here.\n\n"
+                        "To share it, switch the device\nto %s in the settings first." % (
                             derivation, NETWORKS[device_net]["name"], switch_to,
                         ),
                         button_text="OK",

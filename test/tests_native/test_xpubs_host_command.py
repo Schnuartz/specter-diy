@@ -176,7 +176,7 @@ class XpubsHostCommandTest(TestCase):
 
     def test_xpub_wrong_network_screen_names_the_target_network(self):
         # app is on "test"; a mainnet-coin-type request should be told to
-        # switch to Mainnet, by name
+        # switch to Mainnet, by name, and pointed at the settings
         show_screen, seen = self._show_screen(False)
         stream = BytesIO(b"xpub m/84h/0h/0h")
         with self.assertRaises(Exception):
@@ -184,6 +184,18 @@ class XpubsHostCommandTest(TestCase):
         shown = seen[0]
         message = shown.args[1] if len(shown.args) > 1 else shown.kwargs.get("message")
         self.assertIn("Mainnet", message)
+        self.assertIn("in the settings", message)
+
+    def test_xpub_wrong_network_screen_talks_about_an_xpub_not_a_key(self):
+        show_screen, seen = self._show_screen(False)
+        stream = BytesIO(b"xpub m/84h/0h/0h")
+        with self.assertRaises(Exception):
+            self._run(self.app.process_host_command(stream, show_screen))
+        shown = seen[0]
+        title = shown.args[0] if shown.args else shown.kwargs.get("title", "")
+        message = shown.args[1] if len(shown.args) > 1 else shown.kwargs.get("message")
+        self.assertIn("Xpub", title)
+        self.assertIn("Xpub", message)
 
     def test_xpub_wrong_network_screen_is_a_plain_dismiss_no_action_button(self):
         # the screen only informs and dismisses - it deliberately does not
