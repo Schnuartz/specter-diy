@@ -303,19 +303,21 @@ class XpubApp(BaseApp):
                 # real bug and should propagate, not be masked as
                 # "Invalid path".
                 raise AppError('Invalid path: "%s"' % (path_str or raw))
+            # a real derivation path is a handful of levels deep; anything
+            # past the limit the scoped parser already enforces
+            # (scope.MAX_PATH_DEPTH) is malformed or a derivation-DoS
+            # attempt - reject it before doing any BIP32 work
+            if len(path) > xpubauth_scope.MAX_PATH_DEPTH:
+                raise AppError(
+                    "Path too deep (max %d)" % xpubauth_scope.MAX_PATH_DEPTH
+                )
             # normalize to the canonical string representation
             derivation = bip32.path_to_str(path)
-            # derive the xpub so we can show the user exactly what would be shared
-            xpub = self.keystore.get_xpub(derivation)
-            xpub_str = xpub.to_base58(NETWORKS[self.network]["xpub"])
-            # a previously approved scope covers this exact normalized
-            # path and hasn't already been used - no extra prompt needed
-            if self._authorization is not None and self._authorization.try_consume(
-                self.network, path
-            ):
-                if self._authorization.remaining <= 0:
-                    self._authorization = None
-                return BytesIO(xpub_str.encode()), {}
+            # Validate the request fully - network, then authorization -
+            # *before* deriving anything. The xpub is never leaked on a
+            # mismatch, but there's no reason to spend the derivation on a
+            # request that's going to be refused either way.
+            #
             # A standard-purpose path (44'/48'/49'/84'/86'/87') whose coin
             # type doesn't match the network currently active on this
             # device can never be legitimately shared from here - the same
@@ -357,6 +359,20 @@ class XpubApp(BaseApp):
                     )
                 )
                 raise AppError("network mismatch: device is on %s" % device_net)
+            # a previously approved scope covers this exact normalized
+            # path and hasn't already been used - no extra prompt needed
+            authorized = self._authorization is not None and (
+                self._authorization.try_consume(self.network, path)
+            )
+            # derive the xpub - to hand straight back for an authorized
+            # path, or to show the user exactly what would be shared
+            xpub_str = self.keystore.get_xpub(derivation).to_base58(
+                NETWORKS[self.network]["xpub"]
+            )
+            if authorized:
+                if self._authorization.remaining <= 0:
+                    self._authorization = None
+                return BytesIO(xpub_str.encode()), {}
             fingerprint = hexlify(self.keystore.fingerprint).decode()
             confirm = await show_screen(
                 Prompt(

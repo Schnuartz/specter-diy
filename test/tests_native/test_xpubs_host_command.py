@@ -137,6 +137,34 @@ class XpubsHostCommandTest(TestCase):
             self._run(self.app.process_host_command(stream, show_screen))
         self.assertEqual(seen, [])
 
+    def test_excessively_deep_path_is_rejected_before_any_bip32_work(self):
+        # same depth cap the scoped parser enforces - a path past it is
+        # malformed / a derivation-DoS attempt and must fail before the
+        # xpub is derived or any screen is shown
+        from apps.xpubs import scope as xpubauth_scope
+
+        deep = "m/" + "/".join(["1h"] * (xpubauth_scope.MAX_PATH_DEPTH + 1))
+        show_screen, seen = self._show_screen(True)
+        with patch.object(
+            type(self.keystore), "get_xpub", side_effect=AssertionError("derived!")
+        ):
+            with self.assertRaises(Exception) as ctx:
+                self._run(
+                    self.app.process_host_command(
+                        BytesIO(("xpub " + deep).encode()), show_screen
+                    )
+                )
+        self.assertNotIsInstance(ctx.exception, AssertionError)
+        self.assertEqual(seen, [])
+
+    def test_path_at_the_depth_limit_is_still_accepted(self):
+        depth = 4  # m/48h/1h/0h/2h - a real multisig path, well within
+        stream = BytesIO(b"xpub m/48h/1h/0h/2h")
+        show_screen, seen = self._show_screen(True)
+        res = self._run(self.app.process_host_command(stream, show_screen))
+        self.assertIsNotNone(res)
+        self.assertEqual(len(seen), 1)
+
     # self.app is on "test" (coin type 1'): a standard-purpose path with
     # mainnet's coin type (0') must be refused outright - never answered
     # with the normal "Share Xpub?" Confirm/Cancel - and the host must get
@@ -163,6 +191,19 @@ class XpubsHostCommandTest(TestCase):
             self.fail("expected an exception")
         except Exception as e:
             self.assertIn("test", str(e))
+
+    def test_xpub_wrong_network_is_caught_before_the_xpub_is_derived(self):
+        # the network check must gate the derivation, not the other way
+        # round - if get_xpub() were reached it would blow up here
+        show_screen, seen = self._show_screen(False)
+        stream = BytesIO(b"xpub m/84h/0h/0h")
+        with patch.object(
+            type(self.keystore), "get_xpub", side_effect=AssertionError("derived!")
+        ):
+            with self.assertRaises(Exception) as ctx:
+                self._run(self.app.process_host_command(stream, show_screen))
+        self.assertNotIsInstance(ctx.exception, AssertionError)
+        self.assertIn("network mismatch", str(ctx.exception))
 
     def test_xpub_wrong_network_screen_shows_path_and_active_network(self):
         show_screen, seen = self._show_screen(False)
