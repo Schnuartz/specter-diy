@@ -220,6 +220,32 @@ def standard_path_coin_type_mismatch(path, expected_coin_type):
     return path[1] != (expected_coin_type + HARDENED)
 
 
+# Short, screen-friendly hint naming the network(s) a given BIP44 coin
+# type belongs to, so a rejected request can tell the user which network
+# to switch the device to. Coin type 1' is deliberately shared by several
+# test networks, so it can only ever name the candidates.
+_COIN_TYPE_NETWORK_HINTS = {
+    0: "Mainnet",
+    1: "Testnet, Signet or Regtest",
+    1776: "Liquid",
+}
+
+
+def network_hint_for_path(path):
+    """
+    A short human string naming the network(s) `path` (already-parsed) is
+    for, by its BIP44 coin type - e.g. "Mainnet", "Liquid", or
+    "Testnet, Signet or Regtest". Returns None when there's no useful hint
+    (path too short, non-hardened or unrecognized coin type).
+    """
+    if len(path) < 2:
+        return None
+    coin = path[1]
+    if coin < HARDENED:
+        return None
+    return _COIN_TYPE_NETWORK_HINTS.get(coin - HARDENED)
+
+
 def _validate_standard_coin_type(entry, network_name, expected_coin_type):
     """For recognizable standard purposes (44'/48'/49'/84'/86'/87'), the
     coin-type component must be a fixed value matching the currently

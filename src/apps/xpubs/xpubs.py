@@ -328,15 +328,16 @@ class XpubApp(BaseApp):
             if xpubauth_scope.standard_path_coin_type_mismatch(
                 path, NETWORKS[self.network]["bip32"]
             ):
+                hint = xpubauth_scope.network_hint_for_path(path)
+                switch_to = hint if hint else "the matching network"
                 await show_screen(
                     Alert(
                         "Host tried to get access\nto the following key",
                         "Derivation:\n%s\n\n"
                         "This device is currently on %s.\n"
                         "This key cannot be shared from here.\n\n"
-                        "To share it, switch the device to the "
-                        "matching network first." % (
-                            derivation, NETWORKS[self.network]["name"],
+                        "To share it, switch the device to\n%s first." % (
+                            derivation, NETWORKS[self.network]["name"], switch_to,
                         ),
                         button_text="OK",
                     )

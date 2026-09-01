@@ -257,6 +257,39 @@ class StandardPathCoinTypeMismatchTest(TestCase):
         self.assertFalse(xpubauth_scope.standard_path_coin_type_mismatch(path, 1776))
 
 
+class NetworkHintForPathTest(TestCase):
+    def test_mainnet_coin_type_names_mainnet(self):
+        self.assertEqual(
+            xpubauth_scope.network_hint_for_path(bip32.parse_path("m/84h/0h/0h")),
+            "Mainnet",
+        )
+
+    def test_liquid_coin_type_names_liquid(self):
+        self.assertEqual(
+            xpubauth_scope.network_hint_for_path(bip32.parse_path("m/84h/1776h/0h")),
+            "Liquid",
+        )
+
+    def test_testnet_coin_type_names_the_candidates(self):
+        hint = xpubauth_scope.network_hint_for_path(bip32.parse_path("m/84h/1h/0h"))
+        self.assertIn("Testnet", hint)
+        self.assertIn("Signet", hint)
+        self.assertIn("Regtest", hint)
+
+    def test_unknown_coin_type_has_no_hint(self):
+        self.assertIsNone(
+            xpubauth_scope.network_hint_for_path(bip32.parse_path("m/84h/999h/0h"))
+        )
+
+    def test_short_or_soft_path_has_no_hint(self):
+        self.assertIsNone(
+            xpubauth_scope.network_hint_for_path(bip32.parse_path("m/84h"))
+        )
+        self.assertIsNone(
+            xpubauth_scope.network_hint_for_path(bip32.parse_path("m/84h/1/0h"))
+        )
+
+
 class ScopeMatchingTest(TestCase):
     def _entry(self, scope_str, network=MAIN):
         entries, _ = xpubauth_scope.parse_scope(scope_str, *network)

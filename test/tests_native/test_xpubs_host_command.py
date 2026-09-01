@@ -168,6 +168,17 @@ class XpubsHostCommandTest(TestCase):
         self.assertIn("m/48h/0h/7h/2h", message)
         self.assertIn(NETWORKS["test"]["name"], message)
 
+    def test_xpub_wrong_network_alert_names_the_target_network(self):
+        # app is on "test"; a mainnet-coin-type request should be told to
+        # switch to Mainnet, by name
+        show_screen, seen = self._show_screen(True)
+        stream = BytesIO(b"xpub m/84h/0h/0h")
+        with self.assertRaises(Exception):
+            self._run(self.app.process_host_command(stream, show_screen))
+        shown = seen[0]
+        message = shown.args[1] if len(shown.args) > 1 else shown.kwargs.get("message")
+        self.assertIn("Mainnet", message)
+
     def test_xpub_wrong_network_never_reaches_derivation_confirm(self):
         # a Cancel/Confirm answer of True must not matter - the request is
         # refused before the normal Prompt is even shown
