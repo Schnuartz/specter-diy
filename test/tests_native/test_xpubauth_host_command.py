@@ -197,13 +197,14 @@ class XpubAuthHostCommandTest(TestCase):
         # a testnet-style path is out of the (mainnet) authorized scope,
         # but it's also a network mismatch on this "main" device - that
         # takes precedence over the usual "just ask" fallback: refused
-        # outright, never shown as a normal Confirm/Cancel prompt
+        # with the dedicated screen, not the normal "Share Xpub?" prompt
         self._begin("m/84h/0h/{0-9}h", self._show_screen(True)[0])
-        show_screen, seen = self._show_screen(True)
+        show_screen, seen = self._show_screen(False)  # tap "OK"
         with self.assertRaises(Exception):
             self._xpub("m/84h/1h/0h", show_screen)
         self.assertEqual(len(seen), 1)
-        self.assertNotIsInstance(seen[0], Prompt)
+        title = seen[0].args[0] if seen[0].args else seen[0].kwargs.get("title", "")
+        self.assertIn("Host tried to get access", title)
 
     def test_prefix_child_is_not_silently_authorized(self):
         self._begin("m/84h/0h/1h", self._show_screen(True)[0])

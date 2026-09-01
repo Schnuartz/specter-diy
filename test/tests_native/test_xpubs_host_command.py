@@ -14,7 +14,7 @@ import gc
 from tests.util import get_keystore, get_xpubs_app, clear_testdir
 from embit import bip32
 from embit.liquid.networks import NETWORKS
-from gui.screens import Alert, Prompt
+from gui.screens import Prompt
 
 
 class XpubsHostCommandTest(TestCase):
@@ -138,19 +138,24 @@ class XpubsHostCommandTest(TestCase):
         self.assertEqual(seen, [])
 
     # self.app is on "test" (coin type 1'): a standard-purpose path with
-    # mainnet's coin type (0') must be refused outright - never shown as
-    # a normal "Share Xpub?" Confirm/Cancel prompt - and the host must get
+    # mainnet's coin type (0') must be refused outright - never answered
+    # with the normal "Share Xpub?" Confirm/Cancel - and the host must get
     # a machine-parseable reason back, not a silently-derived key.
-    def test_xpub_wrong_network_shows_alert_not_prompt(self):
-        show_screen, seen = self._show_screen(True)
+    @staticmethod
+    def _is_mismatch_screen(scr):
+        title = scr.args[0] if scr.args else scr.kwargs.get("title", "")
+        return "Host tried to get access" in title
+
+    def test_xpub_wrong_network_shows_the_refusal_screen_not_the_share_prompt(self):
+        show_screen, seen = self._show_screen(False)  # tap "OK"
         stream = BytesIO(b"xpub m/84h/0h/0h")
         with self.assertRaises(Exception):
             self._run(self.app.process_host_command(stream, show_screen))
         self.assertEqual(len(seen), 1)
-        self.assertIsInstance(seen[0], Alert)
+        self.assertTrue(self._is_mismatch_screen(seen[0]))
 
     def test_xpub_wrong_network_error_names_the_active_network(self):
-        show_screen, seen = self._show_screen(True)
+        show_screen, seen = self._show_screen(False)
         stream = BytesIO(b"xpub m/84h/0h/0h")
         try:
             self._run(self.app.process_host_command(stream, show_screen))
@@ -158,8 +163,8 @@ class XpubsHostCommandTest(TestCase):
         except Exception as e:
             self.assertIn("test", str(e))
 
-    def test_xpub_wrong_network_alert_shows_path_and_active_network(self):
-        show_screen, seen = self._show_screen(True)
+    def test_xpub_wrong_network_screen_shows_path_and_active_network(self):
+        show_screen, seen = self._show_screen(False)
         stream = BytesIO(b"xpub m/48h/0h/7h/2h")
         with self.assertRaises(Exception):
             self._run(self.app.process_host_command(stream, show_screen))
@@ -168,10 +173,10 @@ class XpubsHostCommandTest(TestCase):
         self.assertIn("m/48h/0h/7h/2h", message)
         self.assertIn(NETWORKS["test"]["name"], message)
 
-    def test_xpub_wrong_network_alert_names_the_target_network(self):
+    def test_xpub_wrong_network_screen_names_the_target_network(self):
         # app is on "test"; a mainnet-coin-type request should be told to
         # switch to Mainnet, by name
-        show_screen, seen = self._show_screen(True)
+        show_screen, seen = self._show_screen(False)
         stream = BytesIO(b"xpub m/84h/0h/0h")
         with self.assertRaises(Exception):
             self._run(self.app.process_host_command(stream, show_screen))
@@ -179,10 +184,30 @@ class XpubsHostCommandTest(TestCase):
         message = shown.args[1] if len(shown.args) > 1 else shown.kwargs.get("message")
         self.assertIn("Mainnet", message)
 
+    def test_xpub_wrong_network_offers_a_network_settings_button(self):
+        show_screen, seen = self._show_screen(False)
+        stream = BytesIO(b"xpub m/84h/0h/0h")
+        with self.assertRaises(Exception):
+            self._run(self.app.process_host_command(stream, show_screen))
+        self.assertEqual(seen[0].kwargs.get("confirm_text"), "Network settings")
+
+    def test_xpub_wrong_network_button_opens_the_network_picker(self):
+        sent = []
+
+        async def rec_communicate(stream, app=None, **kw):
+            sent.append((stream.read(), app))
+            return None
+
+        self.app.communicate = rec_communicate
+        show_screen, seen = self._show_screen(True)  # tap "Network settings"
+        stream = BytesIO(b"xpub m/84h/0h/0h")
+        with self.assertRaises(Exception):
+            self._run(self.app.process_host_command(stream, show_screen))
+        self.assertEqual(sent, [(b"select_network", "")])
+
     def test_xpub_wrong_network_never_reaches_derivation_confirm(self):
-        # a Cancel/Confirm answer of True must not matter - the request is
-        # refused before the normal Prompt is even shown
-        show_screen, seen = self._show_screen(True)
+        # dismissing with "OK" must not fall through to the normal prompt
+        show_screen, seen = self._show_screen(False)
         stream = BytesIO(b"xpub m/49h/0h/0h")
         with self.assertRaises(Exception):
             self._run(self.app.process_host_command(stream, show_screen))

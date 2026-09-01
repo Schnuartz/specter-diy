@@ -237,6 +237,11 @@ class Specter:
                     return self.set_mnemonic(mnemonic)
                 else:
                     return True
+            if data == b"select_network":
+                # let an app (e.g. the xpub network-mismatch screen) send
+                # the user straight to the network picker
+                await self.select_network()
+                return True
             raise SpecterError("Invalid command '%s'" % data)
         return await self.process_host_request(stream, popup=False, appname=app, show_fn=show_fn)
 
