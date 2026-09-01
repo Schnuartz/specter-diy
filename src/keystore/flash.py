@@ -230,16 +230,79 @@ class FlashKeyStore(RAMKeyStore):
         return ("%s/.%s%s" % (head, base, SAVE_TMP_SUFFIX),
                 "%s/.%s%s" % (head, base, SAVE_OLD_SUFFIX))
 
-    def _listdir_names(self, path):
-        """Collect directory names and close MicroPython's ilistdir handle
-        before callers rename, delete or unmount anything."""
+    def _relevant_scratch_entries(self, path, prefix):
+        """Stream `path` with os.ilistdir() and return only what a
+        reconcile needs: (names, leftovers).
+
+        `names` is the list of entries that could be one of Specter's own
+        key files in this directory (case-insensitive `prefix` match, the
+        superset both load_files() and is_key_saved() then re-filter).
+        `leftovers` maps each key base name to the set of scratch suffixes
+        ({".old", ".tmp"}) found for it.
+
+        Filtering happens per entry as the iterator yields, so an SD card
+        with thousands of unrelated files or directories never becomes a
+        list of every filename in RAM - only Specter's own handful of
+        entries is retained. Unrelated files (including the user's own
+        dotted ".something.old") are dropped immediately and never touched.
+
+        The ilistdir handle is closed before the caller renames or deletes
+        anything: mutating a FAT directory while its iterator is live is
+        unsafe on the pinned MicroPython, which keeps a directory handle
+        open until the iterator is exhausted or explicitly closed."""
+        lprefix = prefix.lower()
+        names = []
+        leftovers = {}
         entries = os.ilistdir(path)
         try:
-            return [entry[0] for entry in entries]
+            for entry in entries:
+                name = entry[0]
+                if name in (".", ".."):
+                    continue
+                # Cheapest checks first, and never retain an unrelated
+                # name: a dotted name can only be a scratch leftover, any
+                # other name can only be a key file.
+                if name.startswith("."):
+                    for suffix in (SAVE_OLD_SUFFIX, SAVE_TMP_SUFFIX):
+                        if name.endswith(suffix):
+                            base = name[1:-len(suffix)]
+                            if base.startswith(prefix):
+                                leftovers.setdefault(base, set()).add(suffix)
+                            break
+                    continue
+                if name.lower().startswith(lprefix):
+                    names.append(name)
         finally:
             close = getattr(entries, "close", None)
             if callable(close):
                 close()
+        return names, leftovers
+
+    def _oversized_scratch_size(self, path):
+        """The size of `path` if it is a scratch file too large to be one
+        Specter wrote (see platform.SCRATCH_RECONCILE_MAX_BYTES), else
+        None. Such a file is preserved by automatic reconciliation rather
+        than overwritten inline, because a multi-megabyte secure delete
+        would block key loading for minutes."""
+        size = platform.probe_file_size(path)
+        if size is not None and size > platform.SCRATCH_RECONCILE_MAX_BYTES:
+            return size
+        return None
+
+    def _note_oversized_scratch(self, path, entries):
+        """Record oversized scratch leftovers found under directory `path`
+        so storage_menu() can offer an explicit, user-confirmed secure
+        delete. Replaces any earlier record for the same directory, so a
+        file that is gone on the next scan stops being listed."""
+        store = getattr(self, "_oversized_scratch", None)
+        if store is None:
+            store = {}
+            self._oversized_scratch = store
+        dirprefix = path.rstrip("/") + "/"
+        for key in [k for k in store if k.startswith(dirprefix)]:
+            del store[key]
+        for fullpath, size in entries:
+            store[fullpath] = size
 
     def _discard_tmp(self, path):
         """Destroy .tmp when another authoritative copy is intact.
@@ -278,22 +341,30 @@ class FlashKeyStore(RAMKeyStore):
           order (a .tmp only disappears once a .old exists), so this means
           tampering or filesystem corruption. Fail safe: keep the only
           potential copy and report it instead of destroying it.
+
+        This reconciles the state a power cut leaves *between* two rename
+        calls. It cannot repair a cut *inside* a single FatFs f_rename():
+        that path has a short critical section where an interruption can
+        cross-link two directory entries onto one cluster chain, and no
+        userspace cleanup can untangle that afterwards. See
+        docs/data-storage.md - the independent recovery-phrase backup is
+        the mitigation, not this function.
+
+        A scratch file far larger than any key Specter writes (see
+        platform.SCRATCH_RECONCILE_MAX_BYTES) is not overwritten here: an
+        automatic multi-minute secure delete during key loading would be a
+        denial of service. It is preserved, recorded for storage_menu(),
+        and the reconcile of every other entry still completes.
         """
         # Collect before renaming or deleting: mutating a FAT directory
         # while its ilistdir() iterator is active is unsafe. A listing
         # failure propagates; a save must not proceed from unknown state.
-        names = self._listdir_names(path)
+        # The scan streams entries and retains only Specter's own key
+        # namespace, so a card with thousands of unrelated files never
+        # becomes a list of every filename in RAM.
         prefix = self.fileprefix(path)
-        leftovers = {}
-        for name in names:
-            if not name.startswith("."):
-                continue
-            for suffix in (SAVE_OLD_SUFFIX, SAVE_TMP_SUFFIX):
-                if name.endswith(suffix):
-                    base = name[1:-len(suffix)]
-                    if base.startswith(prefix):
-                        leftovers.setdefault(base, set()).add(suffix)
-                    break
+        names, leftovers = self._relevant_scratch_entries(path, prefix)
+        oversized = []
         states = {}
         recovery_error = None
         # Availability first: attempt every restore before any stale-copy
@@ -306,6 +377,16 @@ class FlashKeyStore(RAMKeyStore):
             has_tmp = SAVE_TMP_SUFFIX in leftovers[base]
             has_target = base in names
             if has_old and not has_target:
+                big = self._oversized_scratch_size(oldpath)
+                if big is not None:
+                    # Far too large to be a copy Specter wrote. Do not
+                    # rename a multi-megabyte blob onto the key name, and
+                    # do not overwrite it in an automatic pass - leave it
+                    # for the user to review. The key stays "not present";
+                    # it was never a real scratch copy of one.
+                    oversized.append((oldpath, big))
+                    states[base] = (has_target, has_old, has_tmp)
+                    continue
                 # .old is the only surviving copy of the key - put it back.
                 try:
                     os.rename(oldpath, fullpath)
@@ -323,6 +404,7 @@ class FlashKeyStore(RAMKeyStore):
             states[base] = (has_target, has_old, has_tmp)
 
         if recovery_error is not None:
+            self._note_oversized_scratch(path, oversized)
             raise recovery_error
 
         cleanup_error = None
@@ -334,15 +416,23 @@ class FlashKeyStore(RAMKeyStore):
                 # The target survived, so .old is a stale complete copy.
                 # Failing to retire it leaves the old encrypted phrase
                 # recoverable from free space - report that.
-                try:
-                    platform.secure_delete_file(oldpath)
-                except Exception as e:
-                    if cleanup_error is None:
-                        cleanup_error = KeyStoreError(
-                            "A previous copy of the key could not be securely "
-                            "removed and may still be recoverable from free "
-                            "space: %s" % e
-                        )
+                big = self._oversized_scratch_size(oldpath)
+                if big is not None:
+                    # Not something Specter wrote. Preserve it; an
+                    # automatic multi-minute overwrite here would stall
+                    # key loading. The user is offered a confirmed secure
+                    # delete from storage_menu() instead.
+                    oversized.append((oldpath, big))
+                else:
+                    try:
+                        platform.secure_delete_file(oldpath)
+                    except Exception as e:
+                        if cleanup_error is None:
+                            cleanup_error = KeyStoreError(
+                                "A previous copy of the key could not be "
+                                "securely removed and may still be "
+                                "recoverable from free space: %s" % e
+                            )
             if has_tmp and not has_target and not has_old:
                 if cleanup_error is None:
                     cleanup_error = KeyStoreError(
@@ -351,16 +441,21 @@ class FlashKeyStore(RAMKeyStore):
                         "rather than destroyed." % tmppath
                     )
             elif has_tmp:
-                try:
-                    self._discard_tmp(tmppath)
-                except Exception as e:
-                    if cleanup_error is None:
-                        cleanup_error = KeyStoreError(
-                            "A temporary encrypted copy of the key could not "
-                            "be securely removed and may still be recoverable "
-                            "from free space: %s" % e
-                        )
+                big = self._oversized_scratch_size(tmppath)
+                if big is not None:
+                    oversized.append((tmppath, big))
+                else:
+                    try:
+                        self._discard_tmp(tmppath)
+                    except Exception as e:
+                        if cleanup_error is None:
+                            cleanup_error = KeyStoreError(
+                                "A temporary encrypted copy of the key could "
+                                "not be securely removed and may still be "
+                                "recoverable from free space: %s" % e
+                            )
 
+        self._note_oversized_scratch(path, oversized)
         if cleanup_error is not None:
             raise cleanup_error
         return names
@@ -368,9 +463,10 @@ class FlashKeyStore(RAMKeyStore):
     def _save_key_file(self, fullpath, replacing):
         """
         Writes the encrypted recovery phrase to `fullpath`. For a new
-        file that is one strict save. Replacing an existing one swaps in
-        the new copy without ever leaving zero valid copies or a
-        recoverable old allocation:
+        file that is one strict save. Replacing an existing one is
+        designed to be resilient against interrupted writes - at each
+        step between the stages below either the previous copy or a
+        verified new copy is present under a known name:
 
             write .tmp -> strict sync -> read back and verify
                        -> rename the target to .old
@@ -380,10 +476,19 @@ class FlashKeyStore(RAMKeyStore):
         Truncating over the old file ("wb") would free its cluster chain
         unoverwritten; destroying it before the new copy exists would
         risk a power cut leaving the user with no copy at all. The rename
-        swap avoids both, and reconcile_scratch_dir() recovers the one
-        state where the swap is half done (between the two renames).
+        swap avoids both, and reconcile_scratch_dir() finishes or undoes a
+        swap that a power cut left half done *between* the two renames.
         Retiring .old is destructive of the user's previous key, so a
         failure there is reported accurately rather than swallowed.
+
+        This is not full atomicity. FatFs f_rename() is itself not atomic
+        - the pinned implementation has a short critical section where an
+        abrupt power loss or hard reset can leave an inconsistent or
+        cross-linked directory state. In that worst case both the previous
+        and the newly written local copy of the mnemonic may become
+        unusable. This only affects replacing an already stored key, not
+        normal reading or use of one; an independent backup of the
+        recovery phrase is the mitigation (see docs/data-storage.md).
         """
         plaintext = self.mnemonic.encode()
         if not replacing:
@@ -594,24 +699,88 @@ class FlashKeyStore(RAMKeyStore):
         return scr.get_value()
 
 
+    def _secure_delete_reviewed(self, fullpath):
+        """Secure-delete a scratch file the user explicitly confirmed from
+        the storage menu. Overridden by SDKeyStore to mount the card."""
+        platform.secure_delete_file(fullpath)
+        platform.strict_sync()
+
+    def _prescan_oversized_scratch(self):
+        """Best-effort reconcile on storage_menu() entry so the review
+        button appears without needing a save/load first. A real failure
+        here is surfaced by the load/delete flows, which reconcile again."""
+        try:
+            self.reconcile_scratch_dir(self.flashpath)
+        except Exception as e:
+            print(e)
+
+    async def _review_oversized_scratch(self):
+        """Let the user securely delete, one at a time, the oversized
+        scratch leftovers that automatic reconciliation preserved rather
+        than overwrite. 'Skip' leaves a file untouched and drops it from
+        the list for this session; it is re-detected on the next reconcile
+        if it is still there."""
+        store = getattr(self, "_oversized_scratch", None) or {}
+        for fullpath in sorted(store):
+            size = store[fullpath]
+            name = fullpath.rsplit("/", 1)[-1]
+            scr = Prompt(
+                "Large leftover file",
+                "\n\n%s\n\nSize: %s\n\nThis file is in Specter's scratch "
+                "namespace but is far larger than a saved key - most "
+                "likely left by a faulty or tampered card. Secure deletion "
+                "overwrites every byte before removing it and may take %s.\n"
+                "\nSecurely delete it now?" % (
+                    name, platform.format_size(size),
+                    platform.secure_delete_duration_estimate(size),
+                ),
+            )
+            res = await self.show(scr)
+            store.pop(fullpath, None)
+            # Only an explicit confirmation deletes; cancel keeps the file.
+            if res is not True:
+                continue
+            try:
+                self._secure_delete_reviewed(fullpath)
+            except Exception as e:
+                print(e)
+                await self.show(Alert(
+                    "Could not delete",
+                    "\n\n%s could not be securely deleted:\n\n%s" % (name, e),
+                    button_text="OK",
+                ))
+                continue
+            await self.show(Alert(
+                "Deleted",
+                "\n\n%s has been securely deleted." % name,
+                button_text="OK",
+            ))
+
     async def storage_menu(self, title="Manage keys on internal flash"):
         """Manage storage, return True if new key was loaded"""
-        buttons = [
-            # id, text
-            (None, title),
-            (0, "Save key"),
-            (1, "Load key"),
-            (2, "Delete key"),
-        ]
-
+        self._prescan_oversized_scratch()
         # we stay in this menu until back is pressed
         while True:
+            buttons = [
+                # id, text
+                (None, title),
+                (0, "Save key"),
+                (1, "Load key"),
+                (2, "Delete key"),
+            ]
+            oversized = getattr(self, "_oversized_scratch", None)
+            if oversized:
+                buttons.append(
+                    (3, "Review large leftover files (%d)" % len(oversized))
+                )
             # wait for menu selection
             menuitem = await self.show(Menu(buttons, last=(255, None)))
             # process the menu button:
             # back button
             if menuitem == 255:
                 return False
+            elif menuitem == 3:
+                await self._review_oversized_scratch()
             elif menuitem == 0:
                 filename = await self.save_mnemonic()
                 if filename:

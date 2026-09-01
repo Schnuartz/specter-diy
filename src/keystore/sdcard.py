@@ -243,6 +243,36 @@ class SDKeyStore(FlashKeyStore):
         # on every path); the success return does not.
         return True
 
+    def _secure_delete_reviewed(self, fullpath):
+        """Mount the card around the confirmed secure delete when the
+        leftover is on the SD card."""
+        on_sd = fullpath.startswith(self.sdpath)
+        if on_sd:
+            if not platform.sdcard.is_present:
+                raise KeyStoreError("Insert the SD card to remove this file")
+            platform.sdcard.mount()
+        try:
+            super()._secure_delete_reviewed(fullpath)
+        finally:
+            if on_sd:
+                try:
+                    platform.sdcard.unmount()
+                except Exception as e:
+                    print(e)
+
+    def _prescan_oversized_scratch(self):
+        super()._prescan_oversized_scratch()
+        if not platform.sdcard.is_present:
+            return
+        try:
+            platform.sdcard.mount()
+            try:
+                self.reconcile_scratch_dir(self.sdpath)
+            finally:
+                platform.sdcard.unmount()
+        except Exception as e:
+            print(e)
+
     async def storage_menu(self):
         """Manage storage, return True if new key was loaded"""
         return await super().storage_menu(title="Manage keys on SD card and internal flash")

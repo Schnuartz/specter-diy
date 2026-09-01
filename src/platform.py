@@ -723,6 +723,67 @@ def strict_sync(f=None):
     # a failed sync, so it is not an error.
 
 
+# Largest a legitimate encrypted-mnemonic scratch file (a .tmp / .old in
+# Specter's own key namespace) can plausibly be. A 24-word BIP-39 phrase
+# is ~215 bytes of text; helpers.aead_encrypt() adds a 16-byte IV, a
+# 32-byte tag and <16 bytes of padding - the whole file is well under a
+# kilobyte. 1 MiB is several thousand times that, so a scratch-named file
+# above it was not written by Specter: a corrupt or hostile card, not an
+# interrupted save. keystore.flash.reconcile_scratch_dir() therefore does
+# NOT start a multi-minute secure overwrite of such a file during its
+# automatic pass - it preserves the file and lets the user trigger an
+# explicit, confirmed secure delete from the storage menu instead. This is
+# generous on purpose: a normal user must never see that prompt for a real
+# key file.
+SCRATCH_RECONCILE_MAX_BYTES = 1024 * 1024
+
+# Deliberately low assumed sustained overwrite throughput, only used to
+# turn a file size into a coarse human-readable secure-delete duration.
+# Real SD write speed is far higher; underestimating just keeps the shown
+# estimate conservative.
+SECURE_DELETE_MIN_THROUGHPUT = 200 * 1024  # bytes per second
+
+
+def probe_file_size(path):
+    """Best-effort size of `path` from stat metadata, or None if it cannot
+    be determined or is not a sane count. Used only to decide whether a
+    file is small enough to secure-delete inline - secure_delete_file()
+    itself re-reads the authoritative size from the open handle."""
+    try:
+        size = os.stat(path)[6]
+    except Exception:
+        return None
+    if not is_valid_count(size, allow_zero=True):
+        return None
+    return size
+
+
+def format_size(num_bytes):
+    """A short human-readable byte count, base-1024 (e.g. '512.0 MB')."""
+    if num_bytes < 1024:
+        return "%d bytes" % num_bytes
+    value = float(num_bytes)
+    for unit in ("KB", "MB", "GB"):
+        value /= 1024
+        if value < 1024 or unit == "GB":
+            return "%.1f %s" % (value, unit)
+
+
+def secure_delete_duration_estimate(num_bytes):
+    """A rough, deliberately conservative estimate of how long
+    secure_delete_file() will take for a file of `num_bytes`, as one of a
+    few coarse human-readable buckets. Not a promise - overwrite
+    throughput varies with the card, and this assumes a low floor."""
+    seconds = num_bytes / SECURE_DELETE_MIN_THROUGHPUT
+    if seconds < 45:
+        return "< 1 minute"
+    if seconds < 5 * 60:
+        return "~2-5 minutes"
+    if seconds < 20 * 60:
+        return "~10-20 minutes"
+    return "20+ minutes"
+
+
 # An adversarial directory with thousands of entries would otherwise make
 # secure_delete_tree() enumerate, walk and remove entries for an unbounded
 # amount of time (DoS). A BitBox backup directory has only a few entries, so

@@ -58,6 +58,43 @@ encrypted with `pin_secret = tagged_hash("pin", secret + pin)`, derived
 from both the device secret and your PIN — so changing your PIN only
 requires re-encrypting this one key.
 
+### Replacing a saved mnemonic (interrupted-write recovery)
+
+Overwriting an existing saved mnemonic in place (`open(path, "wb")`) would
+free the old file's clusters *without* overwriting them, leaving the
+previous encrypted phrase recoverable in free space. Deleting the old file
+first instead risks a power cut leaving no copy at all.
+
+Specter avoids both by swapping through two dot-prefixed scratch names
+derived from the target (`.<name>.tmp`, `.<name>.old`): it writes and
+verifies the new copy as `.tmp`, renames the target to `.old`, renames
+`.tmp` onto the target, syncs, and only then securely overwrites `.old`.
+`reconcile_scratch_dir()` runs before any key is listed, loaded or saved
+and finishes or undoes a swap that a power cut left half done *between*
+those renames, so an interrupted replacement never makes a surviving key
+look gone.
+
+**Accepted limitation.** Replacing an already stored mnemonic is designed
+to be resilient against interrupted writes. However, FAT rename operations
+are not fully atomic — the pinned FatFs `f_rename()` has a short critical
+section where an abrupt power loss or hard reset may leave an inconsistent
+or cross-linked filesystem state. In the worst case, both the previous and
+the newly written local mnemonic copy may become unusable. This concerns
+*replacement* of an existing stored key only; it does not affect normal
+reading or use of a mnemonic. Redesigning the replacement to close this
+window is out of scope for now — **keep an independent backup of your
+recovery phrase**, which is the intended protection here regardless.
+
+The reconciler only ever touches leftovers in Specter's own file-prefix
+namespace, never unrelated files on the card. A scratch-named file far
+larger than any real key (`platform.SCRATCH_RECONCILE_MAX_BYTES`, 1 MiB —
+thousands of times the size of an encrypted phrase) is treated as a sign
+of a faulty or tampered card: automatic reconciliation preserves it rather
+than spend minutes securely overwriting it during key loading, reconciles
+everything else normally, and offers an explicit, confirmed secure delete
+(with a rough size-based time estimate) under *Manage keys → Review large
+leftover files*.
+
 ## QSPI Flash (`/qspi`)
 
 ### Wallet Data

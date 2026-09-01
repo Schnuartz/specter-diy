@@ -19,10 +19,15 @@ the delete and the new write leaves them with none at all.
 scratch name, renames the target aside to .old, renames the scratch onto
 the target, and only then securely deletes .old.
 
-The one state a power cut can leave behind - target missing, .old present -
-is reconciled by `reconcile_scratch_dir()`, which runs before keys are
-listed, loaded or saved, so an interrupted replacement can never make a
-surviving key look gone.
+The state a power cut leaves *between* the two renames - target missing,
+.old present - is reconciled by `reconcile_scratch_dir()`, which runs
+before keys are listed, loaded or saved, so an interrupted replacement
+does not make a surviving key look gone.
+
+This is not full atomicity: a cut *inside* a single FatFs rename can still
+cross-link directory entries, and in that worst case both copies may be
+lost. That window is an accepted, documented limitation (see
+docs/data-storage.md); the tests here do not claim it is recoverable.
 """
 import sys
 

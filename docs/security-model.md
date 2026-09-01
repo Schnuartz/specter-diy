@@ -346,6 +346,16 @@ sign something you didn't confirm on the device screen.
 - Without the smartcard, a sufficiently equipped attacker with prolonged
   physical access to the device should be considered able to extract
   secrets from the main MCU (see "Threat model").
+- **Replacing an already stored mnemonic is not fully power-loss safe.**
+  The replacement is designed to be resilient against interrupted writes,
+  but FAT rename operations are not atomic — an abrupt power loss or hard
+  reset during a small critical window inside a rename may leave an
+  inconsistent or cross-linked filesystem state, and in the worst case
+  both the previous and the newly written local copy of the phrase can
+  become unusable. This affects only *replacement* of an existing stored
+  key, not normal reading or use of one. The mitigation is an independent
+  recovery-phrase backup (see
+  [data-storage.md](./data-storage.md#replacing-a-saved-mnemonic-interrupted-write-recovery)).
 - Transaction warnings are currently implemented in several different
   places rather than in one central pipeline: the device warns about
   unknown wallets in the inputs, about sighash flags other than
