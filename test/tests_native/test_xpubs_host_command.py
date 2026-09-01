@@ -65,11 +65,11 @@ class XpubsHostCommandTest(TestCase):
 
     def test_xpub_approved_matches_direct_derivation(self):
         show_screen, seen = self._show_screen(True)
-        stream = BytesIO(b"xpub m/84h/0h/0h")
+        stream = BytesIO(b"xpub m/84h/1h/0h")
         res = self._run(self.app.process_host_command(stream, show_screen))
         self.assertIsNotNone(res)
         result_stream, meta = res
-        expected = self.keystore.get_xpub("m/84h/0h/0h").to_base58(
+        expected = self.keystore.get_xpub("m/84h/1h/0h").to_base58(
             NETWORKS["test"]["xpub"]
         )
         self.assertEqual(result_stream.read().decode(), expected)
@@ -78,35 +78,35 @@ class XpubsHostCommandTest(TestCase):
 
     def test_xpub_rejected_returns_no_xpub(self):
         show_screen, seen = self._show_screen(False)
-        stream = BytesIO(b"xpub m/84h/0h/0h")
+        stream = BytesIO(b"xpub m/84h/1h/0h")
         res = self._run(self.app.process_host_command(stream, show_screen))
         self.assertFalse(res)
         self.assertEqual(len(seen), 1)
 
     def test_confirmation_shows_requested_path_first_case(self):
         show_screen, seen = self._show_screen(False)
-        stream = BytesIO(b"xpub m/84h/0h/0h")
+        stream = BytesIO(b"xpub m/84h/1h/0h")
         self._run(self.app.process_host_command(stream, show_screen))
         shown = seen[0]
         message = shown.args[1] if len(shown.args) > 1 else shown.kwargs.get("message")
-        self.assertIn("m/84h/0h/0h", message)
+        self.assertIn("m/84h/1h/0h", message)
 
     def test_confirmation_shows_requested_path_second_case(self):
         show_screen, seen = self._show_screen(False)
-        stream = BytesIO(b"xpub m/48h/0h/7h/2h")
+        stream = BytesIO(b"xpub m/48h/1h/7h/2h")
         self._run(self.app.process_host_command(stream, show_screen))
         shown = seen[0]
         message = shown.args[1] if len(shown.args) > 1 else shown.kwargs.get("message")
-        self.assertIn("m/48h/0h/7h/2h", message)
-        self.assertNotIn("m/84h/0h/0h", message)
+        self.assertIn("m/48h/1h/7h/2h", message)
+        self.assertNotIn("m/84h/1h/0h", message)
 
     def test_confirmation_shows_actual_xpub_value(self):
         show_screen, seen = self._show_screen(False)
-        stream = BytesIO(b"xpub m/84h/0h/0h")
+        stream = BytesIO(b"xpub m/84h/1h/0h")
         self._run(self.app.process_host_command(stream, show_screen))
         shown = seen[0]
         message = shown.args[1] if len(shown.args) > 1 else shown.kwargs.get("message")
-        expected = self.keystore.get_xpub("m/84h/0h/0h").to_base58(
+        expected = self.keystore.get_xpub("m/84h/1h/0h").to_base58(
             NETWORKS["test"]["xpub"]
         )
         self.assertIn(expected, message)

@@ -188,10 +188,22 @@ class XpubAuthHostCommandTest(TestCase):
 
     def test_different_account_out_of_scope_prompts(self):
         self._begin("m/84h/0h/{0-9}h", self._show_screen(True)[0])
-        for bad in ["m/84h/1h/0h", "m/85h/0h/0h", "m", "m/0h"]:
+        for bad in ["m/85h/0h/0h", "m", "m/0h"]:
             show_screen, seen = self._show_screen(True)
             self._xpub(bad, show_screen)
             self.assertEqual(len(seen), 1, "expected a prompt for %r" % bad)
+
+    def test_out_of_scope_wrong_network_path_is_refused_not_prompted(self):
+        # a testnet-style path is out of the (mainnet) authorized scope,
+        # but it's also a network mismatch on this "main" device - that
+        # takes precedence over the usual "just ask" fallback: refused
+        # outright, never shown as a normal Confirm/Cancel prompt
+        self._begin("m/84h/0h/{0-9}h", self._show_screen(True)[0])
+        show_screen, seen = self._show_screen(True)
+        with self.assertRaises(Exception):
+            self._xpub("m/84h/1h/0h", show_screen)
+        self.assertEqual(len(seen), 1)
+        self.assertNotIsInstance(seen[0], Prompt)
 
     def test_prefix_child_is_not_silently_authorized(self):
         self._begin("m/84h/0h/1h", self._show_screen(True)[0])
