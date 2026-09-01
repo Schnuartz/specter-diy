@@ -316,6 +316,34 @@ class XpubApp(BaseApp):
                 if self._authorization.remaining <= 0:
                     self._authorization = None
                 return BytesIO(xpub_str.encode()), {}
+            # A standard-purpose path (44'/48'/49'/84'/86'/87') whose coin
+            # type doesn't match the network currently active on this
+            # device can never be legitimately shared from here - the same
+            # rule an xpubauth scope is held to (see scope.py), now also
+            # enforced for individual, non-scoped requests. Tell the local
+            # user exactly what was asked for and why it's refused, and
+            # send the host a machine-parseable reason (which network this
+            # device is actually on) instead of silently deriving a key
+            # for a network it isn't set to.
+            if xpubauth_scope.standard_path_coin_type_mismatch(
+                path, NETWORKS[self.network]["bip32"]
+            ):
+                await show_screen(
+                    Alert(
+                        "Host tried to get access\nto the following key",
+                        "Derivation:\n%s\n\n"
+                        "This device is currently on %s.\n"
+                        "This key cannot be shared from here.\n\n"
+                        "To share it, switch the device to the "
+                        "matching network first." % (
+                            derivation, NETWORKS[self.network]["name"],
+                        ),
+                        button_text="OK",
+                    )
+                )
+                raise AppError(
+                    "network mismatch: device is on %s" % self.network
+                )
             fingerprint = hexlify(self.keystore.fingerprint).decode()
             confirm = await show_screen(
                 Prompt(

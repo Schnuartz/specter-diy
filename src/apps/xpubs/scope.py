@@ -196,6 +196,30 @@ def _overlaps(a, b):
     return True
 
 
+def standard_path_coin_type_mismatch(path, expected_coin_type):
+    """
+    True if `path` (an already-parsed list of ints, e.g. from
+    bip32.parse_path) is a standard-purpose path (44'/48'/49'/84'/86'/87')
+    whose coin-type component does not equal `expected_coin_type` - the
+    hardened BIP44 coin type of the network currently active on the
+    device. This is the same rule _validate_standard_coin_type applies to
+    an xpubauth scope entry, exposed here for a single concrete,
+    non-scoped path (a plain `xpub <path>` request).
+
+    False (nothing to enforce) for anything shorter than 2 components or
+    with a non-standard purpose - such paths carry no implied network
+    semantics.
+    """
+    if len(path) < 2:
+        return False
+    purpose = path[0]
+    if purpose < HARDENED:
+        return False
+    if purpose - HARDENED not in STANDARD_PURPOSES:
+        return False
+    return path[1] != (expected_coin_type + HARDENED)
+
+
 def _validate_standard_coin_type(entry, network_name, expected_coin_type):
     """For recognizable standard purposes (44'/48'/49'/84'/86'/87'), the
     coin-type component must be a fixed value matching the currently

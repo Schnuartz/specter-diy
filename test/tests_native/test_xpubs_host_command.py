@@ -14,7 +14,7 @@ import gc
 from tests.util import get_keystore, get_xpubs_app, clear_testdir
 from embit import bip32
 from embit.liquid.networks import NETWORKS
-from gui.screens import Prompt
+from gui.screens import Alert, Prompt
 
 
 class XpubsHostCommandTest(TestCase):
@@ -136,3 +136,64 @@ class XpubsHostCommandTest(TestCase):
         with self.assertRaises(Exception):
             self._run(self.app.process_host_command(stream, show_screen))
         self.assertEqual(seen, [])
+
+    # self.app is on "test" (coin type 1'): a standard-purpose path with
+    # mainnet's coin type (0') must be refused outright - never shown as
+    # a normal "Share Xpub?" Confirm/Cancel prompt - and the host must get
+    # a machine-parseable reason back, not a silently-derived key.
+    def test_xpub_wrong_network_shows_alert_not_prompt(self):
+        show_screen, seen = self._show_screen(True)
+        stream = BytesIO(b"xpub m/84h/0h/0h")
+        with self.assertRaises(Exception):
+            self._run(self.app.process_host_command(stream, show_screen))
+        self.assertEqual(len(seen), 1)
+        self.assertIsInstance(seen[0], Alert)
+
+    def test_xpub_wrong_network_error_names_the_active_network(self):
+        show_screen, seen = self._show_screen(True)
+        stream = BytesIO(b"xpub m/84h/0h/0h")
+        try:
+            self._run(self.app.process_host_command(stream, show_screen))
+            self.fail("expected an exception")
+        except Exception as e:
+            self.assertIn("test", str(e))
+
+    def test_xpub_wrong_network_alert_shows_path_and_active_network(self):
+        show_screen, seen = self._show_screen(True)
+        stream = BytesIO(b"xpub m/48h/0h/7h/2h")
+        with self.assertRaises(Exception):
+            self._run(self.app.process_host_command(stream, show_screen))
+        shown = seen[0]
+        message = shown.args[1] if len(shown.args) > 1 else shown.kwargs.get("message")
+        self.assertIn("m/48h/0h/7h/2h", message)
+        self.assertIn(NETWORKS["test"]["name"], message)
+
+    def test_xpub_wrong_network_never_reaches_derivation_confirm(self):
+        # a Cancel/Confirm answer of True must not matter - the request is
+        # refused before the normal Prompt is even shown
+        show_screen, seen = self._show_screen(True)
+        stream = BytesIO(b"xpub m/49h/0h/0h")
+        with self.assertRaises(Exception):
+            self._run(self.app.process_host_command(stream, show_screen))
+        self.assertEqual(len(seen), 1)
+
+    def test_xpub_matching_network_still_uses_normal_prompt(self):
+        # same standard purpose, but the coin type matches the app's
+        # active "test" network - normal Confirm/Cancel flow, unaffected
+        show_screen, seen = self._show_screen(True)
+        stream = BytesIO(b"xpub m/84h/1h/0h")
+        res = self._run(self.app.process_host_command(stream, show_screen))
+        self.assertIsNotNone(res)
+        self.assertEqual(len(seen), 1)
+        self.assertIsInstance(seen[0], Prompt)
+
+    def test_xpub_non_standard_purpose_is_never_network_checked(self):
+        # a non-standard/custom purpose carries no implied network
+        # semantics and must go through the normal prompt regardless of
+        # its second component
+        show_screen, seen = self._show_screen(True)
+        stream = BytesIO(b"xpub m/1234h/0h/0h")
+        res = self._run(self.app.process_host_command(stream, show_screen))
+        self.assertIsNotNone(res)
+        self.assertEqual(len(seen), 1)
+        self.assertIsInstance(seen[0], Prompt)

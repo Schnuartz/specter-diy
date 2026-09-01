@@ -209,6 +209,54 @@ class ScopeNetworkValidationTest(TestCase):
         xpubauth_scope.parse_scope("m/84/1h/0h", *MAIN)
 
 
+class StandardPathCoinTypeMismatchTest(TestCase):
+    """standard_path_coin_type_mismatch() applies the same rule
+    _validate_standard_coin_type() applies to an xpubauth scope entry, but
+    to a single already-parsed path - used to guard plain, non-scoped
+    `xpub <path>` requests."""
+
+    def test_matching_mainnet_path_is_not_a_mismatch(self):
+        path = bip32.parse_path("m/84h/0h/0h")
+        self.assertFalse(xpubauth_scope.standard_path_coin_type_mismatch(path, 0))
+
+    def test_testnet_style_path_mismatches_on_mainnet(self):
+        path = bip32.parse_path("m/84h/1h/0h")
+        self.assertTrue(xpubauth_scope.standard_path_coin_type_mismatch(path, 0))
+
+    def test_mainnet_style_path_mismatches_on_testnet(self):
+        path = bip32.parse_path("m/84h/0h/0h")
+        self.assertTrue(xpubauth_scope.standard_path_coin_type_mismatch(path, 1))
+
+    def test_matching_testnet_path_is_not_a_mismatch(self):
+        path = bip32.parse_path("m/84h/1h/0h")
+        self.assertFalse(xpubauth_scope.standard_path_coin_type_mismatch(path, 1))
+
+    def test_every_standard_purpose_is_covered(self):
+        for purpose in xpubauth_scope.STANDARD_PURPOSES:
+            path = bip32.parse_path("m/%dh/1h/0h" % purpose)
+            self.assertTrue(
+                xpubauth_scope.standard_path_coin_type_mismatch(path, 0),
+                "purpose %dh not enforced" % purpose,
+            )
+
+    def test_non_standard_purpose_is_never_a_mismatch(self):
+        path = bip32.parse_path("m/123456h/1h/0h")
+        self.assertFalse(xpubauth_scope.standard_path_coin_type_mismatch(path, 0))
+
+    def test_non_hardened_purpose_is_never_a_mismatch(self):
+        path = bip32.parse_path("m/84/1h/0h")
+        self.assertFalse(xpubauth_scope.standard_path_coin_type_mismatch(path, 0))
+
+    def test_path_shorter_than_two_components_is_never_a_mismatch(self):
+        path = bip32.parse_path("m/84h")
+        self.assertFalse(xpubauth_scope.standard_path_coin_type_mismatch(path, 0))
+
+    def test_liquid_coin_type_is_covered(self):
+        path = bip32.parse_path("m/84h/1776h/0h")
+        self.assertTrue(xpubauth_scope.standard_path_coin_type_mismatch(path, 0))
+        self.assertFalse(xpubauth_scope.standard_path_coin_type_mismatch(path, 1776))
+
+
 class ScopeMatchingTest(TestCase):
     def _entry(self, scope_str, network=MAIN):
         entries, _ = xpubauth_scope.parse_scope(scope_str, *network)
