@@ -18,12 +18,11 @@ from platform import (
     get_flash_write_protection_status,
 )
 from hosts import Host, HostError
-from app import BaseApp, NetworkSwitchRequested
+from app import BaseApp
 from embit import bip39
 from embit.liquid.networks import NETWORKS
 from gui.screens.settings import HostSettings
 from gui.screens.mnemonic import MnemonicPrompt
-from gui.screens import Menu
 
 # small helper functions
 from helpers import gen_mnemonic, fix_mnemonic
@@ -436,7 +435,7 @@ class Specter:
             raise SpecterError("Not implemented")
         return self.settingsmenu
 
-    async def select_network(self, show_fn=None):
+    async def select_network(self):
         buttons = [
             (None, "Production"),
             ("main", "Bitcoin Mainnet"),
@@ -448,16 +447,8 @@ class Specter:
             ("liquidtestnet", "Liquid Testnet"),
             ("elementsregtest", "Liquid Regtest"),
         ]
-        # wait for menu selection. When called from inside a host-command
-        # handler (show_fn given) the picker has to go over the current
-        # screen as a popup - loading it as a full screen would delete the
-        # menu the main loop is still waiting on and wedge navigation.
-        if show_fn is not None:
-            menuitem = await show_fn(
-                Menu(buttons, title="Switch network", last=(255, None))
-            )
-        else:
-            menuitem = await self.gui.menu(buttons, last=(255, None))
+        # wait for menu selection
+        menuitem = await self.gui.menu(buttons, last=(255, None))
         if menuitem != 255:
             self.set_network(menuitem)
 
@@ -725,12 +716,6 @@ class Specter:
             stream.seek(0)
             app = matching_apps[0]
             res = await app.process_host_command(stream, show_fn)
-        except NetworkSwitchRequested as e:
-            # the app refused the request and the user chose to fix the
-            # network: open the picker, then still report the failure
-            self.gui.hide_loader()
-            await self.select_network(show_fn=show_fn)
-            raise HostError(e.host_message)
         except Exception as e:
             if isinstance(e, BaseError):
                 # error that has a meaningfull message, will be sent to the host

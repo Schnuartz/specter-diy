@@ -153,6 +153,7 @@ class XpubsHostCommandTest(TestCase):
             self._run(self.app.process_host_command(stream, show_screen))
         self.assertEqual(len(seen), 1)
         self.assertTrue(self._is_mismatch_screen(seen[0]))
+        self.assertNotIsInstance(seen[0], Prompt)
 
     def test_xpub_wrong_network_error_names_the_active_network(self):
         show_screen, seen = self._show_screen(False)
@@ -184,32 +185,26 @@ class XpubsHostCommandTest(TestCase):
         message = shown.args[1] if len(shown.args) > 1 else shown.kwargs.get("message")
         self.assertIn("Mainnet", message)
 
-    def test_xpub_wrong_network_offers_a_network_settings_button(self):
+    def test_xpub_wrong_network_screen_is_a_plain_dismiss_no_action_button(self):
+        # the screen only informs and dismisses - it deliberately does not
+        # offer a jump-to-network-settings action (see the UX note in
+        # xpubs.py); a single button, and no confirm/cancel pair
         show_screen, seen = self._show_screen(False)
         stream = BytesIO(b"xpub m/84h/0h/0h")
         with self.assertRaises(Exception):
             self._run(self.app.process_host_command(stream, show_screen))
-        self.assertEqual(seen[0].kwargs.get("confirm_text"), "Network settings")
+        self.assertIsNone(seen[0].kwargs.get("confirm_text"))
+        self.assertIsNone(seen[0].kwargs.get("cancel_text"))
 
-    def test_xpub_wrong_network_button_signals_a_network_switch(self):
-        # tapping "Network settings" raises NetworkSwitchRequested so
-        # Specter can open the picker; the host still gets the failure
-        from app import NetworkSwitchRequested
-
-        show_screen, seen = self._show_screen(True)  # tap "Network settings"
-        stream = BytesIO(b"xpub m/84h/0h/0h")
-        with self.assertRaises(NetworkSwitchRequested) as ctx:
-            self._run(self.app.process_host_command(stream, show_screen))
-        self.assertIn("network mismatch", ctx.exception.host_message)
-
-    def test_xpub_wrong_network_ok_button_does_not_signal_a_switch(self):
-        from app import NetworkSwitchRequested
-
-        show_screen, seen = self._show_screen(False)  # tap "OK"
-        stream = BytesIO(b"xpub m/84h/0h/0h")
-        with self.assertRaises(Exception) as ctx:
-            self._run(self.app.process_host_command(stream, show_screen))
-        self.assertNotIsInstance(ctx.exception, NetworkSwitchRequested)
+    def test_xpub_wrong_network_still_refuses_whatever_the_user_taps(self):
+        # the informational screen has one button; tapping it (whatever
+        # value it returns) must still surface the machine-parseable error
+        for response in (True, False):
+            show_screen, seen = self._show_screen(response)
+            stream = BytesIO(b"xpub m/84h/0h/0h")
+            with self.assertRaises(Exception) as ctx:
+                self._run(self.app.process_host_command(stream, show_screen))
+            self.assertIn("network mismatch: device is on test", str(ctx.exception))
 
     def test_xpub_wrong_network_never_reaches_derivation_confirm(self):
         # dismissing with "OK" must not fall through to the normal prompt

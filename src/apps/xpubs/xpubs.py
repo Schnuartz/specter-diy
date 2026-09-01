@@ -1,4 +1,4 @@
-from app import BaseApp, AppError, NetworkSwitchRequested
+from app import BaseApp, AppError
 from gui.screens import Menu, DerivationScreen, NumericScreen, Alert, InputScreen, Prompt
 from .screens import XPubScreen
 from . import scope as xpubauth_scope
@@ -331,8 +331,21 @@ class XpubApp(BaseApp):
                 device_net = self.network
                 hint = xpubauth_scope.network_hint_for_path(path)
                 switch_to = hint if hint else "the matching network"
-                open_settings = await show_screen(
-                    Prompt(
+                # UX note: from a pure usability standpoint this screen
+                # would ideally carry a second "Network settings" button
+                # that takes the user straight to the network picker, so
+                # they don't have to hunt for it in the menu after being
+                # told to switch. It's deliberately left out for now:
+                # host commands run in their own asyncio task, separate
+                # from the main() menu loop, and this firmware has no
+                # primitive for one to drive the other's navigation. The
+                # only way to show the picker from here is to stack it as
+                # a popup over whatever menu happens to be active, which
+                # works but is a fair bit of plumbing for one button.
+                # Worth revisiting if/when cross-task navigation exists -
+                # the UX win is real.
+                await show_screen(
+                    Alert(
                         "Host tried to get access\nto the following key",
                         "Derivation:\n%s\n\n"
                         "This device is currently on %s.\n"
@@ -340,14 +353,10 @@ class XpubApp(BaseApp):
                         "To share it, switch the device to\n%s first." % (
                             derivation, NETWORKS[device_net]["name"], switch_to,
                         ),
-                        confirm_text="Network settings",
-                        cancel_text="OK",
+                        button_text="OK",
                     )
                 )
-                host_message = "network mismatch: device is on %s" % device_net
-                if open_settings:
-                    raise NetworkSwitchRequested(host_message)
-                raise AppError(host_message)
+                raise AppError("network mismatch: device is on %s" % device_net)
             fingerprint = hexlify(self.keystore.fingerprint).decode()
             confirm = await show_screen(
                 Prompt(

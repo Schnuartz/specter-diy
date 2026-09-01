@@ -85,18 +85,3 @@ class BaseApp:
 
 class AppError(BaseError):
     NAME = "Application error"
-
-
-class NetworkSwitchRequested(Exception):
-    """
-    An app asks Specter to open the network picker - e.g. the xpub app
-    after refusing a request whose derivation is for a different network
-    than the device is on. Not a BaseError: it's a navigation signal, not
-    a host-facing error. `host_message` is still sent back to the host,
-    since the originating request does not succeed just because the user
-    went to change the network afterwards.
-    """
-
-    def __init__(self, host_message):
-        super().__init__(host_message)
-        self.host_message = host_message
