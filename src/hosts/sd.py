@@ -109,18 +109,20 @@ class SDHost(Host):
         return buttons
 
     async def select_file(self, extensions):
+        """
+        Lets the user open a file, or manage the card. Card management is
+        offered even when no file matches `extensions`: a card full of
+        other files must still be deletable/formattable from the device.
+        Returns the chosen file path, or None on cancel / after the last
+        matching file was deleted.
+        """
         while True:
             files = self.list_files(extensions)
-            if len(files) == 0:
-                raise HostError("\n\nNo matching files found on the SD card\nAllowed: %s" % ", ".join(extensions))
-            # elif len(files) == 1:
-            #     return self.sdpath+"/"+ files[0]
-
             buttons = self.file_buttons(files, extensions)
             # Its own section, after a blank line and under a heading of
             # its own. Appended straight after the last extension group it
-            # reads as one more entry of that group - exactly the wrong
-            # thing for a destructive action to look like.
+            # would read as one more entry of that group - exactly the
+            # wrong thing for destructive actions to look like.
             buttons += [
                 (None, None),
                 (None, "Manage the card"),
@@ -142,7 +144,9 @@ class SDHost(Host):
 
     async def delete_menu(self, files):
         """
-        Offers deleting a single file, or erasing the whole card.
+        Offers deleting a single file, or erasing the whole card. Deleting
+        single files only reaches the files this host can see; formatting
+        clears everything - hence the confirmations on format_card().
 
         Returns True if the card was formatted, in which case the caller
         must not touch the filesystem again: erase_and_format() leaves the

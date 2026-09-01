@@ -30,7 +30,7 @@ class SDKeyStore(FlashKeyStore):
         return platform.fpath("/sd")
 
     def fileprefix(self, path):
-        if path is self.flashpath:
+        if path == self.flashpath:
             return 'reckless'
 
         hexid = hexlify(tagged_hash("sdid", self.secret)[:4]).decode()
@@ -68,46 +68,47 @@ class SDKeyStore(FlashKeyStore):
             return
 
         fullpath = "%s/%s.%s" % (path, self.fileprefix(path), filename)
-
-        if fullpath.startswith(self.sdpath):
+        on_sd = fullpath.startswith(self.sdpath)
+        if on_sd:
             platform.sdcard.mount()
-
-        # Recover from a save of this name that a power cut left half done,
-        # before asking whether there is anything to replace. After the
-        # mount, so the card's own scratch files are visible.
-        self.reconcile_scratch(fullpath)
-
-        replacing = False
-        if platform.file_exists(fullpath):
-            scr = Prompt(
-                "\n\nFile already exists: %s\n" % filename,
-                "Would you like to overwrite this file?",
-            )
-            res = await self.show(scr)
-            if res is False:
-                if fullpath.startswith(self.sdpath):
-                    platform.sdcard.unmount()
-                return
-            replacing = True
-
-        # See FlashKeyStore._save_key_file(): replacing a key file writes
-        # and verifies the new one before the old one is destroyed.
+        cancelled = False
         try:
-            self._save_key_file(fullpath, replacing)
+            # Recover after mounting, so the card's scratch files are
+            # visible, and before deciding whether this is a replacement.
+            self.reconcile_scratch_dir(path)
+
+            replacing = False
+            if platform.file_exists(fullpath):
+                scr = Prompt(
+                    "\n\nFile already exists: %s\n" % filename,
+                    "Would you like to overwrite this file?",
+                )
+                res = await self.show(scr)
+                if res is False:
+                    cancelled = True
+                else:
+                    replacing = True
+
+            if not cancelled:
+                # _save_key_file() verifies the new copy before the old
+                # one becomes expendable.
+                self._save_key_file(fullpath, replacing)
         except Exception:
-            # The card must not stay mounted just because the save failed.
-            if fullpath.startswith(self.sdpath):
+            if on_sd:
                 try:
                     platform.sdcard.unmount()
                 except Exception as e:
+                    # Preserve the save/recovery error already in flight.
                     print(e)
             raise
-        if fullpath.startswith(self.sdpath):
+        if on_sd:
             platform.sdcard.unmount()
+        if cancelled:
+            return
         # check it's ok
         await self.load_mnemonic(fullpath)
         # return the full file name incl. prefix if saved to SD card, just the name if on flash
-        return fullpath.split("/")[-1] if fullpath.startswith(self.sdpath) else filename
+        return fullpath.split("/")[-1] if on_sd else filename
 
     @property
     def is_key_saved(self):
@@ -116,11 +117,33 @@ class SDKeyStore(FlashKeyStore):
         if not platform.sdcard.is_present:
             return flash_exists
 
-        with platform.sdcard:
-            sd_files = [
-                f[0] for f in os.ilistdir(self.sdpath)
-                if f[0].lower().startswith(self.fileprefix(self.sdpath))
-            ]
+        error = None
+        try:
+            platform.sdcard.mount()
+        except Exception as e:
+            error = e
+        if error is None:
+            try:
+                names = self.reconcile_scratch_dir(self.sdpath)
+                prefix = self.fileprefix(self.sdpath)
+                sd_files = [name for name in names
+                            if name.lower().startswith(prefix)]
+            except Exception as e:
+                error = e
+            finally:
+                try:
+                    platform.sdcard.unmount()
+                except Exception as e:
+                    if error is None:
+                        error = e
+                    else:
+                        print(e)
+        if error is not None:
+            # Same rule as FlashKeyStore.is_key_saved: never hide a key
+            # because recovery, mounting, or cleanup could not finish. The
+            # load/delete flows surface the error; this only decides buttons.
+            print(error)
+            return True
         sd_exists = (len(sd_files) > 0)
         return sd_exists or flash_exists
 
@@ -133,14 +156,23 @@ class SDKeyStore(FlashKeyStore):
             if file is None:
                 return False
 
-        if file.startswith(self.sdpath) and platform.sdcard.is_present:
+        on_sd = file.startswith(self.sdpath)
+        mounted = on_sd and platform.sdcard.is_present
+        if mounted:
             platform.sdcard.mount()
-
-        if not platform.file_exists(file):
-            raise KeyStoreError("Key is not saved")
-        _, data = self.load_aead(file, self.enc_secret)
-
-        if file.startswith(self.sdpath) and platform.sdcard.is_present:
+        try:
+            if not platform.file_exists(file):
+                raise KeyStoreError("Key is not saved")
+            _, data = self.load_aead(file, self.enc_secret)
+        except Exception:
+            if mounted:
+                try:
+                    platform.sdcard.unmount()
+                except Exception as e:
+                    # Preserve the read/decryption error already in flight.
+                    print(e)
+            raise
+        if mounted:
             platform.sdcard.unmount()
         self.set_mnemonic(data.decode(), "")
         return True

@@ -141,11 +141,26 @@ class SelectFileMenuTest(_SDHostTestBase):
 
         self.assertIsNone(_run(self.host.select_file(self.EXTENSIONS)))
 
-    def test_no_matching_files_still_raises(self):
-        self._gui()
+    def test_no_matching_files_still_offers_card_management(self):
+        """A card with no file matching the extension filter must still be
+        manageable from the device - formatting is what clears a card full
+        of files this host cannot see. Raising "No matching files" before
+        the menu made that unreachable."""
+        self._make_files("photo.jpg", "notes.doc")  # nothing matches
+        gui = self._gui(menu_results=[None])
 
-        with self.assertRaises(HostError):
-            _run(self.host.select_file(self.EXTENSIONS))
+        self.assertIsNone(_run(self.host.select_file(self.EXTENSIONS)))
+
+        buttons = gui.menus[0]["buttons"]
+        values = [b[0] for b in buttons]
+        self.assertIn(DELETE_ACTION, values)
+        # every extension group reports "No files"
+        headings = [b[1] for b in buttons if b[0] is None and b[1] is not None]
+        self.assertTrue(
+            all(h.endswith("files - No files") or h == "Manage the card"
+                for h in headings),
+            headings,
+        )
 
 
 class DeleteFileTest(_SDHostTestBase):
@@ -278,6 +293,21 @@ class FormatCardTest(_SDHostTestBase):
         )
         _run(self.host.select_file(self.EXTENSIONS))
         self.assertEqual(self.erase_calls, [])
+
+    def test_format_is_reachable_with_zero_matching_files(self):
+        """A card whose only files do not match the extension filter must
+        still be formattable - formatting is not restricted by what the
+        file picker can open."""
+        self._make_files("photo.jpg")  # present, but not a match
+        gui = self._gui(
+            menu_results=[DELETE_ACTION, FORMAT_ACTION],
+            prompt_results=[True, True],
+        )
+
+        res = _run(self.host.select_file(self.EXTENSIONS))
+
+        self.assertIsNone(res)
+        self.assertEqual(len(self.erase_calls), 1)
 
     def test_confirmed_format_erases_the_card_and_stops_listing_it(self):
         """erase_and_format() leaves the card unmounted and powered down,

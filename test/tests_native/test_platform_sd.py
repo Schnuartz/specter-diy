@@ -744,6 +744,71 @@ class SDCardUnmountTest(TestCase):
         self.assertEqual(dev.power_states, [])
 
 
+class SDCardMountTest(TestCase):
+    def setUp(self):
+        self.had_mount = hasattr(os, "mount")
+        self.had_umount = hasattr(os, "umount")
+        self.real_mount = getattr(os, "mount", None)
+        self.real_umount = getattr(os, "umount", None)
+
+    def tearDown(self):
+        if self.had_mount:
+            os.mount = self.real_mount
+        elif hasattr(os, "mount"):
+            del os.mount
+        if self.had_umount:
+            os.umount = self.real_umount
+        elif hasattr(os, "umount"):
+            del os.umount
+
+    def test_mount_failure_detaches_before_powering_off(self):
+        dev = _FakeBlockDevice(block_count=1)
+        sd = platform.SDCard(sd=dev)
+
+        def failing_mount(*args):
+            raise OSError("mount failed")
+
+        os.mount = failing_mount
+        os.umount = lambda path: (_ for _ in ()).throw(OSError(22, "EINVAL"))
+
+        with self.assertRaises(OSError):
+            sd.mount()
+
+        self.assertEqual(dev.power_states, [True, False])
+        self.assertFalse(sd._mounted)
+
+    def test_unknown_vfs_state_is_never_powered_down(self):
+        dev = _FakeBlockDevice(block_count=1)
+        sd = platform.SDCard(sd=dev)
+        os.mount = lambda *args: (_ for _ in ()).throw(OSError("mount failed"))
+        os.umount = lambda path: (_ for _ in ()).throw(OSError(5, "EIO"))
+
+        with self.assertRaises(OSError):
+            sd.mount()
+
+        # The attempted cleanup could not prove /sd was detached. Cutting
+        # power here would risk leaving VFS mounted on a dead block device.
+        self.assertEqual(dev.power_states, [True])
+        self.assertFalse(sd._mounted)
+
+    def test_explicit_power_on_failure_never_calls_mount(self):
+        class RefusingDevice(_FakeBlockDevice):
+            def power(self, state):
+                self.power_states.append(state)
+                return False if state else True
+
+        dev = RefusingDevice(block_count=1)
+        sd = platform.SDCard(sd=dev)
+        mount_calls = []
+        os.mount = lambda *args: mount_calls.append(args)
+
+        with self.assertRaises(RuntimeError):
+            sd.mount()
+
+        self.assertEqual(mount_calls, [])
+        self.assertEqual(dev.power_states, [True, False])
+
+
 class SecureDeleteFileTest(TestCase):
     def setUp(self):
         clear_testdir()
@@ -805,6 +870,13 @@ class SecureDeleteFileTest(TestCase):
                 platform.open = real_open
         self.assertEqual(size, len(original))
         self.assertEqual(sum(writes), len(original))
+        self.assertFalse(platform.file_exists(self.path))
+
+    def test_empty_file_is_synced_and_unlinked(self):
+        with open(self.path, "wb"):
+            pass
+
+        self.assertEqual(platform.secure_delete_file(self.path), 0)
         self.assertFalse(platform.file_exists(self.path))
 
     def test_overwrite_is_zeros_and_never_touches_the_rng(self):
@@ -889,6 +961,34 @@ class SecureDeleteFileTest(TestCase):
             with self.assertRaises(OSError) as ctx:
                 platform.secure_delete_file(self.path)
             self.assertIn("short write", str(ctx.exception))
+        finally:
+            if had_open:
+                platform.open = real_open
+            else:
+                del platform.open
+        self.assertTrue(platform.file_exists(self.path))
+
+    def test_invalid_size_aborts_without_unlinking(self):
+        class InvalidSizeFile:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def seek(self, offset, whence=0):
+                pass
+
+            def tell(self):
+                return -1
+
+        had_open = hasattr(platform, "open")
+        real_open = getattr(platform, "open", None)
+        platform.open = lambda *args, **kwargs: InvalidSizeFile()
+        try:
+            with self.assertRaises(OSError) as ctx:
+                platform.secure_delete_file(self.path)
+            self.assertIn("invalid file size", str(ctx.exception))
         finally:
             if had_open:
                 platform.open = real_open
@@ -1190,6 +1290,67 @@ class DeleteRecursivelySecureTest(TestCase):
         # The tree is still there - a wipe that could not finish must not
         # report success by silently swallowing the error.
         self.assertIn("tree", [e[0] for e in os.ilistdir("testdir")])
+
+    def test_iterator_is_closed_when_secure_delete_fails(self):
+        closed = []
+        real_ilistdir = os.ilistdir
+        real_delete = platform.secure_delete_file
+
+        class Entries:
+            def __init__(self):
+                self.items = iter([("secret.bin", 0x8000, 0, 0)])
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                return next(self.items)
+
+            def close(self):
+                closed.append(True)
+
+        os.ilistdir = lambda path: Entries()
+        platform.secure_delete_file = lambda path: (_ for _ in ()).throw(
+            OSError("simulated I/O failure")
+        )
+        try:
+            with self.assertRaises(OSError):
+                platform.delete_recursively("virtual", secure=True)
+        finally:
+            os.ilistdir = real_ilistdir
+            platform.secure_delete_file = real_delete
+        self.assertEqual(closed, [True])
+
+    def test_both_iterators_are_closed_after_success(self):
+        closed = []
+        listings = [
+            [("secret.bin", 0x8000, 0, 0)],
+            [],
+        ]
+        real_ilistdir = os.ilistdir
+        real_delete = os.remove
+
+        class Entries:
+            def __init__(self, items):
+                self.items = iter(items)
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                return next(self.items)
+
+            def close(self):
+                closed.append(True)
+
+        os.ilistdir = lambda path: Entries(listings.pop(0))
+        os.remove = lambda path: None
+        try:
+            self.assertTrue(platform.delete_recursively("virtual"))
+        finally:
+            os.ilistdir = real_ilistdir
+            os.remove = real_delete
+        self.assertEqual(closed, [True, True])
 
 
 class BlockGeometryTest(TestCase):

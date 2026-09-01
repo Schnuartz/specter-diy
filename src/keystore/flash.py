@@ -217,7 +217,7 @@ class FlashKeyStore(RAMKeyStore):
         await super().init(show_fn, show_loader)
 
     def fileprefix(self, path):
-        if path is self.flashpath:
+        if path == self.flashpath:
             return 'reckless'
 
         hexid = hexlify(tagged_hash("sdid", self.secret)[:4]).decode()
@@ -230,82 +230,160 @@ class FlashKeyStore(RAMKeyStore):
         return ("%s/.%s%s" % (head, base, SAVE_TMP_SUFFIX),
                 "%s/.%s%s" % (head, base, SAVE_OLD_SUFFIX))
 
-    def _discard_scratch(self, path):
-        """Destroy a scratch file. It holds an encrypted recovery phrase, so
-        it is overwritten rather than unlinked. Cleanup only - never let it
-        replace the error that got us here."""
+    def _listdir_names(self, path):
+        """Collect directory names and close MicroPython's ilistdir handle
+        before callers rename, delete or unmount anything."""
+        entries = os.ilistdir(path)
+        try:
+            return [entry[0] for entry in entries]
+        finally:
+            close = getattr(entries, "close", None)
+            if callable(close):
+                close()
+
+    def _discard_tmp(self, path):
+        """Destroy .tmp when another authoritative copy is intact.
+        Errors propagate by default: continuing could truncate the same
+        path on the next save and free its old clusters unoverwritten.
+        Callers with a more important error already in flight catch the
+        cleanup error themselves. .old retirement errors always propagate."""
         if not platform.file_exists(path):
             return
-        try:
-            platform.secure_delete_file(path)
-        except Exception as e:
-            print(e)
+        platform.secure_delete_file(path)
 
-    def reconcile_scratch(self, fullpath):
+    def reconcile_scratch_dir(self, path):
         """
-        Finish or undo a replacement of `fullpath` that a power cut left
-        half done.
+        Finishes or undoes mnemonic replacements in `path` that a power
+        cut left half done. Must run BEFORE any listing, load or save
+        decides which keys exist: the interrupted case that matters is
+        exactly the one where the target file is missing and only a
+        scratch copy survives - a plain directory listing would wrongly
+        conclude the key is gone.
 
-        Call this BEFORE deciding whether the save is replacing anything:
-        the interrupted case that matters is exactly the one where the
-        target is missing and only `.old` survives, and asking
-        file_exists() first would conclude there is nothing to replace and
-        leave the old copy stranded under a name no picker shows.
+        Only leftovers in Specter's own namespace (this path's
+        fileprefix) are touched, so a user's own ".something.old" on the
+        SD card is not ours to manage. Per key name the target is
+        authoritative:
 
-        Only the swap below can leave a `.old` behind, and it says which
-        side of the swap we died on: if the target is back, the rename went
-        through and all that is left is retiring the copy we replaced; if
-        the target is missing, `.old` is the only surviving copy of the key
-        and has to be put back.
+        * target + .old: the swap went through; .old (a complete copy of
+          the previous key) is securely overwritten and a failed
+          retirement is reported.
+        * target + .tmp: the target remains authoritative; .tmp may be
+          incomplete or verified, but its state was not persisted, so it
+          is discarded (log-only).
+        * .old (+.tmp) without target: power cut between the two renames.
+          .old is the known pre-replacement copy and is renamed back onto
+          the target; only after that rename is synced does .tmp go.
+        * .tmp without target and without .old: unreachable from the save
+          order (a .tmp only disappears once a .old exists), so this means
+          tampering or filesystem corruption. Fail safe: keep the only
+          potential copy and report it instead of destroying it.
         """
-        tmppath, oldpath = self._scratch_paths(fullpath)
-        if platform.file_exists(oldpath):
-            if platform.file_exists(fullpath):
-                self._discard_scratch(oldpath)
-            else:
-                os.rename(oldpath, fullpath)
-        # A .tmp was never verified as complete, and the target - restored
-        # above if it needed to be - is authoritative either way.
-        self._discard_scratch(tmppath)
+        # Collect before renaming or deleting: mutating a FAT directory
+        # while its ilistdir() iterator is active is unsafe. A listing
+        # failure propagates; a save must not proceed from unknown state.
+        names = self._listdir_names(path)
+        prefix = self.fileprefix(path)
+        leftovers = {}
+        for name in names:
+            if not name.startswith("."):
+                continue
+            for suffix in (SAVE_OLD_SUFFIX, SAVE_TMP_SUFFIX):
+                if name.endswith(suffix):
+                    base = name[1:-len(suffix)]
+                    if base.startswith(prefix):
+                        leftovers.setdefault(base, set()).add(suffix)
+                    break
+        states = {}
+        recovery_error = None
+        # Availability first: attempt every restore before any stale-copy
+        # cleanup. Otherwise one key's cleanup failure could indefinitely
+        # hide another key whose .old file is its only surviving copy.
+        for base in sorted(leftovers):
+            fullpath = "%s/%s" % (path, base)
+            tmppath, oldpath = self._scratch_paths(fullpath)
+            has_old = SAVE_OLD_SUFFIX in leftovers[base]
+            has_tmp = SAVE_TMP_SUFFIX in leftovers[base]
+            has_target = base in names
+            if has_old and not has_target:
+                # .old is the only surviving copy of the key - put it back.
+                try:
+                    os.rename(oldpath, fullpath)
+                    platform.strict_sync()
+                except Exception as e:
+                    if recovery_error is None:
+                        recovery_error = KeyStoreError(
+                            "Failed to recover a key file interrupted by a "
+                            "power cut: %s" % e
+                        )
+                else:
+                    has_old = False
+                    has_target = True
+                    names.append(base)
+            states[base] = (has_target, has_old, has_tmp)
+
+        if recovery_error is not None:
+            raise recovery_error
+
+        cleanup_error = None
+        for base in sorted(states):
+            fullpath = "%s/%s" % (path, base)
+            tmppath, oldpath = self._scratch_paths(fullpath)
+            has_target, has_old, has_tmp = states[base]
+            if has_old:
+                # The target survived, so .old is a stale complete copy.
+                # Failing to retire it leaves the old encrypted phrase
+                # recoverable from free space - report that.
+                try:
+                    platform.secure_delete_file(oldpath)
+                except Exception as e:
+                    if cleanup_error is None:
+                        cleanup_error = KeyStoreError(
+                            "A previous copy of the key could not be securely "
+                            "removed and may still be recoverable from free "
+                            "space: %s" % e
+                        )
+            if has_tmp and not has_target and not has_old:
+                if cleanup_error is None:
+                    cleanup_error = KeyStoreError(
+                        "Found '%s' without its key file - the storage is in "
+                        "an inconsistent state. The suspicious file was kept "
+                        "rather than destroyed." % tmppath
+                    )
+            elif has_tmp:
+                try:
+                    self._discard_tmp(tmppath)
+                except Exception as e:
+                    if cleanup_error is None:
+                        cleanup_error = KeyStoreError(
+                            "A temporary encrypted copy of the key could not "
+                            "be securely removed and may still be recoverable "
+                            "from free space: %s" % e
+                        )
+
+        if cleanup_error is not None:
+            raise cleanup_error
+        return names
 
     def _save_key_file(self, fullpath, replacing):
         """
-        Writes the encrypted recovery phrase to `fullpath`.
-
-        For a new file that is one strict save. Replacing an existing one
-        is the interesting case, and it has two requirements that pull
-        against each other:
-
-        * The old file must not simply be truncated. save_aead() opens the
-          path "wb", and truncating frees the old cluster chain WITHOUT
-          overwriting it, so the previous encrypted phrase stays readable
-          in free space - where a later delete can no longer reach it, and
-          where the unrotated enc_secret still decrypts it.
-        * The old file must not be destroyed before the new one exists
-          either. It may be the user's only persistent copy, and a pulled
-          card, a failed write or a power cut between the two leaves them
-          with none at all.
-
-        So the new copy is written and verified under a scratch name, and
-        the swap is done with renames rather than a delete:
+        Writes the encrypted recovery phrase to `fullpath`. For a new
+        file that is one strict save. Replacing an existing one swaps in
+        the new copy without ever leaving zero valid copies or a
+        recoverable old allocation:
 
             write .tmp -> strict sync -> read back and verify
                        -> rename the target to .old
                        -> rename .tmp onto the target -> sync
                        -> secure-delete .old
 
-        Retiring the old file by renaming it, rather than destroying it
-        before the new one is in place, is what removes the last window in
-        which the key exists only under a name the pickers do not show. A
-        FAT rename rewrites the directory entry and moves no data, so .old
-        still occupies the clusters the target did and overwriting it at
-        the end reaches exactly the same sectors - the anti-residue
-        guarantee is unchanged.
-
-        The gap between the two renames is the only point where the target
-        name is absent, and _reconcile_scratch() above recovers from a cut
-        inside it on the next save. Everywhere else a complete, verified
-        copy exists under a name this code knows how to find.
+        Truncating over the old file ("wb") would free its cluster chain
+        unoverwritten; destroying it before the new copy exists would
+        risk a power cut leaving the user with no copy at all. The rename
+        swap avoids both, and reconcile_scratch_dir() recovers the one
+        state where the swap is half done (between the two renames).
+        Retiring .old is destructive of the user's previous key, so a
+        failure there is reported accurately rather than swallowed.
         """
         plaintext = self.mnemonic.encode()
         if not replacing:
@@ -326,22 +404,58 @@ class FlashKeyStore(RAMKeyStore):
             # Nothing has been touched yet: clean up and leave the existing
             # file exactly as it was.
             print(e)
-            self._discard_scratch(tmppath)
+            try:
+                self._discard_tmp(tmppath)
+            except Exception as cleanup_error:
+                print(cleanup_error)
             raise KeyStoreError("Failed to write the new file: %s" % e)
 
+        # Keep the stages separate: each failure has a different known-safe
+        # recovery state and therefore a different cleanup rule.
         try:
             os.rename(fullpath, oldpath)
-            try:
-                os.rename(tmppath, fullpath)
-            except Exception:
-                # Put the old key back before giving up.
-                os.rename(oldpath, fullpath)
-                raise
-            platform.strict_sync()
         except Exception as e:
             print(e)
-            self._discard_scratch(tmppath)
+            # The target rename failed, so the original target is intact.
+            try:
+                self._discard_tmp(tmppath)
+            except Exception as cleanup_error:
+                print(cleanup_error)
             raise KeyStoreError("Failed to store the key: %s" % e)
+
+        try:
+            os.rename(tmppath, fullpath)
+        except Exception as swap_error:
+            # The target name is absent, but both .old and the verified
+            # .tmp exist. Restore .old and sync before retiring .tmp. If
+            # rollback fails, keep both scratch files for startup/listing
+            # recovery rather than risking the only valid copies.
+            try:
+                os.rename(oldpath, fullpath)
+                platform.strict_sync()
+            except Exception as rollback_error:
+                print(rollback_error)
+                raise KeyStoreError(
+                    "Failed to store the key and could not restore its "
+                    "original filename. Recovery copies were kept: %s"
+                    % swap_error
+                )
+            try:
+                self._discard_tmp(tmppath)
+            except Exception as cleanup_error:
+                print(cleanup_error)
+            raise KeyStoreError("Failed to store the key: %s" % swap_error)
+
+        try:
+            platform.strict_sync()
+        except Exception as e:
+            # New target and .old are both still present. Do not retire the
+            # known old copy if the directory swap could not be synced.
+            raise KeyStoreError(
+                "The replacement was written, but its filename change "
+                "could not be synced. The previous copy was kept for "
+                "recovery: %s" % e
+            )
 
         # The replacement is in place, so the copy it replaced is now
         # expendable - and must not outlive this call in free space.
@@ -369,9 +483,9 @@ class FlashKeyStore(RAMKeyStore):
 
         fullpath = "%s/%s.%s" % (path, self.fileprefix(path), filename)
 
-        # Recover from a save of this name that a power cut left half done,
-        # before asking whether there is anything to replace.
-        self.reconcile_scratch(fullpath)
+        # Recover interrupted replacements in this directory before asking
+        # whether there is anything to replace.
+        self.reconcile_scratch_dir(path)
 
         replacing = False
         if platform.file_exists(fullpath):
@@ -392,10 +506,18 @@ class FlashKeyStore(RAMKeyStore):
 
     @property
     def is_key_saved(self):
-        flash_files = [
-            f[0] for f in os.ilistdir(self.flashpath)
-            if f[0].lower().startswith(self.fileprefix(self.flashpath))
-        ]
+        try:
+            names = self.reconcile_scratch_dir(self.flashpath)
+            prefix = self.fileprefix(self.flashpath)
+            flash_files = [name for name in names
+                           if name.lower().startswith(prefix)]
+        except Exception as e:
+            # Never hide a key because recovery could not finish: an
+            # unreconciled leftover may be the only copy. The load/delete
+            # flows run reconcile_scratch_dir() again and surface the
+            # error properly; this property only decides menu buttons.
+            print(e)
+            return True
         flash_exists = (len(flash_files) > 0)
         return flash_exists
 
@@ -423,8 +545,13 @@ class FlashKeyStore(RAMKeyStore):
         return await self.show(Menu(buttons, title="Select a file", last=(None, "Cancel")))
 
     def load_files(self, path):
+        # An interrupted replacement must not make a key look gone in the
+        # load/delete picker: reconcile leftovers before listing.
+        names = self.reconcile_scratch_dir(path)
         buttons = []
-        files = [f[0] for f in os.ilistdir(path) if f[0].startswith(self.fileprefix(path))]
+        prefix = self.fileprefix(path)
+        files = [name for name in names
+                 if name.startswith(prefix)]
 
         if len(files) == 0:
             buttons += [(None, 'No files found')]
@@ -432,7 +559,7 @@ class FlashKeyStore(RAMKeyStore):
             files.sort()
             for file in files:
                 displayname = file.replace(self.fileprefix(path), "")
-                if displayname is "":
+                if displayname == "":
                     displayname = "Default"
                 else:
                     displayname = displayname[1:]  # strip first character
