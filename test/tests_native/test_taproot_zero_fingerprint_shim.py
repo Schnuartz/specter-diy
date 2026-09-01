@@ -1,20 +1,22 @@
-"""Regression tests for issue #326.
+"""Defensive tests for the taproot zero-master-fingerprint shim.
 
-BlueWallet (>= 7.2.2) exports BIP86 (single-key taproot) watch-only wallets and,
-when it does not know the seed's master fingerprint, writes an all-zero
-fingerprint (``00000000``) into ``PSBT_IN_TAP_BIP32_DERIVATION`` /
-``PSBT_OUT_TAP_BIP32_DERIVATION`` (see BlueWallet
-``class/wallets/abstract-hd-electrum-wallet.ts`` -> ``createTransaction`` /
-``tapBip32Derivation``).
+``WalletManager.fill_zero_fingerprint()`` normalises an all-zero master
+fingerprint (``00000000``) that a coordinator may write into a PSBT: it
+re-derives the key from the local seed and, only if it matches, replaces the
+zero fingerprint with the real one so ``Descriptor.owns()`` can recognise the
+wallet.  Historically it only inspected the legacy ``bip32_derivations`` map;
+this change applies the identical authenticated repair to
+``taproot_bip32_derivations`` (BIP-371), keeping the two maps symmetric.
 
-Specter already had a compatibility shim (``WalletManager.fill_zero_fingerprint``)
-that authenticates such a zero fingerprint against a locally derived key before
-replacing it with the real one -- but it only inspected the *legacy*
-``bip32_derivations`` map, never ``taproot_bip32_derivations``.  As a result a
-genuine, imported BIP86 wallet was reported as ``Unknown wallet in inputs`` and,
-more importantly, its change output was no longer verified.
+Note: BlueWallet v7.2.2-v7.2.6 does *not* actually emit a zero fingerprint for
+an imported BIP86 wallet - see ``test_bluewallet_taproot_recognition.py`` and
+``test/fixtures/bluewallet-7.2.2-issue-326.psbt`` for the real output, which
+carries the correct fingerprint and is already recognised without this change.
+These tests therefore lock down the shim's contract in the abstract: an
+authenticated zero fingerprint is repaired, everything else stays "unknown".
 
-These tests drive the real ``WalletManager.preprocess_psbt`` pipeline.
+All tests drive the real ``WalletManager.preprocess_psbt`` pipeline; the
+zero-fingerprint condition is injected directly into the PSBT scope.
 """
 import sys
 
@@ -54,7 +56,7 @@ def _leaf(desc_str, idx, branch):
     return leaf.script_pubkey(), leaf.keys[0].get_public_key()
 
 
-class Issue326Base(TestCase):
+class TaprootZeroFpShimBase(TestCase):
     NETWORK = "regtest"
 
     def setUp(self):
@@ -110,8 +112,10 @@ class Issue326Base(TestCase):
         return self.manager.preprocess_psbt(BytesIO(raw), BytesIO())
 
 
-class Issue326RecognitionTest(Issue326Base):
-    """The core red -> green regression."""
+class TaprootZeroFpShimRecognitionTest(TaprootZeroFpShimBase):
+    """An authenticated zero fingerprint in a tap derivation is repaired so the
+    imported wallet (and its change output) is recognised - the same behaviour
+    the legacy ``bip32_derivations`` shim already provides."""
 
     def _single_input_psbt(self, fp, account=0):
         desc = _bip86_descriptor(self.keystore, self.net, account=account)
@@ -128,13 +132,13 @@ class Issue326RecognitionTest(Issue326Base):
                          bip32.parse_path("m/86h/1h/%dh/1/0" % account), 35000),
         )
 
-    def test_bluewallet_zero_fingerprint_input_is_recognized(self):
+    def test_authenticated_zero_fingerprint_input_is_recognized(self):
         wallets, meta = self._run(self._single_input_psbt(ZERO_FP))
         # confirm_wallets() shows "Unknown wallet in inputs" iff None in wallets
         self.assertNotIn(None, wallets)
         self.assertEqual(meta["inputs"][0]["label"], "BW")
 
-    def test_bluewallet_zero_fingerprint_change_is_verified(self):
+    def test_authenticated_zero_fingerprint_change_is_verified(self):
         wallets, meta = self._run(self._single_input_psbt(ZERO_FP))
         self.assertFalse(meta["outputs"][0]["change"])   # external recipient
         self.assertTrue(meta["outputs"][1]["change"])    # BIP86 change
@@ -173,7 +177,7 @@ class Issue326RecognitionTest(Issue326Base):
         self.assertTrue(meta["outputs"][1]["change"])
 
 
-class Issue326SecurityTest(Issue326Base):
+class TaprootZeroFpShimSecurityTest(TaprootZeroFpShimBase):
     """A zero fingerprint is untrusted input - it must be authenticated against a
     locally derived key before it is honoured.  None of these must be recognised.
     """
@@ -243,7 +247,7 @@ class Issue326SecurityTest(Issue326Base):
         self.assertEqual(meta["inputs"][0]["label"], "Unknown wallet")
 
 
-class Issue326MixedInputsTest(Issue326Base):
+class TaprootZeroFpShimMixedInputsTest(TaprootZeroFpShimBase):
     def test_known_and_unknown_inputs_are_distinguished(self):
         desc = _bip86_descriptor(self.keystore, self.net)
         self._import(desc)
@@ -271,7 +275,7 @@ class Issue326MixedInputsTest(Issue326Base):
         self.assertEqual(meta["inputs"][1]["label"], "Unknown wallet")
 
 
-class Issue326NonTaprootRegressionTest(Issue326Base):
+class TaprootZeroFpShimNonTaprootRegressionTest(TaprootZeroFpShimBase):
     """The pre-existing legacy-derivation zero-fingerprint shim must keep working."""
 
     def _wpkh_descriptor(self):
@@ -319,7 +323,7 @@ class Issue326NonTaprootRegressionTest(Issue326Base):
         self.assertIn(None, wallets)
 
 
-class Issue326SigningE2ETest(Issue326Base):
+class TaprootZeroFpShimSigningE2ETest(TaprootZeroFpShimBase):
     def test_recognized_wallet_signs_and_signature_is_valid(self):
         from embit.psbtview import PSBTView
 
