@@ -18,7 +18,7 @@ from platform import (
     get_flash_write_protection_status,
 )
 from hosts import Host, HostError
-from app import BaseApp
+from app import BaseApp, NetworkSwitchRequested
 from embit import bip39
 from embit.liquid.networks import NETWORKS
 from gui.screens.settings import HostSettings
@@ -237,11 +237,6 @@ class Specter:
                     return self.set_mnemonic(mnemonic)
                 else:
                     return True
-            if data == b"select_network":
-                # let an app (e.g. the xpub network-mismatch screen) send
-                # the user straight to the network picker
-                await self.select_network()
-                return True
             raise SpecterError("Invalid command '%s'" % data)
         return await self.process_host_request(stream, popup=False, appname=app, show_fn=show_fn)
 
@@ -721,6 +716,12 @@ class Specter:
             stream.seek(0)
             app = matching_apps[0]
             res = await app.process_host_command(stream, show_fn)
+        except NetworkSwitchRequested as e:
+            # the app refused the request and the user chose to fix the
+            # network: open the picker, then still report the failure
+            self.gui.hide_loader()
+            await self.select_network()
+            raise HostError(e.host_message)
         except Exception as e:
             if isinstance(e, BaseError):
                 # error that has a meaningfull message, will be sent to the host

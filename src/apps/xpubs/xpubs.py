@@ -1,4 +1,4 @@
-from app import BaseApp, AppError
+from app import BaseApp, AppError, NetworkSwitchRequested
 from gui.screens import Menu, DerivationScreen, NumericScreen, Alert, InputScreen, Prompt
 from .screens import XPubScreen
 from . import scope as xpubauth_scope
@@ -344,11 +344,10 @@ class XpubApp(BaseApp):
                         cancel_text="OK",
                     )
                 )
+                host_message = "network mismatch: device is on %s" % device_net
                 if open_settings:
-                    await self.communicate(BytesIO(b"select_network"), app="")
-                raise AppError(
-                    "network mismatch: device is on %s" % device_net
-                )
+                    raise NetworkSwitchRequested(host_message)
+                raise AppError(host_message)
             fingerprint = hexlify(self.keystore.fingerprint).decode()
             confirm = await show_screen(
                 Prompt(

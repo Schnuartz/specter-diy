@@ -191,19 +191,25 @@ class XpubsHostCommandTest(TestCase):
             self._run(self.app.process_host_command(stream, show_screen))
         self.assertEqual(seen[0].kwargs.get("confirm_text"), "Network settings")
 
-    def test_xpub_wrong_network_button_opens_the_network_picker(self):
-        sent = []
+    def test_xpub_wrong_network_button_signals_a_network_switch(self):
+        # tapping "Network settings" raises NetworkSwitchRequested so
+        # Specter can open the picker; the host still gets the failure
+        from app import NetworkSwitchRequested
 
-        async def rec_communicate(stream, app=None, **kw):
-            sent.append((stream.read(), app))
-            return None
-
-        self.app.communicate = rec_communicate
         show_screen, seen = self._show_screen(True)  # tap "Network settings"
         stream = BytesIO(b"xpub m/84h/0h/0h")
-        with self.assertRaises(Exception):
+        with self.assertRaises(NetworkSwitchRequested) as ctx:
             self._run(self.app.process_host_command(stream, show_screen))
-        self.assertEqual(sent, [(b"select_network", "")])
+        self.assertIn("network mismatch", ctx.exception.host_message)
+
+    def test_xpub_wrong_network_ok_button_does_not_signal_a_switch(self):
+        from app import NetworkSwitchRequested
+
+        show_screen, seen = self._show_screen(False)  # tap "OK"
+        stream = BytesIO(b"xpub m/84h/0h/0h")
+        with self.assertRaises(Exception) as ctx:
+            self._run(self.app.process_host_command(stream, show_screen))
+        self.assertNotIsInstance(ctx.exception, NetworkSwitchRequested)
 
     def test_xpub_wrong_network_never_reaches_derivation_confirm(self):
         # dismissing with "OK" must not fall through to the normal prompt
