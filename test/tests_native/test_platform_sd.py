@@ -138,12 +138,18 @@ class EraseAndFormatTest(TestCase):
             [
                 (start, count * 512)
                 for start, count in [
-                    (i, min(256, 4100 - i))
-                    for i in range(0, 4100, 256)
+                    (i, min(platform.SECURE_ERASE_CHUNK_BYTES // 512, 4100 - i))
+                    for i in range(
+                        0, 4100, platform.SECURE_ERASE_CHUNK_BYTES // 512
+                    )
                 ]
             ],
         )
-        self.assertEqual(len(progress), 17)
+        self.assertEqual(
+            len(progress),
+            (4100 + platform.SECURE_ERASE_CHUNK_BYTES // 512 - 1)
+            // (platform.SECURE_ERASE_CHUNK_BYTES // 512),
+        )
         self.assertEqual(progress[-1], 1.0)
         self.assertEqual(dev.power_states, [True, False])
 
@@ -217,7 +223,7 @@ class EraseAndFormatTest(TestCase):
         self.assertEqual(len(mkfs.calls), 1)
         self.assertIs(mkfs.calls[0], dev)
         # And only after every block was written: 4100 blocks of 512 bytes
-        # in 128 KiB chunks is 16 full chunks plus a 4-block remainder.
+        # in fixed-size chunks, with a 4-block remainder.
         self.assertEqual(sum(n for _, n in dev.writes), 4100 * 512)
         self.assertEqual(dev.power_states, [True, False])
 
@@ -262,7 +268,7 @@ class EraseAndFormatTest(TestCase):
         self.assertEqual(dev.power_states, [True, False])
 
     def test_mkfs_running_out_of_memory_is_reported_as_a_completed_erase(self):
-        """The erase buffer is 128 KiB and mkfs() allocates FatFs structures
+        """The erase buffer is 16 KiB and mkfs() allocates FatFs structures
         of its own, so this is the one allocation most likely to fail - and
         it fails after the whole card has already been overwritten.
         MemoryError is not an OSError, so without its own handler it would
@@ -333,7 +339,31 @@ class EraseAndFormatTest(TestCase):
         finally:
             del platform.bytearray
 
-        self.assertEqual(allocations, [128 * 1024])
+        self.assertEqual(allocations, [platform.SECURE_ERASE_CHUNK_BYTES])
+        self.assertEqual(sum(n for _, n in dev.writes), 4100 * 512)
+
+    def test_buffer_falls_back_when_the_heap_is_fragmented(self):
+        """A failed large allocation is harmless before the first write;
+        retry with a smaller bounded chunk instead of failing the erase."""
+        dev = _FakeBlockDevice(block_count=4100, block_size=512)
+        sd = platform.SDCard(sd=dev)
+        allocations = []
+        real_bytearray = bytearray
+
+        def fragmented_heap(size):
+            allocations.append(size)
+            if size > 4 * 1024:
+                raise MemoryError("largest free block is too small")
+            return real_bytearray(size)
+
+        platform.bytearray = fragmented_heap
+        try:
+            _run(sd.erase_and_format())
+        finally:
+            del platform.bytearray
+
+        self.assertEqual(allocations, [16 * 1024, 8 * 1024, 4 * 1024])
+        self.assertEqual(dev.writes[0], (0, 4 * 1024))
         self.assertEqual(sum(n for _, n in dev.writes), 4100 * 512)
 
     def test_allocation_failure_aborts_before_touching_the_card(self):
@@ -598,7 +628,9 @@ class EraseAndFormatTest(TestCase):
             self.assertIsInstance(ctx.exception.__cause__, asyncio.CancelledError)
 
         _run(main())
-        self.assertEqual(dev.writes, [(0, 128 * 1024)])
+        self.assertEqual(
+            dev.writes, [(0, platform.SECURE_ERASE_CHUNK_BYTES)]
+        )
         self.assertEqual(dev.power_states, [True, False])
 
 

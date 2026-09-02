@@ -124,6 +124,11 @@ _NO_FILESYSTEM = (
     "and must be reformatted on a computer before it can be used."
 )
 
+# Keep the full-card erase buffer small enough for the fragmented internal
+# MicroPython heap. The STM32F469's external SDRAM is not the GC heap, so a
+# large bytearray here competes with the application for internal SRAM.
+SECURE_ERASE_CHUNK_BYTES = 16 * 1024
+
 
 class SDCard:
     _mounted = False
@@ -320,10 +325,12 @@ class SDCard:
                     "(card may have been removed):\n\n%s" % e
                 ) from e
             validate_block_geometry(block_size, block_count, "SD card")
-            # 128 KiB amortizes SD writes while keeping the allocation
-            # viable on a fragmented MicroPython heap; block_size is
-            # capped by the geometry check above, so this stays bounded.
-            chunk_blocks = max(1, (128 * 1024) // block_size)
+            # Keep the allocation comfortably below the available internal
+            # heap. block_size is capped by the geometry check above, so the
+            # buffer remains bounded even for unusual block devices. If the
+            # heap is still fragmented, progressively fall back to smaller
+            # chunks before touching the first block.
+            chunk_blocks = max(1, SECURE_ERASE_CHUNK_BYTES // block_size)
             # One zero-filled buffer, allocated BEFORE the first
             # destructive write and reused for every chunk: a MemoryError
             # here costs nothing (no block has been touched), while one
@@ -331,7 +338,18 @@ class SDCard:
             # complete overwrite for sanitization - see
             # secure_delete_file() for why one pass of zeros, never random.
             try:
-                buf = bytearray(chunk_blocks * block_size)
+                while True:
+                    # The menu and VFS may have left reclaimable Python
+                    # objects behind. Collect before each allocation and not
+                    # after the first destructive write.
+                    gc.collect()
+                    try:
+                        buf = bytearray(chunk_blocks * block_size)
+                        break
+                    except MemoryError as e:
+                        if chunk_blocks == 1:
+                            raise e
+                        chunk_blocks = max(1, chunk_blocks // 2)
             except MemoryError as e:
                 raise RuntimeError(
                     "Not enough memory to start the secure erase. No data "
