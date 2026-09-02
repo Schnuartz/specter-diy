@@ -963,11 +963,15 @@ def wipe():
 
     * Internal flash (256-447) is overwritten in full - keystore secret,
       PIN state and the encryption secret, i.e. the key material itself.
-    * Of the QSPI only its filesystem blocks (448-449) are overwritten.
-      The ~16 MiB behind them (wallet descriptors and metadata, host and
-      global settings) is deleted through the filesystem above and is
-      encrypted under keys derived from the destroyed secret - that is
-      cryptographic erasure of the QSPI, not an overwrite of it.
+    * Of the QSPI only its filesystem blocks (448-449) are overwritten. The
+      filesystem entries are also logically removed above before the raw
+      overwrite. The ~16 MiB behind them is not physically overwritten:
+      host/global settings and other device-state data use keys derived from
+      the device secret, but wallet descriptors and metadata use the
+      seed-derived idkey (m/0x1D') and do not become cryptographically erased
+      merely because the device secret is destroyed. Without the original
+      seed those wallet files remain undecryptable, but this is not a blanket
+      physical or forensic erasure of QSPI.
     * Volatile memory is not scrubbed: pyb.hard_reset() does not clear
       SRAM, so secrets held in RAM can survive the reset until ordinary
       allocation overwrites them.
