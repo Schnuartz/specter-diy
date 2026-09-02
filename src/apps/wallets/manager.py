@@ -795,7 +795,7 @@ class WalletManager(BaseApp):
         self.add_warnings(meta)
         return wallets, meta
 
-    def fee_basis(self, meta):
+    def _fee_basis_for_asset(self, meta, fee_asset=None):
         """Return (amount, is_send_amount) that the fee should be compared to.
 
         Only cryptographically verified values are used: the recipient
@@ -808,6 +808,7 @@ class WalletManager(BaseApp):
             if out.get("value", 0) > 0
             and not out.get("fee_output", False)
             and not out.get("owned", out.get("change", False))
+            and (fee_asset is None or out.get("asset_id") == fee_asset)
         )
         if send_amount > 0:
             return send_amount, True
@@ -815,20 +816,44 @@ class WalletManager(BaseApp):
             inp["value"]
             for inp in meta.get("inputs", [])
             if inp.get("value", 0) > 0
+            and (fee_asset is None or inp.get("asset_id") == fee_asset)
         )
         return verified_input_total, False
+
+    def fee_basis(self, meta):
+        return self._fee_basis_for_asset(meta)
+
+    def fee_assessment(self, meta):
+        """Return fee assessment data for this transaction backend."""
+        fee_basis, is_send_amount = self.fee_basis(meta)
+        return {
+            "fee_basis": fee_basis,
+            "fee_basis_is_send_amount": is_send_amount,
+        }
 
     def add_warnings(self, meta):
         """Add transaction-level warnings without replacing existing ones."""
         fee = meta.get("fee")
-        fee_basis, is_send_amount = self.fee_basis(meta)
+        assessment = self.fee_assessment(meta)
+        meta.pop("fee_warning", None)
         # expose the basis so the confirmation screen shows the same
         # percentage that the warning is based on
-        meta["fee_basis"] = fee_basis
-        meta["fee_basis_is_send_amount"] = is_send_amount
+        meta["fee_basis"] = assessment.get("fee_basis")
+        meta["fee_basis_is_send_amount"] = assessment.get(
+            "fee_basis_is_send_amount", True
+        )
         # precompute the percentage once so the warning text and the
         # confirmation screen can never show a different number
         fee_percent = None
+        meta["fee_percent"] = None
+        if assessment.get("warning"):
+            meta["fee_warning"] = assessment["warning"]
+            warnings = meta.setdefault("warnings", [])
+            if assessment["warning"] not in warnings:
+                warnings.append(assessment["warning"])
+            return
+
+        fee_basis = assessment.get("fee_basis", 0)
         if fee is not None and fee > 0 and fee_basis > 0:
             fee_percent = fee * 100 / fee_basis
         meta["fee_percent"] = fee_percent
@@ -836,7 +861,7 @@ class WalletManager(BaseApp):
             fee_percent is not None
             and fee * 100 >= fee_basis * self.HIGH_FEE_PERCENT
         ):
-            if is_send_amount:
+            if meta["fee_basis_is_send_amount"]:
                 warning = "Fee is %.2f%% of the send amount - unusually high!" % fee_percent
             else:
                 warning = "Fee is %.2f%% of total inputs (self-transfer) - unusually high!" % fee_percent

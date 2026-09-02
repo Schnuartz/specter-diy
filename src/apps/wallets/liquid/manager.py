@@ -21,6 +21,10 @@ SIGHASH_NAMES = {
     SIGHASH.NONE: "NONE",
     SIGHASH.SINGLE: "SINGLE",
 }
+LIQUID_FEE_UNASSESSABLE_WARNING = (
+    "Fee cannot be assessed automatically for this multi-asset transaction. "
+    "Please verify the fee manually!"
+)
 # add sighash | anyonecanpay
 for sh in list(SIGHASH_NAMES):
     SIGHASH_NAMES[sh | SIGHASH.ANYONECANPAY] = SIGHASH_NAMES[sh] + " | ANYONECANPAY"
@@ -378,6 +382,7 @@ class LWalletManager(WalletManager):
             metainp.update({
                 "label": wallet.name if wallet else "Unknown wallet",
                 "value": value,
+                "asset_id": asset,
                 "asset": self.asset_label(asset),
                 "sequence": inp.sequence,
             })
@@ -544,7 +549,9 @@ class LWalletManager(WalletManager):
                 value = -1
             metaout.update({
                 "change": (wallet is not None and len(wallets) == 1 and wallet in wallets),
+                "owned": wallet is not None and wallet in wallets,
                 "value": value,
+                "asset_id": asset,
                 "address": self.get_address(out),
                 "asset": self.asset_label(asset),
             })
@@ -574,7 +581,7 @@ class LWalletManager(WalletManager):
             if out.script_pubkey.data == b"" and isinstance(value, int) and value > 0:
                 metaout["fee_output"] = True
                 meta["fee"] = meta.get("fee", 0) + value
-                meta["fee_asset"] = metaout["asset"]
+                meta["fee_asset"] = asset
             out.write_to(fout, skip_separator=True, version=psbtv.version)
             # write rangeproofs and surjection proofs
             # separator
@@ -583,30 +590,29 @@ class LWalletManager(WalletManager):
         self.add_warnings(meta)
         return wallets, meta
 
-    def fee_basis(self, meta):
-        """Same verified basis as the base class, but restricted to the
-        L-BTC (fee) asset so multi-asset transfers are not mixed in."""
+    def fee_assessment(self, meta):
+        """Assess Liquid fees without comparing unrelated assets."""
         fee_asset = meta.get("fee_asset")
+        if fee_asset is None:
+            return super().fee_assessment(meta)
 
-        def is_fee_asset(sc):
-            return fee_asset is None or sc.get("asset") == fee_asset
-
-        send_amount = sum(
-            out["value"]
+        transfer_outputs = [
+            out
             for out in meta.get("outputs", [])
-            if out.get("value", 0) > 0
-            and not out.get("fee_output", False)
-            and not out.get("owned", out.get("change", False))
-            and is_fee_asset(out)
-        )
-        if send_amount > 0:
-            return send_amount, True
-        verified_input_total = sum(
-            inp["value"]
-            for inp in meta.get("inputs", [])
-            if inp.get("value", 0) > 0 and is_fee_asset(inp)
-        )
-        return verified_input_total, False
+            if out.get("value", 0) > 0 and not out.get("fee_output", False)
+        ]
+        if any(out.get("asset_id") != fee_asset for out in transfer_outputs):
+            return {
+                "fee_basis": None,
+                "fee_basis_is_send_amount": False,
+                "warning": LIQUID_FEE_UNASSESSABLE_WARNING,
+            }
+
+        fee_basis, is_send_amount = self._fee_basis_for_asset(meta, fee_asset)
+        return {
+            "fee_basis": fee_basis,
+            "fee_basis_is_send_amount": is_send_amount,
+        }
 
 
     ##### assets stuff ######

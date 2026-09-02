@@ -13,6 +13,10 @@ from unittest import TestCase
 from tests.util import clear_testdir, get_keystore, get_wallets_app
 
 HIGH_FEE = "Fee is 10.00% of the send amount - unusually high!"
+LIQUID_UNASSESSABLE = (
+    "Fee cannot be assessed automatically for this multi-asset transaction. "
+    "Please verify the fee manually!"
+)
 
 
 class WalletManagerWarningsTest(TestCase):
@@ -204,3 +208,39 @@ class WalletManagerWarningsTest(TestCase):
         )
         self.assertTrue(proceed)
         self.assertEqual(shown, [])
+
+    def test_liquid_same_asset_uses_percentage_warning(self):
+        liquid = get_wallets_app(get_keystore(), "elementsregtest").manager
+        asset = b"a" * 32
+        meta = {
+            "fee": 1_000,
+            "fee_asset": asset,
+            "outputs": [
+                {"value": 10_000, "asset_id": asset, "owned": False},
+                {"value": 1_000, "asset_id": asset, "fee_output": True},
+            ],
+            "inputs": [{"value": 11_000, "asset_id": asset}],
+        }
+        liquid.add_warnings(meta)
+        self.assertEqual(meta["fee_warning"], HIGH_FEE)
+        self.assertEqual(meta["fee_percent"], 10.0)
+
+    def test_liquid_different_asset_uses_manual_review_warning(self):
+        liquid = get_wallets_app(get_keystore(), "elementsregtest").manager
+        fee_asset = b"a" * 32
+        sent_asset = b"b" * 32
+        meta = {
+            "fee": 1_000,
+            "fee_asset": fee_asset,
+            "outputs": [
+                {"value": 10_000, "asset_id": sent_asset, "owned": False},
+                {"value": 1_000, "asset_id": fee_asset, "fee_output": True},
+            ],
+            "inputs": [
+                {"value": 10_000, "asset_id": sent_asset},
+                {"value": 1_000, "asset_id": fee_asset},
+            ],
+        }
+        liquid.add_warnings(meta)
+        self.assertEqual(meta["fee_warning"], LIQUID_UNASSESSABLE)
+        self.assertIsNone(meta["fee_percent"])
