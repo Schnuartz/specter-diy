@@ -70,7 +70,7 @@ class TransactionScreen(Prompt):
             # can't be an attacker-controlled destination. It stays visible
             # on the details page. A warning overrides this: it means the
             # output needs the user's attention.
-            if out["change"] and not out.get("warning", ""):
+            if out["change"] and not out.get("warnings"):
                 continue
             obj = self.show_output(out, obj)
 
@@ -177,8 +177,9 @@ class TransactionScreen(Prompt):
             else:
                 addrlbl.set_style(0, style_primary)
             lbl = addrlbl
-            if "warning" in out:
-                text = out["warning"]
+            warning_text = "\n".join(out.get("warnings", []))
+            if warning_text:
+                text = warning_text
                 warning = add_label(text, scr=self.page2)
                 warning.set_align(lv.label.ALIGN.LEFT)
                 warning.set_width(380)
@@ -262,8 +263,9 @@ class TransactionScreen(Prompt):
             addr.set_style(0, self.style)
         addr.align(obj, lv.ALIGN.OUT_BOTTOM_MID, 0, 10)
         obj = addr
-        if "warning" in out:
-            text = "WARNING! %s" % out["warning"]
+        warning_text = "\n".join(out.get("warnings", []))
+        if warning_text:
+            text = "WARNING! %s" % warning_text
             warning = add_label(text, scr=self.page)
             warning.set_style(0, self.style_warning)
             warning.align(obj, lv.ALIGN.OUT_BOTTOM_MID, 0, 10)

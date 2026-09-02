@@ -36,7 +36,7 @@ from unittest import TestCase
 # proves (via the AST, not a text/regex match) that the loop over
 # meta["outputs"] in the primary confirmation section of
 # TransactionScreen.__init__ skips an output if and only if it is guarded
-# by exactly `out["change"] and not out.get("warning", ...)`, with no other
+# by exactly `out["change"] and not out.get("warnings")`, with no other
 # conditional skip anywhere in the loop.
 
 TRANSACTION_SCREEN_PATH = (
@@ -83,7 +83,7 @@ class TransactionConfirmationVisibilityTest(TestCase):
         )
 
     def _is_change_guard(self, test):
-        # out["change"] and not out.get("warning", ...)
+        # out["change"] and not out.get("warnings")
         if not (isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And)):
             return False
         if len(test.values) != 2:
@@ -101,7 +101,7 @@ class TransactionConfirmationVisibilityTest(TestCase):
             and isinstance(call.func.value, ast.Name)
             and call.func.value.id == "out"
             and call.args
-            and self._is_str_arg(call.args[0], "warning")
+            and self._is_str_arg(call.args[0], "warnings")
         )
 
     def _is_str_arg(self, node, value):
@@ -123,7 +123,7 @@ class TransactionConfirmationVisibilityTest(TestCase):
         guard = guard_stmts[0]
         self.assertTrue(
             self._is_change_guard(guard.test),
-            'the only skip guard must be exactly `out["change"] and not out.get("warning", ...)` '
+            'the only skip guard must be exactly `out["change"] and not out.get("warnings")` '
             '- a verified change output without a warning, and nothing else, may be hidden',
         )
         self.assertTrue(
@@ -179,8 +179,8 @@ class TransactionConfirmationVisibilityTest(TestCase):
             'for i, out in enumerate(meta["outputs"]): loop not found on the details page',
         )
         loop = details_loops[0]
-        # cosmetic `if out.get("label", ""): ... else: ...` / `if "warning"
-        # in out:` branches (styling, optional warning label) are fine here
+        # cosmetic `if out.get("label", ""): ... else: ...` / warning-text
+        # branches (styling, optional warning label) are fine here
         # - only a continue/break would actually skip an output.
         for node in ast.walk(loop):
             self.assertNotIsInstance(

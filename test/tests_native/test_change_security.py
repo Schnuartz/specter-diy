@@ -294,13 +294,13 @@ class ChangeSecurityTest(TestCase):
         )
 
     def test_output_warnings_are_accumulated(self):
-        metaout = {"warning": "Existing warning!", "warnings": ["Existing warning!"]}
+        metaout = {"warnings": ["Existing warning!"]}
         self.manager.add_output_warning(metaout, INVALID_CHANGE_WARNING)
         self.manager.add_output_warning(metaout, "Existing warning!")
         self.assertEqual(
-            metaout["warning"], "Existing warning!\n" + INVALID_CHANGE_WARNING
+            metaout["warnings"], ["Existing warning!", INVALID_CHANGE_WARNING]
         )
-        self.assertEqual(len(metaout["warnings"]), 2)
+        self.assertNotIn("warning", metaout)
 
     def test_exact_manual_five_transaction_warns_through_preprocess(self):
         wallet = self.wallet
@@ -324,7 +324,7 @@ class ChangeSecurityTest(TestCase):
         self.assertNotIn("label", output)
         self.assertEqual(output["value"], 24_000)
         self.assertEqual(output["address"], self.manager.get_address(tx.vout[1]))
-        self.assertIn(INVALID_CHANGE_WARNING, output["warning"])
+        self.assertEqual(output["warnings"], [INVALID_CHANGE_WARNING])
 
     def test_unknown_input_internal_change_warning_survives_preprocess(self):
         wallet = self.wallet
@@ -345,7 +345,7 @@ class ChangeSecurityTest(TestCase):
         output = meta["outputs"][0]
         self.assertFalse(output["change"])
         self.assertEqual(
-            output["warning"], UNVERIFIED_CHANGE_WARNING % (1, 10)
+            output["warnings"], [UNVERIFIED_CHANGE_WARNING % (1, 10)]
         )
 
     def test_two_suspicious_outputs_keep_warnings_separate(self):
@@ -366,8 +366,8 @@ class ChangeSecurityTest(TestCase):
         psbt.outputs[1].bip32_derivations[fake_pubkey(84)] = self.derivation(1, 5)
         _, meta = self.manager.preprocess_psbt(BytesIO(psbt.serialize()), BytesIO())
         self.assertEqual(
-            [out["warning"] for out in meta["outputs"]],
-            [INVALID_CHANGE_WARNING, INVALID_CHANGE_WARNING],
+            [out["warnings"] for out in meta["outputs"]],
+            [[INVALID_CHANGE_WARNING], [INVALID_CHANGE_WARNING]],
         )
 
     def test_liquid_uses_the_same_conservative_change_rules(self):
@@ -415,13 +415,13 @@ class TransactionScreenSecurityTest(TestCase):
             node
             for node in ast.walk(self.tree)
             if isinstance(node, ast.If)
-            and ast.unparse(node.test) == "out['change'] and (not out.get('warning', ''))"
+            and ast.unparse(node.test) == "out['change'] and (not out.get('warnings'))"
         ]
         self.assertEqual(len(guards), 1)
         self.assertTrue(any(isinstance(node, ast.Continue) for node in guards[0].body))
         source = ast.unparse(self.tree)
         self.assertIn("self.show_output(out, obj)", source)
-        self.assertIn("'warning' in out", source)
+        self.assertIn("warning_text = '\\n'.join(out.get('warnings', []))", source)
 
     def test_details_page_has_no_output_skip(self):
         for node in ast.walk(self.tree):

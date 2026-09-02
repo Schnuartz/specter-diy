@@ -403,25 +403,23 @@ class WalletManager(BaseApp):
         warnings = metaout.setdefault("warnings", [])
         if warning not in warnings:
             warnings.append(warning)
-        metaout["warning"] = "\n".join(warnings)
 
     def get_wallet_derivation_claims(self, wallet, out):
         """Return all descriptor-valid derivation claims made for an output."""
         claims = []
-        for derivation in getattr(out, "bip32_derivations", {}).values():
-            try:
-                claim = wallet.descriptor.check_derivation(derivation)
-            except Exception:
-                claim = None
-            if claim is not None and claim not in claims:
-                claims.append(claim)
-        for leafs, derivation in getattr(out, "taproot_bip32_derivations", {}).values():
-            try:
-                claim = wallet.descriptor.check_derivation(derivation)
-            except Exception:
-                claim = None
-            if claim is not None and claim not in claims:
-                claims.append(claim)
+        derivation_sets = (
+            getattr(out, "bip32_derivations", {}).values(),
+            (derivation for leafs, derivation in
+             getattr(out, "taproot_bip32_derivations", {}).values()),
+        )
+        for derivations in derivation_sets:
+            for derivation in derivations:
+                try:
+                    claim = wallet.descriptor.check_derivation(derivation)
+                except Exception:
+                    claim = None
+                if claim is not None and claim not in claims:
+                    claims.append(claim)
         return claims
 
     def get_output_status(self, wallet, wallets, out):
