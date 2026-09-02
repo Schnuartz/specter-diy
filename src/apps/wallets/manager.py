@@ -774,11 +774,19 @@ class WalletManager(BaseApp):
         """
         Populates meta["warnings"] for the transaction confirmation screen.
         Warns if the transaction spends inputs from multiple different
-        wallets (multisig change-address attack mitigation).
+        wallets, or if multiple unknown inputs cannot be grouped by wallet
+        (multisig change-address attack mitigation).
         Appends to existing warnings instead of replacing them.
         """
+        warning = None
         if len(wallets) > 1:
             warning = "Mixed inputs from different wallets!"
+        elif None in wallets and len(meta.get("inputs", [])) > 1:
+            # With only the None wallet bucket, every input is unknown. We
+            # cannot prove that those inputs share the same wallet policy.
+            warning = "Multiple unknown inputs may be from different wallets!"
+
+        if warning:
             warnings = meta.setdefault("warnings", [])
             if warning not in warnings:
                 warnings.append(warning)

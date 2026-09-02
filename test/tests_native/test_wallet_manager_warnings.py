@@ -8,11 +8,16 @@ if sys.implementation.name != 'micropython':
 from unittest import TestCase
 from io import BytesIO
 import gc
+from binascii import hexlify
 
-from embit.psbt import PSBT
+from embit import bip32, ec, script
+from embit.descriptor import Descriptor
+from embit.psbt import PSBT, DerivationPath
+from embit.transaction import Transaction, TransactionInput, TransactionOutput
 from tests.util import get_keystore, get_wallets_app, clear_testdir
 
 MIXED_INPUTS_WARNING = "Mixed inputs from different wallets!"
+UNKNOWN_INPUTS_WARNING = "Multiple unknown inputs may be from different wallets!"
 
 # Watch-only testnet wallets used by the integration tests below.
 DESCRIPTOR_A = (
@@ -60,15 +65,19 @@ class WalletManagerWarningsTest(TestCase):
         self.manager.add_warnings(wallets, meta)
         self.assertFalse("warnings" in meta)
 
-    def test_no_mixed_warning_for_unknown_only_inputs(self):
-        # inputs that belong to no imported wallet are all tracked under
-        # the None key, so len(wallets) == 1. This case is covered by the
-        # separate "Unknown wallet in inputs!" prompt, not by the
-        # mixed-inputs warning.
+    def test_no_warning_for_single_unknown_input(self):
         meta = self._meta()
+        meta["inputs"] = [{}]
         wallets = {None: {"amount": 1000, "gaps": None}}
         self.manager.add_warnings(wallets, meta)
         self.assertFalse("warnings" in meta)
+
+    def test_warning_for_multiple_unknown_inputs(self):
+        meta = self._meta()
+        meta["inputs"] = [{}, {}]
+        wallets = {None: {"amount": 2000, "gaps": None}}
+        self.manager.add_warnings(wallets, meta)
+        self.assertEqual(meta["warnings"], [UNKNOWN_INPUTS_WARNING])
 
     def test_warning_for_mixed_inputs_from_two_wallets(self):
         meta = self._meta()
@@ -160,3 +169,57 @@ class WalletManagerWarningsIntegrationTest(TestCase):
         self.assertEqual(len(wallets), 2)
         self.assertTrue(None in wallets)
         self.assertIn(MIXED_INPUTS_WARNING, meta.get("warnings", []))
+
+    def test_preprocess_multiple_unknown_signable_policies_warns(self):
+        paths = [
+            bip32.parse_path("m/48h/1h/0h/2h/0/0"),
+            bip32.parse_path("m/48h/1h/0h/2h/0/1"),
+        ]
+        device_pubs = [
+            self.keystore.root.derive(path).key.get_public_key() for path in paths
+        ]
+        cosigner_pubs = [
+            ec.PrivateKey(bytes([3]) * 32).get_public_key(),
+            ec.PrivateKey(bytes([4]) * 32).get_public_key(),
+        ]
+        descriptors = [
+            Descriptor.from_string(
+                "wsh(sortedmulti(2,%s,%s))"
+                % (
+                    hexlify(device_pubs[i].sec()).decode(),
+                    hexlify(cosigner_pubs[i].sec()).decode(),
+                )
+            )
+            for i in range(2)
+        ]
+        tx = Transaction(
+            vin=[TransactionInput(b"1" * 32, 0), TransactionInput(b"2" * 32, 0)],
+            vout=[TransactionOutput(190000, script.p2wpkh(device_pubs[0]))],
+        )
+        psbt = PSBT(tx)
+        for i in range(2):
+            psbt.inputs[i].witness_utxo = TransactionOutput(
+                100000, descriptors[i].script_pubkey()
+            )
+            psbt.inputs[i].witness_script = descriptors[i].witness_script()
+            psbt.inputs[i].bip32_derivations[device_pubs[i]] = DerivationPath(
+                self.keystore.fingerprint, paths[i]
+            )
+
+        filled = BytesIO()
+        wallets, meta = self.manager.preprocess_psbt(BytesIO(psbt.serialize()), filled)
+
+        self.assertEqual(len(wallets), 1)
+        self.assertTrue(None in wallets)
+        self.assertIn(UNKNOWN_INPUTS_WARNING, meta.get("warnings", []))
+
+        # Both inputs are signable despite collapsing into the same unknown bucket.
+        filled.seek(0)
+        psbtv = self.manager.PSBTViewClass.view(filled, compress=True)
+        signed = BytesIO()
+        self.manager.sign_psbtview(psbtv, signed, wallets, None)
+        signed.seek(0)
+        signed_psbt = PSBT.read_from(signed)
+        self.assertEqual(
+            [len(inp.partial_sigs) for inp in signed_psbt.inputs], [1, 1]
+        )
