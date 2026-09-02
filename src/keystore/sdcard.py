@@ -125,14 +125,18 @@ class SDKeyStore(FlashKeyStore):
 
         error = None
         sd_exists = False
+        entries = None
         try:
             platform.sdcard.mount()
             prefix = self.fileprefix(self.sdpath)
-            sd_files = [
-                entry[0].lower().startswith(prefix)
-                for entry in os.ilistdir(self.sdpath)
-            ]
-            sd_exists = any(sd_files)
+            entries = os.ilistdir(self.sdpath)
+            try:
+                for entry in entries:
+                    if entry[0].lower().startswith(prefix):
+                        sd_exists = True
+                        break
+            finally:
+                platform._close_entries(entries)
         except Exception as e:
             error = e
         finally:
@@ -145,7 +149,7 @@ class SDKeyStore(FlashKeyStore):
                     print(e)
         if error is not None:
             print(error)
-            return True
+            return flash_exists
         return sd_exists or flash_exists
 
     async def load_mnemonic(self, file=None):
