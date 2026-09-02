@@ -32,9 +32,15 @@ DELAY_AFTER_FACTORY_RESET = 200
 CHUNK_TIMEOUT = 0.5
 
 # ------ GM65 Scanner
-# Header:0x7E 0x00 Types:0x08 Lens:0x01 Address:0x00D9 Data:0x55 (Restore to user setting) - 0x50 (Restore to factory setting) CRC: 0xABCD (no checksum)
+# Write frame: 0x7E 0x00 | 0x08 (write) | Len | Address(2) | Data | CRC(2)
+# Refs are to the GM65-S User Manual, chapter 9 "Serial Port Instruction":
+# https://github.com/3rdIteration/SerialBarcodeReaderTools/blob/master/Manuals/GM65/GM65-S-UserManual.pdf
+#   - CRC may be 0xAB 0xCD when checking is not required (ch. 9.1, p.41)
+#   - a successful write is ACKed with 0x02 0x00 0x00 0x01 0x00 0x33 0x31 (== SUCCESS, ch. 9.3, p.44)
 HEADER = b"\x7E\x00"
 CRC_NO_CHECKSUM = b"\xAB\xCD"
+# Zone bit 0x00D9 (write-only), data 0x55 = "reset to defaults" (register table, p.61).
+# Per default parameters (Form 2-1, p.6) this also puts the UART back to 9600 baud.
 FACTORY_RESET_CMD = HEADER + b"\x08\x01\x00\xD9\x55" + CRC_NO_CHECKSUM
 
 """ We switch the scanner to continuous mode to initiate scanning and
@@ -599,7 +605,13 @@ class QRHost(Host):
             return bool(res)
         
         if self.scanner_model == MODEL_GM65:
-            return bool(self.query(FACTORY_RESET_CMD))
+            # factory reset restores the GM65 to its 9600 baud default,
+            # so the host UART has to follow or configure_gm65() will
+            # talk to the scanner at the wrong baudrate (see issue #355)
+            res = self.query(FACTORY_RESET_CMD) == SUCCESS
+            if res and self.baudrate != BAUD_RATE_9600:
+                self._set_baud(BAUD_RATE_9600)
+            return res
         return False
     
     def _pre_reset_scanner(self):
