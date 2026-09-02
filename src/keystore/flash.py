@@ -195,9 +195,10 @@ class FlashKeyStore(RAMKeyStore):
     async def save_mnemonic(self):
         """Save a mnemonic with deliberately non-transactional semantics.
 
-        Replacing an existing file securely deletes it before writing the
-        new encrypted file. A power interruption may therefore lose the
-        locally stored mnemonic; an independent recovery backup is required.
+        Replacing an existing file best-effort logically overwrites and
+        deletes it before writing the new encrypted file. A power interruption
+        may therefore lose the locally stored mnemonic; an independent
+        recovery backup is required.
         """
         if self.is_locked:
             raise KeyStoreError("Keystore is locked")

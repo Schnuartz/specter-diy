@@ -43,9 +43,9 @@ class SDKeyStore(FlashKeyStore):
         """Save a mnemonic with the same non-transactional semantics as
         FlashKeyStore, including for SD-card files.
 
-        Replacing a file securely deletes it before writing the new encrypted
-        file. A power interruption may cause loss of the local copy; an
-        independent recovery backup is required.
+        Replacing a file best-effort logically overwrites and deletes it before
+        writing the new encrypted file. A power interruption may cause loss of
+        the local copy; an independent recovery backup is required.
         """
         if self.is_locked:
             raise KeyStoreError("Keystore is locked")

@@ -170,13 +170,14 @@ class SDHost(Host):
         return False
 
     async def delete_file(self, path):
-        """Securely deletes one file, after confirming it with the user."""
+        """Best-effort logically overwrites and deletes one file."""
         shortname = path.split("/")[-1]
         confirm = await self.manager.gui.prompt(
             "Delete this file?",
-            "\n\n%s\n\nThe file is overwritten before it is removed, so "
-            "it cannot simply be undeleted afterwards.\n\nThis cannot be "
-            "undone. Continue?" % self.truncate(shortname)
+            "\n\n%s\n\nSpecter-DIY attempts a best-effort logical "
+            "overwrite before removing the file. Physical copies may remain "
+            "and cannot be ruled out.\n\nThis cannot be undone. "
+            "Continue?" % self.truncate(shortname)
         )
         if not confirm:
             return False
@@ -203,8 +204,10 @@ class SDHost(Host):
             "Format the SD card?",
             "\n\nThis erases EVERYTHING on the card - not only the files "
             "Specter-DIY can see, all of it - and cannot be undone.\n\n"
-            "Every block is overwritten before the card is reformatted, so "
-            "the old contents cannot simply be undeleted afterwards.\n\n"
+            "Every block is best-effort overwritten before the card is "
+            "reformatted. Physical copies may remain, and the current "
+            "MicroPython runtime cannot guarantee that every physical I/O "
+            "failure is reported.\n\n"
             "One honest limit: SD cards manage their own wear levelling, so "
             "a small amount of old data can in theory survive in space the "
             "card's controller never exposes. No software can rule that out "
