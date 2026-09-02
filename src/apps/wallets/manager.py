@@ -404,64 +404,155 @@ class WalletManager(BaseApp):
         if warning not in warnings:
             warnings.append(warning)
 
-    def get_wallet_derivation_claims(self, wallet, out):
-        """Return all descriptor-valid derivation claims made for an output."""
+    def _get_key_derivation_claims(
+        self, wallet, pubkey, derivation, is_taproot, descriptor_cache
+    ):
+        """Return ``(claim, descriptor)`` pairs matching a PSBT key and path."""
         claims = []
+        for key_idx, key in enumerate(wallet.descriptor.keys):
+            try:
+                claim = key.check_derivation(derivation)
+                if claim is None:
+                    continue
+                idx, branch_idx = claim
+                cache_key = (wallet, idx, branch_idx)
+                desc = descriptor_cache.get(cache_key)
+                if desc is None:
+                    desc, _ = wallet.get_descriptor(idx, branch_idx)
+                    descriptor_cache[cache_key] = desc
+                derived_pubkey = desc.keys[key_idx].get_public_key()
+                if is_taproot:
+                    key_matches = derived_pubkey.xonly() == pubkey.xonly()
+                    # BIP 371 also permits the tweaked output key.
+                    if not key_matches and key is wallet.descriptor.key:
+                        key_matches = (
+                            desc.script_pubkey().data[2:] == pubkey.xonly()
+                        )
+                else:
+                    key_matches = derived_pubkey == pubkey
+                if not key_matches:
+                    continue
+                duplicate = False
+                for existing_claim, _ in claims:
+                    if existing_claim == claim:
+                        duplicate = True
+                        break
+                if not duplicate:
+                    claims.append((claim, desc))
+            except Exception:
+                continue
+        return claims
+
+    def get_wallet_derivation_claims(self, wallet, out, output_wallet=None):
+        """Return derivation claims attributable to ``wallet`` for an output."""
+        claims = []
+        descriptor_cache = {}
         derivation_sets = (
-            getattr(out, "bip32_derivations", {}).values(),
-            (derivation for leafs, derivation in
-             getattr(out, "taproot_bip32_derivations", {}).values()),
+            (False, getattr(out, "bip32_derivations", {}).items()),
+            (True, ((pubkey, derivation) for pubkey, (leafs, derivation) in
+                    getattr(out, "taproot_bip32_derivations", {}).items())),
         )
-        for derivations in derivation_sets:
-            for derivation in derivations:
+        for is_taproot, derivations in derivation_sets:
+            for pubkey, derivation in derivations:
+                matching_claims = self._get_key_derivation_claims(
+                    wallet, pubkey, derivation, is_taproot, descriptor_cache
+                )
                 try:
                     claim = wallet.descriptor.check_derivation(derivation)
                 except Exception:
                     claim = None
-                if claim is not None and claim not in claims:
-                    claims.append(claim)
+                # Different descriptors can legitimately reuse the same key
+                # origins and derivation paths. If this metadata also derives
+                # the actual output under its known destination wallet, it is
+                # not an exclusive change claim from the spending wallet.
+                if (
+                    claim is not None
+                    and output_wallet is not None
+                    and output_wallet is not wallet
+                ):
+                    try:
+                        output_claims = self._get_key_derivation_claims(
+                            output_wallet, pubkey, derivation, is_taproot,
+                            descriptor_cache
+                        )
+                        if any(
+                            out.script_pubkey is not None
+                            and desc.script_pubkey() == out.script_pubkey
+                            for _, desc in output_claims
+                        ):
+                            matching_claims = []
+                            claim = None
+                    except Exception:
+                        pass
+                if matching_claims:
+                    output_matches = [
+                        matching_claim
+                        for matching_claim, desc in matching_claims
+                        if out.script_pubkey is not None
+                        and desc.script_pubkey() == out.script_pubkey
+                    ]
+                    entry_claims = output_matches or [
+                        matching_claim
+                        for matching_claim, desc in matching_claims
+                    ]
+                else:
+                    # Keep malformed path/pubkey metadata visible as suspicious.
+                    entry_claims = [] if claim is None else [claim]
+                for entry_claim in entry_claims:
+                    if entry_claim not in claims:
+                        claims.append(entry_claim)
         return claims
 
     def get_output_status(self, wallet, wallets, out):
         """Return ``(derivation, is_change, warning)`` for one output.
 
-        A failed ownership check must not erase a descriptor-valid claim from
-        the sole known spending wallet. Claims from unrelated imported wallets
-        and ambiguous transactions are deliberately ignored.
+        Output ownership must not erase a descriptor-valid claim from the sole
+        known spending wallet. Claims from unrelated imported wallets and
+        ambiguous transactions are deliberately ignored.
         """
         derivation = None
         if wallet is not None:
-            derivation = wallet.get_derivation(
-                out.bip32_derivations,
-                getattr(out, "taproot_bip32_derivations", {}),
-            )
-        warning = None
-        if wallet is None:
-            spending_wallets = [w for w in wallets if w is not None]
-            # Only a two-branch descriptor gives branch-list position 1 the
-            # "change" meaning. For <0;1;2> and other unusual layouts we do
-            # not know what position 1 is, so a host derivation for it is not
-            # a change claim and must not raise INVALID_CHANGE_METADATA - same
-            # rule the is_change classification below uses.
-            if (
-                len(spending_wallets) == 1
-                and spending_wallets[0].descriptor.num_branches == 2
-            ):
-                candidate = spending_wallets[0]
-                branch1_claims = [
-                    claim for claim in self.get_wallet_derivation_claims(candidate, out)
-                    if claim[1] == 1
-                ]
-                for idx, branch_idx in branch1_claims:
-                    try:
-                        desc, _ = candidate.get_descriptor(idx, branch_idx)
-                    except Exception:
-                        continue
-                    if out.script_pubkey is not None and desc.script_pubkey() == out.script_pubkey:
+            for claim in self.get_wallet_derivation_claims(wallet, out):
+                try:
+                    desc, _ = wallet.get_descriptor(*claim)
+                    if desc.script_pubkey() == out.script_pubkey:
+                        derivation = claim
                         break
-                else:
-                    if branch1_claims:
-                        warning = INVALID_CHANGE_METADATA_WARNING
+                except Exception:
+                    continue
+            if derivation is None:
+                derivation = wallet.get_derivation(
+                    out.bip32_derivations,
+                    getattr(out, "taproot_bip32_derivations", {}),
+                )
+        warning = None
+        spending_wallets = [w for w in wallets if w is not None]
+        # Only a two-branch descriptor gives branch-list position 1 the
+        # "change" meaning. For <0;1;2> and other unusual layouts we do
+        # not know what position 1 is, so a host derivation for it is not
+        # a change claim and must not raise INVALID_CHANGE_METADATA - same
+        # rule the is_change classification below uses.
+        if (
+            len(spending_wallets) == 1
+            and spending_wallets[0].descriptor.num_branches == 2
+        ):
+            candidate = spending_wallets[0]
+            branch1_claims = [
+                claim for claim in self.get_wallet_derivation_claims(
+                    candidate, out, output_wallet=wallet
+                )
+                if claim[1] == 1
+            ]
+            for idx, branch_idx in branch1_claims:
+                try:
+                    desc, _ = candidate.get_descriptor(idx, branch_idx)
+                except Exception:
+                    continue
+                if out.script_pubkey is not None and desc.script_pubkey() == out.script_pubkey:
+                    break
+            else:
+                if branch1_claims:
+                    warning = INVALID_CHANGE_METADATA_WARNING
 
         is_change = False
         if wallet is not None and derivation is not None:
@@ -485,7 +576,7 @@ class WalletManager(BaseApp):
             ):
                 try:
                     desc, _ = wallet.get_descriptor(idx, branch_idx)
-                    if desc.script_pubkey() == out.script_pubkey:
+                    if warning is None and desc.script_pubkey() == out.script_pubkey:
                         warning = UNVERIFIED_CHANGE_WARNING % (branch_idx, idx)
                 except Exception:
                     pass

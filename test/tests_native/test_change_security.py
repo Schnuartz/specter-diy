@@ -112,6 +112,24 @@ class ChangeSecurityTest(TestCase):
         self.assertFalse(change)
         self.assertEqual(warning, INVALID_CHANGE_WARNING)
 
+    def test_forged_change_claim_is_detected_with_valid_receive_claim(self):
+        receive = self.wallet.descriptor.derive(3, branch_index=0)
+        forged_change = self.wallet.descriptor.derive(9, branch_index=1)
+        out = SimpleNamespace(
+            bip32_derivations={
+                receive.keys[0].get_public_key(): self.derivation(0, 3),
+                forged_change.keys[0].get_public_key(): self.derivation(1, 9),
+            },
+            taproot_bip32_derivations={},
+            script_pubkey=receive.script_pubkey(),
+        )
+        derivation, change, warning = self.manager.get_output_status(
+            self.wallet, {self.wallet: {}}, out
+        )
+        self.assertEqual(derivation, (3, 0))
+        self.assertFalse(change)
+        self.assertEqual(warning, INVALID_CHANGE_WARNING)
+
     def test_unrelated_wallet_metadata_does_not_warn(self):
         other_keystore = get_keystore(mnemonic="zoo " * 11 + "wrong")
         other_origin = "m/84h/1h/0h"
@@ -135,7 +153,7 @@ class ChangeSecurityTest(TestCase):
             self.manager.get_output_status(None, {self.wallet: {}}, out)[2]
         )
 
-    def test_output_of_another_imported_wallet_stays_visible_and_non_change(self):
+    def test_conflicting_change_claim_on_other_wallet_output_warns(self):
         other_keystore = get_keystore(mnemonic="zoo " * 11 + "wrong")
         other_origin = "m/84h/1h/0h"
         other_xpub = other_keystore.get_xpub(other_origin)
@@ -148,29 +166,146 @@ class ChangeSecurityTest(TestCase):
         other.name = "Other"
         self.manager.wallets.append(other)
 
+        other_derived = other.descriptor.derive(3, branch_index=1)
+        forged_change = self.wallet.descriptor.derive(9, branch_index=1)
         tx = Transaction(
             vin=[TransactionInput(b"5" * 32, 0)],
-            vout=[
-                TransactionOutput(
-                    20_000, other.descriptor.derive(3, branch_index=1).script_pubkey()
-                )
-            ],
+            vout=[TransactionOutput(20_000, other_derived.script_pubkey())],
         )
         psbt = PSBT(tx)
         psbt.inputs[0].witness_utxo = TransactionOutput(
             25_000, self.wallet_script(self.wallet, 0, 0)
         )
         psbt.inputs[0].bip32_derivations[fake_pubkey(85)] = self.derivation(0, 0)
-        psbt.outputs[0].bip32_derivations[fake_pubkey(86)] = DerivationPath(
+        psbt.outputs[0].bip32_derivations[
+            other_derived.keys[0].get_public_key()
+        ] = DerivationPath(
             other_keystore.fingerprint,
             bip32.parse_path("%s/1/3" % other_origin),
         )
+        psbt.outputs[0].bip32_derivations[
+            forged_change.keys[0].get_public_key()
+        ] = self.derivation(1, 9)
         _, meta = self.manager.preprocess_psbt(BytesIO(psbt.serialize()), BytesIO())
         output = meta["outputs"][0]
         self.assertFalse(output["change"])
         self.assertIn("Other", output["label"])
         self.assertNotIn("change", output["label"])
-        self.assertNotIn(INVALID_CHANGE_WARNING, output.get("warning", ""))
+        self.assertIn(INVALID_CHANGE_WARNING, output["warnings"])
+
+    def test_shared_derivation_for_other_wallet_does_not_warn(self):
+        xpub = self.keystore.get_xpub(self.origin)
+        other_desc = "sh(wpkh([%s%s]%s/<0;1>/*))" % (
+            self.fingerprint.hex(),
+            self.origin[1:],
+            xpub.to_base58(self.manager.Networks["regtest"]["xpub"]),
+        )
+        other = Wallet.from_descriptor(other_desc, None)
+        other.name = "Nested"
+        self.manager.wallets.append(other)
+
+        derived = other.descriptor.derive(3, branch_index=1)
+        tx = Transaction(
+            vin=[TransactionInput(b"7" * 32, 0)],
+            vout=[TransactionOutput(20_000, derived.script_pubkey())],
+        )
+        psbt = PSBT(tx)
+        psbt.inputs[0].witness_utxo = TransactionOutput(
+            25_000, self.wallet_script(self.wallet, 0, 0)
+        )
+        psbt.inputs[0].bip32_derivations[fake_pubkey(88)] = self.derivation(0, 0)
+        psbt.outputs[0].bip32_derivations[
+            derived.keys[0].get_public_key()
+        ] = self.derivation(1, 3)
+
+        _, meta = self.manager.preprocess_psbt(BytesIO(psbt.serialize()), BytesIO())
+        output = meta["outputs"][0]
+        self.assertFalse(output["change"])
+        self.assertIn("Nested", output["label"])
+        self.assertNotIn(INVALID_CHANGE_WARNING, output.get("warnings", []))
+
+    def test_shared_taproot_output_key_derivation_does_not_warn(self):
+        xpub = self.keystore.get_xpub(self.origin)
+        other_desc = "tr([%s%s]%s/<0;1>/*)" % (
+            self.fingerprint.hex(),
+            self.origin[1:],
+            xpub.to_base58(self.manager.Networks["regtest"]["xpub"]),
+        )
+        other = Wallet.from_descriptor(other_desc, None)
+        other.name = "Taproot"
+        self.manager.wallets.append(other)
+
+        derived = other.descriptor.derive(3, branch_index=1)
+        tx = Transaction(
+            vin=[TransactionInput(b"8" * 32, 0)],
+            vout=[TransactionOutput(20_000, derived.script_pubkey())],
+        )
+        psbt = PSBT(tx)
+        psbt.inputs[0].witness_utxo = TransactionOutput(
+            25_000, self.wallet_script(self.wallet, 0, 0)
+        )
+        psbt.inputs[0].bip32_derivations[fake_pubkey(89)] = self.derivation(0, 0)
+        output_key = ec.PublicKey.from_xonly(derived.script_pubkey().data[2:])
+        psbt.outputs[0].taproot_bip32_derivations[output_key] = (
+            [],
+            self.derivation(1, 3),
+        )
+
+        _, meta = self.manager.preprocess_psbt(BytesIO(psbt.serialize()), BytesIO())
+        output = meta["outputs"][0]
+        self.assertFalse(output["change"])
+        self.assertIn("Taproot", output["label"])
+        self.assertNotIn(INVALID_CHANGE_WARNING, output.get("warnings", []))
+
+    def test_multipath_claim_is_bound_regardless_of_metadata_order(self):
+        origin = "m/48h/1h/0h/2h"
+        xpub = self.keystore.get_xpub(origin)
+        key = "[%s%s]%s" % (
+            self.fingerprint.hex(),
+            origin[1:],
+            xpub.to_base58(self.manager.Networks["regtest"]["xpub"]),
+        )
+        descriptor = "wsh(multi(2,%s/<0;1>/*,%s/<1;0>/*))" % (key, key)
+        wallet = Wallet.from_descriptor(descriptor, None)
+        derived = wallet.descriptor.derive(3, branch_index=0)
+        out = SimpleNamespace(
+            bip32_derivations={
+                derived.keys[0].get_public_key(): DerivationPath(
+                    self.fingerprint,
+                    bip32.parse_path("%s/0/3" % origin),
+                ),
+                derived.keys[1].get_public_key(): DerivationPath(
+                    self.fingerprint,
+                    bip32.parse_path("%s/1/3" % origin),
+                ),
+            },
+            taproot_bip32_derivations={},
+            script_pubkey=derived.script_pubkey(),
+        )
+
+        derivation, change, warning = self.manager.get_output_status(
+            wallet, {wallet: {}}, out
+        )
+        self.assertEqual(derivation, (3, 0))
+        self.assertFalse(change)
+        self.assertIsNone(warning)
+
+        out.bip32_derivations = {
+            derived.keys[1].get_public_key(): DerivationPath(
+                self.fingerprint,
+                bip32.parse_path("%s/1/3" % origin),
+            ),
+            derived.keys[0].get_public_key(): DerivationPath(
+                self.fingerprint,
+                bip32.parse_path("%s/0/3" % origin),
+            ),
+        }
+        derivation, change, warning = self.manager.get_output_status(
+            wallet, {wallet: {}}, out
+        )
+        self.assertEqual(derivation, (3, 0))
+        self.assertFalse(change)
+        self.assertIsNone(warning)
 
     def test_three_branch_descriptors_never_auto_change(self):
         xpub = self.keystore.get_xpub(self.origin)
