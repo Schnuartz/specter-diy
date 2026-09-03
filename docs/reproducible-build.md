@@ -2,6 +2,8 @@
 
 With [docker](https://docs.docker.com/get-docker/) you can build the firmware yourself in the same environment as we do, and verify that binaries in github releases have the same hash. This way you can be sure that firmware upgrades signed by our public keys are actually built from the code in this repository, no backdoors included.
 
+Release builds embed no clone-local repository, branch, or commit metadata. `build_firmware.sh` enables this with `SPECTER_REPRODUCIBLE_BUILD=1`, so git checkouts and `.git`-less source archives produce the same frozen provenance values.
+
 From the root of the repository:
 
 1. Set up bootloader to use production keys:

@@ -26,9 +26,14 @@ if not simulator:
     import stm
 
     sdram.init()
+    try:
+        import sdram_alloc
+    except Exception:
+        sdram_alloc = None
 else:
     _PREALLOCATED = bytes(0x100000)
     stm = None
+    sdram_alloc = None
 
 # injected by the boot.py
 i2c = None # I2C to talk to the battery
@@ -116,6 +121,14 @@ class SDCard:
 
 def fpath(fname):
     """A small function to avoid % storage_root everywhere"""
+    # This board's QSPI chip is defective and its block device is disabled.
+    # Keep the existing logical paths working by using internal flash for
+    # persistent wallet and settings data on real hardware. The simulator
+    # still uses its separate qspi directory.
+    if not simulator and fname == "/qspi":
+        fname = "/flash"
+    elif not simulator and fname.startswith("/qspi/"):
+        fname = "/flash" + fname[5:]
     return "%s%s" % (config.storage_root, fname)
 
 
@@ -263,6 +276,23 @@ def get_preallocated_ram():
         return ctypes.addressof(_PREALLOCATED), len(_PREALLOCATED)
     else:
         return sdram.preallocated_ptr(), sdram.preallocated_size()
+
+def sdram_alloc_buffer(size):
+    """Allocate a large non-secret working buffer in external SDRAM."""
+    if sdram_alloc is not None:
+        return sdram_alloc.alloc(size)
+    return bytearray(size)
+
+def sdram_alloc_reset():
+    """Release all SDRAM-allocated working buffers at once."""
+    if sdram_alloc is not None:
+        sdram_alloc.reset()
+
+def sdram_alloc_stats():
+    """Return used, free, and total SDRAM allocator bytes."""
+    if sdram_alloc is not None:
+        return (sdram_alloc.pool_used(), sdram_alloc.pool_free(), sdram_alloc.pool_size())
+    return None
 
 def sync():
     try:

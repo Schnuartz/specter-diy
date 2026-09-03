@@ -20,6 +20,9 @@ run_main() {
   echo -e "${INFO}
 ══════════════════════ Building main firmware ═════════════════════════════
 ${ENDCOLOR}"
+  # Release firmware must not embed clone-local git metadata, otherwise two
+  # builders of the same source produce different firmware hashes.
+  export SPECTER_REPRODUCIBLE_BUILD=1
   make clean
   make disco USE_DBOOT=1
 }
@@ -96,6 +99,8 @@ run_nobootloader() {
 ═════════════════════ Building firmware without bootloader ════════════════
 ${ENDCOLOR}"
 
+  # Keep the direct-flash development image deterministic as well.
+  export SPECTER_REPRODUCIBLE_BUILD=1
   mkdir -p release
   make clean
   make disco

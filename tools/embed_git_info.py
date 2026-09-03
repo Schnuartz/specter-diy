@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
-"""Generate git metadata for embedding into frozen MicroPython modules."""
+"""Generate deterministic source metadata for frozen MicroPython modules."""
 
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 from pathlib import Path
 from typing import Optional
 
 UNKNOWN_VALUE = "unknown"
+
+REPRODUCIBLE_ENV = "SPECTER_REPRODUCIBLE_BUILD"
+REPOSITORY_ENV = "SPECTER_GIT_REPOSITORY"
+BRANCH_ENV = "SPECTER_GIT_BRANCH"
+COMMIT_ENV = "SPECTER_GIT_COMMIT"
 
 
 def _run_git(args: list[str]) -> Optional[str]:
@@ -19,26 +25,34 @@ def _run_git(args: list[str]) -> Optional[str]:
     return result.decode().strip() or None
 
 
+def _env_override(name: str) -> Optional[str]:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    return value.strip() or UNKNOWN_VALUE
+
+
+def _reproducible_build() -> bool:
+    return os.environ.get(REPRODUCIBLE_ENV, "").strip() not in ("", "0", "false", "False")
+
+
 def discover_repository() -> str:
-    repo = _run_git(["config", "--get", "remote.origin.url"])
-    if repo:
-        return repo
-    path = _run_git(["rev-parse", "--show-toplevel"])
-    return path or UNKNOWN_VALUE
+    override = _env_override(REPOSITORY_ENV)
+    return override if override is not None else UNKNOWN_VALUE
 
 
 def discover_branch() -> str:
-    branch = _run_git(["rev-parse", "--abbrev-ref", "HEAD"])
-    if branch and branch != "HEAD":
-        return branch
-    describe = _run_git(["describe", "--all"])
-    if describe:
-        return describe
-    return "detached"
+    override = _env_override(BRANCH_ENV)
+    return override if override is not None else UNKNOWN_VALUE
 
 
-def discover_commit() -> str:
-    commit = _run_git(["rev-parse", "--short", "HEAD"])
+def discover_commit(reproducible: bool) -> str:
+    override = _env_override(COMMIT_ENV)
+    if override is not None:
+        return override
+    if reproducible:
+        return UNKNOWN_VALUE
+    commit = _run_git(["rev-parse", "HEAD"])
     if commit:
         return commit
     return UNKNOWN_VALUE
@@ -53,10 +67,10 @@ def build_content(repository: str, branch: str, commit: str) -> str:
     )
 
 
-def write_git_info(path: Path) -> None:
+def write_git_info(path: Path, reproducible: bool) -> None:
     repository = discover_repository()
     branch = discover_branch()
-    commit = discover_commit()
+    commit = discover_commit(reproducible)
 
     content = build_content(repository, branch, commit)
 
@@ -81,12 +95,17 @@ def parse_args() -> argparse.Namespace:
         default="src/git_info.py",
         help="path to the generated git_info module",
     )
+    parser.add_argument(
+        "--reproducible",
+        action="store_true",
+        help="emit static values with no git lookups",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    write_git_info(Path(args.output))
+    write_git_info(Path(args.output), args.reproducible or _reproducible_build())
 
 
 if __name__ == "__main__":

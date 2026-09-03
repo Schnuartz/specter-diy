@@ -16,7 +16,7 @@ ENV PATH=/opt/gcc-arm-none-eabi-9-2020-q2-update/bin:$PATH
 
 # Installing python requirements
 COPY bootloader/tools/requirements.txt .
-RUN pip3 install -r requirements.txt
+RUN pip3 install --require-hashes -r requirements.txt
 
 WORKDIR /app
 
