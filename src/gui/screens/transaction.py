@@ -65,6 +65,12 @@ class TransactionScreen(Prompt):
         self.style_warning = style_warning
         self.style_gray = style_gray
 
+        warning_text = None
+        if "warnings" in meta and len(meta["warnings"]) > 0:
+            warning_text = "WARNING!\n" + "\n".join(meta["warnings"])
+            self.warning = self.add_warning(self.page, warning_text)
+            obj = self.warning
+
         for out in meta["outputs"]:
             # Verified change needs no confirmation - the device proved it
             # can't be an attacker-controlled destination. It stays visible
@@ -88,15 +94,16 @@ class TransactionScreen(Prompt):
 
             obj = fee
 
-        if "warnings" in meta and len(meta["warnings"]) > 0:
-            text = "WARNING!\n" + "\n".join(meta["warnings"])
-            self.warning = add_label(text, scr=self.page)
-            self.warning.set_style(0, style_warning)
-            self.warning.align(obj, lv.ALIGN.OUT_BOTTOM_MID, 0, 30)
+        page2_warning = None
+        if warning_text:
+            page2_warning = self.add_warning(self.page2, warning_text)
 
         meta_inputs_len = len(meta["inputs"])
         lbl = add_label("%d %s" % (meta_inputs_len, "INPUT" if meta_inputs_len == 1 else "INPUTS"), scr=self.page2)
-        lbl.align(self.page2, lv.ALIGN.IN_TOP_MID, 0, 30)
+        if page2_warning:
+            lbl.align(page2_warning, lv.ALIGN.OUT_BOTTOM_MID, 0, 20)
+        else:
+            lbl.align(self.page2, lv.ALIGN.IN_TOP_MID, 0, 30)
         obj = lbl
         for i, inp in enumerate(meta["inputs"]):
             idxlbl = lv.label(self.page2)
@@ -231,6 +238,12 @@ class TransactionScreen(Prompt):
             ltdatelbl.align(ltlbl, lv.ALIGN.OUT_BOTTOM_LEFT, 15, 5)
 
         self.toggle_details()
+
+    def add_warning(self, page, text):
+        warning = add_label(text, scr=page)
+        warning.set_style(0, self.style_warning)
+        warning.align(page, lv.ALIGN.IN_TOP_MID, 0, 20)
+        return warning
 
     def toggle_details(self):
         if self.details_sw.get_state():

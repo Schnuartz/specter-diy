@@ -556,6 +556,7 @@ class LWalletManager(WalletManager):
             # separator
             fout.write(b"\x00")
 
+        self.add_warnings(wallets, meta)
         return wallets, meta
 
 
