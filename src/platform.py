@@ -5,6 +5,7 @@ import pyb
 import gc
 
 simulator = (sys.platform in ["linux", "darwin"])
+FLASH_QSPI_RESERVE_BYTES = 16 * 1024
 
 
 # Build metadata injected at boot time. Defaults represent the minimum
@@ -122,14 +123,34 @@ class SDCard:
 def fpath(fname):
     """A small function to avoid % storage_root everywhere"""
     # This board's QSPI chip is defective and its block device is disabled.
-    # QSPI paths contain non-critical application data, so keep them off the
-    # small internal filesystem and place them on the already-mounted SDRAM
-    # ramdisk. Critical keystore data uses /flash explicitly.
+    # Keep QSPI application data in a separate namespace in internal flash.
+    # Critical keystore data remains in /flash and the writer enforces a
+    # reserve so application data cannot consume all filesystem space.
     if not simulator and fname == "/qspi":
-        fname = "/ramdisk"
+        fname = "/flash/qspi"
     elif not simulator and fname.startswith("/qspi/"):
-        fname = "/ramdisk" + fname[5:]
+        fname = "/flash/qspi" + fname[5:]
     return "%s%s" % (config.storage_root, fname)
+
+
+def is_qspi_path(path):
+    """Return whether path belongs to the limited QSPI replacement area."""
+    return (not simulator and
+            (path == "/flash/qspi" or path.startswith("/flash/qspi/")))
+
+
+def ensure_qspi_space(required_bytes):
+    """Keep a reserved internal-flash area available for keystore writes."""
+    if simulator or required_bytes <= 0:
+        return
+    try:
+        stats = os.statvfs("/flash")
+        free_bytes = stats[0] * stats[3]
+        if free_bytes < FLASH_QSPI_RESERVE_BYTES + required_bytes:
+            raise OSError(28)  # ENOSPC
+    except AttributeError:
+        # Older ports without statvfs retain the existing filesystem behavior.
+        pass
 
 
 if simulator:
@@ -404,7 +425,6 @@ def wipe():
     # on real hardware overwrite flash with random data
     if not simulator:
         os.umount("/flash")
-        os.umount(fpath("/qspi"))
         f = pyb.Flash()
         block_size = f.ioctl(5, None)
         # wipe internal flash with random bytes
