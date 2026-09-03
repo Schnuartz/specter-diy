@@ -365,6 +365,95 @@ class EraseAndFormatTest(TestCase):
         self.assertEqual(mkfs.calls, [])
         self.assertEqual(dev.power_states, [True, False])
 
+    def test_write_buffer_falls_back_to_a_smaller_size_on_a_fragmented_heap(self):
+        """A heap that cannot spare a contiguous 128 KiB block must not
+        abort the erase: the request steps down until one size allocates,
+        and the whole card is still overwritten - just more slowly."""
+        dev = _FakeBlockDevice(block_count=4100, block_size=512)
+        sd = platform.SDCard(sd=dev)
+        allocations = []
+        real_bytearray = bytearray
+
+        def picky_bytearray(*args):
+            size = args[0] if args else 0
+            allocations.append(size)
+            if isinstance(size, int) and size > 8 * 1024:
+                raise MemoryError("fragmented heap")
+            return real_bytearray(*args)
+
+        platform.bytearray = picky_bytearray
+        try:
+            with _RecordingMkfs() as mkfs:
+                _run(sd.erase_and_format())
+        finally:
+            del platform.bytearray
+
+        # 128 -> 64 -> 32 -> 16 -> 8 KiB, then it fits.
+        self.assertEqual(
+            allocations,
+            [128 * 1024, 64 * 1024, 32 * 1024, 16 * 1024, 8 * 1024],
+        )
+        self.assertEqual(sum(n for _, n in dev.writes), 4100 * 512)
+        self.assertTrue(all(n <= 8 * 1024 for _, n in dev.writes))
+        self.assertEqual(len(mkfs.calls), 1)
+        self.assertEqual(dev.power_states, [True, False])
+
+    def test_write_buffer_falls_back_all_the_way_to_a_single_block(self):
+        """The last resort is a one-block buffer. As long as that
+        allocates, the erase completes."""
+        dev = _FakeBlockDevice(block_count=10, block_size=512)
+        sd = platform.SDCard(sd=dev)
+        real_bytearray = bytearray
+
+        def single_block_only(*args):
+            size = args[0] if args else 0
+            if isinstance(size, int) and size > 512:
+                raise MemoryError("only one block fits")
+            return real_bytearray(*args)
+
+        platform.bytearray = single_block_only
+        try:
+            with _RecordingMkfs() as mkfs:
+                _run(sd.erase_and_format())
+        finally:
+            del platform.bytearray
+
+        self.assertEqual(sum(n for _, n in dev.writes), 10 * 512)
+        self.assertTrue(all(n == 512 for _, n in dev.writes))
+        self.assertEqual(len(mkfs.calls), 1)
+        self.assertEqual(dev.power_states, [True, False])
+
+    def test_progress_is_reported_on_a_128k_cadence_not_per_write(self):
+        """With a one-block write buffer the loop still writes 512 bytes at
+        a time, but progress reporting and gc stay on a ~128 KiB cadence -
+        otherwise the bar redraw alone would dominate the erase."""
+        dev = _FakeBlockDevice(block_count=4096, block_size=512)
+        sd = platform.SDCard(sd=dev)
+        real_bytearray = bytearray
+
+        def single_block_only(*args):
+            size = args[0] if args else 0
+            if isinstance(size, int) and size > 512:
+                raise MemoryError("only one block fits")
+            return real_bytearray(*args)
+
+        fractions = []
+
+        async def cb(fraction):
+            fractions.append(fraction)
+
+        platform.bytearray = single_block_only
+        try:
+            _run(sd.erase_and_format(progress_cb=cb))
+        finally:
+            del platform.bytearray
+
+        self.assertEqual(len(dev.writes), 4096)
+        self.assertTrue(all(n == 512 for _, n in dev.writes))
+        # 4096 blocks / 256 blocks per 128 KiB = 16 updates, not 4096.
+        self.assertEqual(len(fractions), 16)
+        self.assertEqual(fractions[-1], 1.0)
+
     def test_memory_error_mid_wipe_is_reported_as_interrupted(self):
         """MemoryError is not an OSError, so without an explicit handler it
         would escape as a raw traceback and the user would never be told the

@@ -212,8 +212,11 @@ class SDHost(Host):
             "a small amount of old data can in theory survive in space the "
             "card's controller never exposes. No software can rule that out "
             "on any SD card - only destroying it physically can.\n\n"
-            "This can take a while on a large card. Do not remove the card "
-            "or power the device off while it runs.\n\nAre you sure?"
+            "This runs block by block with a progress bar. On a large card, "
+            "or if the device is low on free memory and has to fall back to "
+            "small blocks, it can take many minutes - that is normal. Do "
+            "NOT remove the card or power the device off until it "
+            "finishes.\n\nAre you sure?"
         ):
             return False
         if not await self.manager.gui.prompt(
@@ -224,8 +227,9 @@ class SDHost(Host):
 
         scr = Progress(
             "Formatting SD card",
-            "Overwriting and reformatting - please wait.\n"
-            "Do not remove the card or power the device off.",
+            "Overwriting every block, then reformatting.\n"
+            "This can take several minutes - please wait.\n"
+            "Do NOT remove the card or power the device off.",
             button_text=None,
         )
         await self.manager.gui.load_screen(scr)

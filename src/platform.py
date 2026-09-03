@@ -281,12 +281,21 @@ class SDCard:
         but filesystem creation failed. The user-facing confirmation and
         the "do not remove the card" warning belong to the caller.
 
-        progress_cb(fraction), if given, is awaited after every chunk.
-        The event loop is yielded to after every chunk either way - a
-        progress_cb that never awaits (e.g. one that only redraws a
-        progress bar) would otherwise starve the GUI task for the whole
-        erase - so a failing progress_cb is handled separately from that
-        yield.
+        progress_cb(fraction), if given, is awaited roughly every 128 KiB
+        of progress (not once per writeblocks() call - the write buffer can
+        be forced down to a single block on a tight heap, and redrawing the
+        bar every 512 bytes would be its own slowdown). The event loop is
+        yielded to on the same cadence either way - a progress_cb that
+        never awaits (e.g. one that only redraws a progress bar) would
+        otherwise starve the GUI task for the whole erase - so a failing
+        progress_cb is handled separately from that yield.
+
+        On a fragmented heap the write buffer is stepped down (128 KiB,
+        64 KiB, ... , finally one block) until one size allocates. A
+        smaller buffer only makes the erase slower, never less complete;
+        "not enough memory to start" is reported only when even a
+        single-block buffer cannot be allocated, and in that case nothing
+        on the card has been touched.
         """
         if not self.is_present:
             raise RuntimeError("SD card is not present")
@@ -320,32 +329,53 @@ class SDCard:
                     "(card may have been removed):\n\n%s" % e
                 ) from e
             validate_block_geometry(block_size, block_count, "SD card")
-            # 128 KiB amortizes SD writes while keeping the allocation
-            # viable on a fragmented MicroPython heap; block_size is
-            # capped by the geometry check above, so this stays bounded.
-            chunk_blocks = max(1, (128 * 1024) // block_size)
-            # One zero-filled buffer, allocated BEFORE the first
-            # destructive write and reused for every chunk: a MemoryError
-            # here costs nothing (no block has been touched), while one
-            # mid-loop would leave a half-overwritten card. Zeros are a
-            # complete overwrite for sanitization - see
-            # secure_delete_file() for why one pass of zeros, never random.
-            try:
-                buf = bytearray(chunk_blocks * block_size)
-            except MemoryError as e:
+            # One zero-filled buffer, allocated BEFORE the first destructive
+            # write and reused for every chunk: a MemoryError here costs
+            # nothing (no block has been touched), while one mid-loop would
+            # leave a half-overwritten card. Zeros are a complete overwrite
+            # for sanitization - see secure_delete_file() for why one pass
+            # of zeros, never random.
+            #
+            # 128 KiB amortizes SD writes, but a fragmented MicroPython heap
+            # cannot always spare one contiguous 128 KiB block - that is the
+            # "Not enough memory to start the secure erase" seen on real
+            # hardware. Rather than abort the whole operation, step the
+            # request down (128, 64, 32, ... KiB, then a single block) and
+            # keep the largest buffer that allocates. block_size is capped
+            # by the geometry check above, so every candidate is bounded.
+            buf = None
+            alloc_error = None
+            buf_blocks = max(1, (128 * 1024) // block_size)
+            while True:
+                try:
+                    buf = bytearray(buf_blocks * block_size)
+                    break
+                except MemoryError as e:
+                    alloc_error = e
+                    gc.collect()
+                    if buf_blocks <= 1:
+                        break
+                    buf_blocks = max(1, buf_blocks // 2)
+            if buf is None:
                 raise RuntimeError(
                     "Not enough memory to start the secure erase. No data "
                     "has been changed - reboot the device and try again."
-                ) from e
+                ) from alloc_error
             view = memoryview(buf)
             data = None
-            for start in range(0, block_count, chunk_blocks):
-                n = min(chunk_blocks, block_count - start)
+            # Run gc and yield to the GUI roughly every 128 KiB, however
+            # small the write buffer had to be: a single-block buffer would
+            # otherwise gc.collect() and redraw the bar on every 512-byte
+            # write and crawl for that reason alone.
+            report_blocks = max(buf_blocks, max(1, (128 * 1024) // block_size))
+            next_report = report_blocks
+            for start in range(0, block_count, buf_blocks):
+                n = min(buf_blocks, block_count - start)
                 result = None
                 try:
                     # A memoryview slice for the short final chunk, so it
                     # does not allocate a copy of the buffer.
-                    data = buf if n == chunk_blocks else view[:n * block_size]
+                    data = buf if n == buf_blocks else view[:n * block_size]
                     result = self._sd.writeblocks(start, data)
                 except OSError as e:
                     raise RuntimeError(
@@ -363,11 +393,15 @@ class SDCard:
                         "erase (block device returned %r). %s"
                         % (result, _HALF_OVERWRITTEN)
                     )
+                done = start + n
+                if done < next_report and done < block_count:
+                    continue
+                next_report = done + report_blocks
                 gc.collect()
                 progress_error = None
                 if progress_cb is not None:
                     try:
-                        await progress_cb((start + n) / block_count)
+                        await progress_cb(done / block_count)
                     except asyncio.CancelledError as e:
                         raise RuntimeError(_INTERRUPTED) from e
                     except Exception as e:
