@@ -27,14 +27,9 @@ if not simulator:
     import stm
 
     sdram.init()
-    try:
-        import sdram_alloc
-    except Exception:
-        sdram_alloc = None
 else:
     _PREALLOCATED = bytes(0x100000)
     stm = None
-    sdram_alloc = None
 
 # injected by the boot.py
 i2c = None # I2C to talk to the battery
@@ -122,14 +117,13 @@ class SDCard:
 
 def fpath(fname):
     """A small function to avoid % storage_root everywhere"""
-    # This board's QSPI chip is defective and its block device is disabled.
-    # Keep QSPI application data in a separate namespace in internal flash.
-    # Critical keystore data remains in /flash and the writer enforces a
-    # reserve so application data cannot consume all filesystem space.
-    if not simulator and fname == "/qspi":
-        fname = "/flash/qspi"
-    elif not simulator and fname.startswith("/qspi/"):
-        fname = "/flash/qspi" + fname[5:]
+    # A normal F469 mounts QSPI at /qspi. The defect build omits that block
+    # device; only then use the limited persistent /flash/qspi fallback.
+    if not simulator and (fname == "/qspi" or fname.startswith("/qspi/")):
+        try:
+            os.stat("/qspi")
+        except:
+            fname = "/flash/qspi" + fname[5:]
     return "%s%s" % (config.storage_root, fname)
 
 
@@ -298,23 +292,6 @@ def get_preallocated_ram():
     else:
         return sdram.preallocated_ptr(), sdram.preallocated_size()
 
-def sdram_alloc_buffer(size):
-    """Allocate a large non-secret working buffer in external SDRAM."""
-    if sdram_alloc is not None:
-        return sdram_alloc.alloc(size)
-    return bytearray(size)
-
-def sdram_alloc_reset():
-    """Release all SDRAM-allocated working buffers at once."""
-    if sdram_alloc is not None:
-        sdram_alloc.reset()
-
-def sdram_alloc_stats():
-    """Return used, free, and total SDRAM allocator bytes."""
-    if sdram_alloc is not None:
-        return (sdram_alloc.pool_used(), sdram_alloc.pool_free(), sdram_alloc.pool_size())
-    return None
-
 def sync():
     try:
         os.sync()
@@ -416,6 +393,13 @@ def wipe():
     256 - 447:   internal flash
     448 - 33215: QSPI
     """
+    qspi_mounted = False
+    if not simulator:
+        try:
+            os.stat("/qspi")
+            qspi_mounted = True
+        except:
+            pass
     # delete files normally in simulator
     try:
         delete_recursively(fpath("/flash"))
@@ -425,6 +409,8 @@ def wipe():
     # on real hardware overwrite flash with random data
     if not simulator:
         os.umount("/flash")
+        if qspi_mounted:
+            os.umount("/qspi")
         f = pyb.Flash()
         block_size = f.ioctl(5, None)
         # wipe internal flash with random bytes

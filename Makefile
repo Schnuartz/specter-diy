@@ -13,6 +13,7 @@ FROZEN_MANIFEST_DEBUG ?= ../../../../manifests/debug.py
 FROZEN_MANIFEST_UNIX ?= ../../../../manifests/unix.py
 DEBUG ?= 0
 USE_DBOOT ?= 0
+F469_DISABLE_QSPI ?= 0
 GIT_INFO ?= src/git_info.py
 
 $(TARGET_DIR):
@@ -27,7 +28,7 @@ mpy-cross: $(TARGET_DIR) $(MPY_DIR)/mpy-cross/Makefile
 	@echo Building cross-compiler
 	make -C $(MPY_DIR)/mpy-cross \
         DEBUG=$(DEBUG) \
-        CFLAGS_EXTRA="$(MPY_CFLAGS)" && \
+        CFLAGS_EXTRA="$(MPY_CFLAGS) -DMICROPY_HW_F469DISC_DISABLE_QSPI=$(F469_DISABLE_QSPI) -DMICROPY_HW_F469_SPECTER_FACTORY_RESET=1" && \
 	cp $(MPY_DIR)/mpy-cross/mpy-cross $(TARGET_DIR)
 
 # embed git metadata for firmware builds
@@ -45,7 +46,7 @@ disco: $(TARGET_DIR) mpy-cross $(MPY_DIR)/ports/stm32 git-info
         USER_C_MODULES=$(USER_C_MODULES) \
         FROZEN_MANIFEST=$(FROZEN_MANIFEST_DISCO) \
         DEBUG=$(DEBUG) \
-        CFLAGS_EXTRA="$(MPY_CFLAGS)" && \
+        CFLAGS_EXTRA="$(MPY_CFLAGS) -DMICROPY_HW_F469DISC_DISABLE_QSPI=$(F469_DISABLE_QSPI) -DMICROPY_HW_F469_SPECTER_FACTORY_RESET=1" && \
 	arm-none-eabi-objcopy -O binary \
         $(MPY_DIR)/ports/stm32/build-STM32F469DISC/firmware.elf \
         $(TARGET_DIR)/specter-diy.bin && \

@@ -618,7 +618,9 @@ class QRHost(Host):
             # declaring failure; otherwise restore the previous baudrate.
             if not acknowledged:
                 time.sleep_ms(DELAY_AFTER_FACTORY_RESET)
-                if self.get_setting(VERSION_ADDR, retries=1) is not None:
+                # SERIAL_ADDR is already required by configure_gm65() and is
+                # supported on scanners where VERSION_ADDR was removed.
+                if self.get_setting(SERIAL_ADDR, retries=1) is not None:
                     acknowledged = True
                 elif previous_baudrate != BAUD_RATE_9600:
                     self._set_baud(previous_baudrate)
