@@ -122,13 +122,13 @@ class SDCard:
 def fpath(fname):
     """A small function to avoid % storage_root everywhere"""
     # This board's QSPI chip is defective and its block device is disabled.
-    # Keep the existing logical paths working by using internal flash for
-    # persistent wallet and settings data on real hardware. The simulator
-    # still uses its separate qspi directory.
+    # QSPI paths contain non-critical application data, so keep them off the
+    # small internal filesystem and place them on the already-mounted SDRAM
+    # ramdisk. Critical keystore data uses /flash explicitly.
     if not simulator and fname == "/qspi":
-        fname = "/flash"
+        fname = "/ramdisk"
     elif not simulator and fname.startswith("/qspi/"):
-        fname = "/flash" + fname[5:]
+        fname = "/ramdisk" + fname[5:]
     return "%s%s" % (config.storage_root, fname)
 
 
@@ -404,7 +404,7 @@ def wipe():
     # on real hardware overwrite flash with random data
     if not simulator:
         os.umount("/flash")
-        os.umount("/qspi")
+        os.umount(fpath("/qspi"))
         f = pyb.Flash()
         block_size = f.ioctl(5, None)
         # wipe internal flash with random bytes
