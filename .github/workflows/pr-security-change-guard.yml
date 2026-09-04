@@ -195,20 +195,33 @@ jobs:
             // have moved on with unrelated commits since the PR was opened.
             // Comparing submodule / signing config against it would attribute
             // those unrelated base-branch changes to this PR. The correct
-            // baseline is the merge-base of base...head. Fall back to
-            // `pr.base.sha` only if the compare API is unavailable.
-            let mergeBaseSha = baseSha;
+            // baseline is the merge-base of base...head.
+            //
+            // Fail closed: if the merge-base cannot be determined we do NOT
+            // silently fall back to `pr.base.sha` (that is the very baseline
+            // that can produce a wrong ✅ / wrong ⚠️). Instead `mergeBaseSha`
+            // stays null and the submodule + production-signing sections
+            // report ❓ "unable to verify". The security-sensitive file scan
+            // (via pulls.listFiles) is independent of the merge-base and keeps
+            // running.
+            let mergeBaseSha = null;
+            let mergeBaseOk = false;
             try {
               const mb = await github.rest.repos.compareCommitsWithBasehead({
                 owner, repo, basehead: `${baseSha}...${headSha}`,
               });
               if (mb.data.merge_base_commit && mb.data.merge_base_commit.sha) {
                 mergeBaseSha = mb.data.merge_base_commit.sha;
+                mergeBaseOk = true;
+              } else {
+                note('The base/head compare returned no merge-base commit; ' +
+                     'submodule and production-signing verification is reported ' +
+                     'as ❓ unknown (fail-closed).');
               }
             } catch (e) {
               note(`Could not determine the base/head merge-base (${e.message}); ` +
-                   `comparing against the base branch tip \`${short(baseSha)}\` instead — ` +
-                   `unrelated base-branch changes may be misattributed to this PR.`);
+                   `submodule and production-signing verification is reported as ` +
+                   `❓ unknown (fail-closed).`);
             }
 
             // ---------------------------------------------------------------
@@ -392,6 +405,14 @@ jobs:
             }
 
             for (const path of TOP_SUBMODULES) {
+              if (!mergeBaseOk) {
+                // No trustworthy baseline -> cannot say whether this PR moved
+                // the pointer. Report ❓, never ✅.
+                if (path === 'bootloader') bootloaderResolved = false;
+                submoduleReport.push({ path, state: 'unverified', old: null,
+                                       new: null, nested: [], nestedOk: false });
+                continue;
+              }
               const before = await pathState(owner, repo, path, mergeBaseSha);
               const after = await pathState(owner, repo, path, headRefs);
               const state = classify(before, after);
@@ -498,7 +519,12 @@ jobs:
               return sha256(parts.join('|'));
             }
 
-            if (!bootloaderResolved) {
+            if (!mergeBaseOk) {
+              signingSection =
+                '❓ The PR merge-base could not be determined, so the `bootloader` ' +
+                'pointer before this PR is unknown — production signing configuration ' +
+                '**not verified**. Manual review required.';
+            } else if (!bootloaderResolved) {
               signingSection =
                 '❓ Could not resolve the `bootloader` submodule pointer on both sides — ' +
                 'production signing configuration **not verified**. Manual review recommended.';
@@ -709,7 +735,8 @@ jobs:
             out.push('');
             out.push('_Informational only — none of the findings below block this PR. ' +
                      '❓ marks something the workflow could not verify (treat as "unknown", not "safe")._');
-            out.push(`<sub>merge-base \`${short(mergeBaseSha)}\` · base tip \`${short(baseSha)}\` · ` +
+            out.push(`<sub>merge-base \`${mergeBaseOk ? short(mergeBaseSha) : 'unknown (fail-closed)'}\` · ` +
+                     `base tip \`${short(baseSha)}\` · ` +
                      `head \`${short(headSha)}\` · updated ${new Date().toISOString()}</sub>`);
             out.push('');
 
