@@ -44,9 +44,11 @@ jobs:
     steps:
       - name: Compare & report
         # Pinned to a full commit SHA. This SHA is the actions/github-script
-        # v7.1.0 release (also where the moving `v7` tag points). Update the
-        # SHA and the trailing comment together when bumping.
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        # v8.0.0 release (also where the moving `v8` tag points). v8 runs on
+        # the Node 24 runtime; GitHub is removing Node 20 from hosted runners
+        # in 2026, so v7 must not be used for a newly introduced workflow.
+        # Update the SHA and the trailing comment together when bumping.
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           script: |
             const ISSUE_MARKER = '<!-- specter-dependency-watch -->';
@@ -139,53 +141,98 @@ jobs:
             // ones are still reported (generically) instead of being ignored.
             // ---------------------------------------------------------------
             const KNOWN = {
-              // path within parent -> { key, title, group }
+              // nested path within parent -> { key, title, group }
               'lib/secp256k1':       { key: 'bitcoin-core/secp256k1', title: 'bitcoin-core/secp256k1', group: 'crypto' },
               'lib/fatfs':           { key: 'cryptoadvance/fatfs', title: 'cryptoadvance/fatfs', group: 'platform' },
               'micropython':         { key: 'diybitcoinhardware/micropython', title: 'micropython', group: 'platform' },
               'usermods/secp256k1':  { key: 'diybitcoinhardware/secp256k1-embedded', title: 'secp256k1-embedded', group: 'crypto' },
               'libs/common/embit':   { key: 'diybitcoinhardware/embit', title: 'embit', group: 'crypto' },
             };
+            // Friendly title/group for *top-level* submodules. This only
+            // decorates the report — the list of top-level submodules itself
+            // is read from the repo's root .gitmodules below, so a submodule
+            // added to Specter-DIY later is still picked up (reported
+            // generically until it gets an entry here).
+            const KNOWN_TOP = {
+              'bootloader': { key: 'cryptoadvance/specter-bootloader', title: 'specter-bootloader', group: 'platform' },
+              'f469-disco': { key: 'diybitcoinhardware/f469-disco', title: 'f469-disco', group: 'platform' },
+            };
 
             const selfBranch = await defaultBranch(selfOwner, selfRepo);
+            // Pin every read below to one immutable commit, so a push to the
+            // default branch while this run is in flight cannot produce an
+            // inconsistent snapshot of the dependency tree.
+            let selfRef = selfBranch;
+            try {
+              selfRef = await branchHead(selfOwner, selfRepo, selfBranch);
+            } catch (e) {
+              note(`Could not resolve ${selfBranch} HEAD (${e.message}); ` +
+                   `reading the dependency tree from the branch tip instead.`);
+            }
             const deps = [];
 
-            // -- top-level submodules --------------------------------------
-            const TOP = [
-              { path: 'bootloader', owner: 'cryptoadvance', repo: 'specter-bootloader',
-                key: 'cryptoadvance/specter-bootloader', title: 'specter-bootloader', group: 'platform' },
-              { path: 'f469-disco', owner: 'diybitcoinhardware', repo: 'f469-disco',
-                key: 'diybitcoinhardware/f469-disco', title: 'f469-disco', group: 'platform' },
-            ];
+            // -- top-level submodules (discovered from root .gitmodules) ---
+            let TOP = [];
+            try {
+              const rootMods = parseGitmodules(
+                await getRaw(selfOwner, selfRepo, '.gitmodules', selfRef));
+              if (!rootMods.length) throw new Error('root .gitmodules has no submodules');
+              for (const m of rootMods) {
+                const g = resolveRepo(m.url, selfOwner);
+                const meta = KNOWN_TOP[m.path] || {
+                  key: `${selfOwner}/${selfRepo}:${m.path}`, title: m.path,
+                  group: 'platform', unknown: true,
+                };
+                TOP.push({
+                  path: m.path,
+                  owner: g ? g.owner : null,
+                  repo: g ? g.repo : null,
+                  key: meta.key, title: meta.title, group: meta.group,
+                  unknown: meta.unknown || false,
+                });
+              }
+            } catch (e) {
+              note(`Could not read root .gitmodules (${e.message}); ` +
+                   `falling back to the known top-level submodule list.`);
+              TOP = Object.entries(KNOWN_TOP).map(([path, meta]) => ({
+                path, owner: meta.key.split('/')[0], repo: meta.key.split('/')[1],
+                key: meta.key, title: meta.title, group: meta.group, unknown: false,
+              }));
+            }
             const topPointers = {}; // path -> {sha,url}
             for (const t of TOP) {
               let ptr = null;
               try {
-                ptr = await submodulePointer(selfOwner, selfRepo, t.path, selfBranch);
+                ptr = await submodulePointer(selfOwner, selfRepo, t.path, selfRef);
                 topPointers[t.path] = ptr;
               } catch (e) {
                 note(`${t.path}: pinned SHA could not be read (${e.message})`);
               }
               deps.push({
                 key: t.key, title: t.title, group: t.group,
-                upstream: { owner: t.owner, repo: t.repo },
+                upstream: t.owner ? { owner: t.owner, repo: t.repo } : null,
                 pinned: ptr ? ptr.sha : null,
-                error: ptr ? null : 'pinned SHA could not be read',
+                error: t.owner
+                  ? (ptr ? null : 'pinned SHA could not be read')
+                  : 'could not resolve upstream repo from the submodule URL',
+                note: t.unknown ? 'not in the curated list — reported generically' : null,
               });
             }
 
             // -- one nested level, discovered dynamically -----------------
             for (const t of TOP) {
               const ptr = topPointers[t.path];
-              if (!ptr) {
-                // The parent pointer itself is unreadable (already reported as
-                // an error dep above). Record that its nested tree is
-                // therefore unknown, so it cannot silently vanish from the
+              if (!ptr || !t.owner) {
+                // The parent pointer / upstream repo is unreadable (already
+                // reported as an error dep above). Record that its nested tree
+                // is therefore unknown, so it cannot silently vanish from the
                 // report / state hash / tracking issue.
                 deps.push({
                   key: `${t.key}:nested`, title: `${t.title} (nested submodules)`,
                   group: t.group, upstream: null, pinned: null, status: 'error',
-                  error: `parent pointer unreadable — nested dependencies not enumerated`,
+                  error: !t.owner
+                    ? `upstream repo unresolved — nested dependencies not enumerated`
+                    : `parent pointer unreadable — nested dependencies not enumerated`,
                 });
                 continue;
               }
@@ -368,7 +415,8 @@ jobs:
             const out = [];
             out.push('## Weekly Dependency Watch');
             out.push('');
-            out.push(`<sub>base: \`${selfOwner}/${selfRepo}@${selfBranch}\` · run ${new Date().toISOString()} · GitHub cron is UTC</sub>`);
+            out.push(`<sub>base: \`${selfOwner}/${selfRepo}@${selfBranch}\` (\`${short(selfRef)}\`) · ` +
+                     `run ${new Date().toISOString()} · GitHub cron is UTC</sub>`);
             out.push('');
             for (const [label, g] of groups) {
               const inGroup = deps.filter((x) => x.group === g);
