@@ -74,9 +74,11 @@ jobs:
     steps:
       - name: Build & publish report
         # Pinned to a full commit SHA. This SHA is the actions/github-script
-        # v7.1.0 release (also where the moving `v7` tag points). Update the
-        # SHA and the trailing comment together when bumping.
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        # v8.0.0 release (also where the moving `v8` tag points). v8 runs on
+        # the Node 24 runtime; GitHub is removing Node 20 from hosted runners
+        # in 2026, so v7 must not be used for a newly introduced workflow.
+        # Update the SHA and the trailing comment together when bumping.
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           # Default GITHUB_TOKEN. Scope is limited by `permissions:` above.
           script: |
@@ -187,6 +189,29 @@ jobs:
             const short = (sha) => (sha ? sha.substring(0, 12) : '(none)');
 
             // ---------------------------------------------------------------
+            // Baseline for "what did THIS PR change?"
+            // ---------------------------------------------------------------
+            // `pr.base.sha` is the *current* tip of the base branch, which may
+            // have moved on with unrelated commits since the PR was opened.
+            // Comparing submodule / signing config against it would attribute
+            // those unrelated base-branch changes to this PR. The correct
+            // baseline is the merge-base of base...head. Fall back to
+            // `pr.base.sha` only if the compare API is unavailable.
+            let mergeBaseSha = baseSha;
+            try {
+              const mb = await github.rest.repos.compareCommitsWithBasehead({
+                owner, repo, basehead: `${baseSha}...${headSha}`,
+              });
+              if (mb.data.merge_base_commit && mb.data.merge_base_commit.sha) {
+                mergeBaseSha = mb.data.merge_base_commit.sha;
+              }
+            } catch (e) {
+              note(`Could not determine the base/head merge-base (${e.message}); ` +
+                   `comparing against the base branch tip \`${short(baseSha)}\` instead — ` +
+                   `unrelated base-branch changes may be misattributed to this PR.`);
+            }
+
+            // ---------------------------------------------------------------
             // Security-sensitive path catalogue
             // (derived from an inspection of the current repository layout)
             // ---------------------------------------------------------------
@@ -261,10 +286,32 @@ jobs:
               note(`Could not list PR files: ${e.message}`);
             }
 
-            const securityHits = new Map(); // file -> [areas]
+            // The pulls "list files" endpoint is capped at 3000 files. Past
+            // that the scan below is provably incomplete, so treat it the same
+            // as an API failure ("unknown", not "clean").
+            const filesTruncated = filesOk && files.length >= 3000;
+            if (filesTruncated) {
+              note('This PR changes ≥3000 files; GitHub caps the file list at 3000. ' +
+                   'The security-file scan is incomplete — manual review required.');
+            }
+
+            // display name -> [areas]. For a rename, BOTH the old and the new
+            // path are classified: a security-sensitive file moved to a path
+            // that is not on the catalogue would otherwise slip through as
+            // "no security-sensitive files changed".
+            const securityHits = new Map();
             for (const f of files) {
-              const areas = matchAreas(f.filename);
-              if (areas.length) securityHits.set(f.filename, areas);
+              const names = [f.filename];
+              if (f.status === 'renamed' && f.previous_filename) {
+                names.push(f.previous_filename);
+              }
+              const areas = [...new Set(names.flatMap(matchAreas))];
+              if (areas.length) {
+                const display = (f.status === 'renamed' && f.previous_filename)
+                  ? `${f.previous_filename} → ${f.filename}`
+                  : f.filename;
+                securityHits.set(display, areas);
+              }
             }
 
             // ---------------------------------------------------------------
@@ -345,7 +392,7 @@ jobs:
             }
 
             for (const path of TOP_SUBMODULES) {
-              const before = await pathState(owner, repo, path, baseSha);
+              const before = await pathState(owner, repo, path, mergeBaseSha);
               const after = await pathState(owner, repo, path, headRefs);
               const state = classify(before, after);
 
@@ -609,19 +656,33 @@ jobs:
                   // misrepresent that as a normal post-approval diff.
                   if (cmp && cmp.data.status === 'ahead') {
                     const c = cmp.data;
-                    const add = (c.files || []).reduce((a, f) => a + (f.additions || 0), 0);
-                    const del = (c.files || []).reduce((a, f) => a + (f.deletions || 0), 0);
+                    const cFiles = c.files || [];
+                    const add = cFiles.reduce((a, f) => a + (f.additions || 0), 0);
+                    const del = cFiles.reduce((a, f) => a + (f.deletions || 0), 0);
                     L.push(`Changes after approval: **${c.total_commits} commit(s)**, ` +
-                           `**${(c.files || []).length} file(s)**, **+${add} / -${del}** lines`);
+                           `**${cFiles.length} file(s)**, **+${add} / -${del}** lines`);
                     L.push('');
-                    const changed = (c.files || []).map((f) => f.filename);
-                    L.push('Files changed since approval:');
-                    for (const f of changed.slice(0, 40)) {
-                      const areas = matchAreas(f);
-                      const sub = TOP_SUBMODULES.includes(f) ? ' _(submodule pointer)_' : '';
-                      L.push(`- \`${mdEsc(f)}\`${areas.length ? ' — ⚠️ ' + areas.map(mdEsc).join('; ') : ''}${sub}`);
+                    // The compare endpoint caps its file list at 300. Past that
+                    // the classification below is incomplete -> say so.
+                    if (cFiles.length >= 300) {
+                      L.push('❓ The compare API caps the changed-file list at 300 entries; ' +
+                             'the list below may be incomplete. **Manual review required.**');
+                      L.push('');
                     }
-                    if (changed.length > 40) L.push(`- … and ${changed.length - 40} more`);
+                    L.push('Files changed since approval:');
+                    for (const f of cFiles.slice(0, 40)) {
+                      const names = [f.filename];
+                      if (f.status === 'renamed' && f.previous_filename) {
+                        names.push(f.previous_filename);
+                      }
+                      const areas = [...new Set(names.flatMap(matchAreas))];
+                      const disp = (f.status === 'renamed' && f.previous_filename)
+                        ? `${f.previous_filename} → ${f.filename}`
+                        : f.filename;
+                      const sub = TOP_SUBMODULES.includes(f.filename) ? ' _(submodule pointer)_' : '';
+                      L.push(`- \`${mdEsc(disp)}\`${areas.length ? ' — ⚠️ ' + areas.map(mdEsc).join('; ') : ''}${sub}`);
+                    }
+                    if (cFiles.length > 40) L.push(`- … and ${cFiles.length - 40} more`);
                   } else if (cmp) {
                     L.push(`❓ The approved commit \`${short(lastSha)}\` is no longer a clean ` +
                            `ancestor of the current HEAD (compare status: \`${cmp.data.status}\`). ` +
@@ -648,12 +709,26 @@ jobs:
             out.push('');
             out.push('_Informational only — none of the findings below block this PR. ' +
                      '❓ marks something the workflow could not verify (treat as "unknown", not "safe")._');
-            out.push(`<sub>base \`${short(baseSha)}\` · head \`${short(headSha)}\` · updated ${new Date().toISOString()}</sub>`);
+            out.push(`<sub>merge-base \`${short(mergeBaseSha)}\` · base tip \`${short(baseSha)}\` · ` +
+                     `head \`${short(headSha)}\` · updated ${new Date().toISOString()}</sub>`);
             out.push('');
 
             out.push('### Security-sensitive files');
             if (!filesOk) {
               out.push('❓ Could not retrieve the list of changed files (API error). Manual review required.');
+            } else if (filesTruncated) {
+              out.push('❓ The changed-file list is truncated (≥3000 files) — the scan is ' +
+                       'incomplete. **Manual review required.**');
+              if (securityHits.size) {
+                out.push('');
+                out.push('Security-sensitive files seen so far:');
+                out.push('');
+                out.push('| File | Area |');
+                out.push('| --- | --- |');
+                for (const [f, areas] of securityHits) {
+                  out.push(`| \`${mdEsc(f)}\` | ${areas.map(mdEsc).join('; ')} |`);
+                }
+              }
             } else if (securityHits.size === 0) {
               out.push('✅ No security-sensitive files changed.');
             } else {
