@@ -10,11 +10,17 @@ name: PR Security & Change Guard
 #   1. Were security-sensitive files touched?
 #   2. Were production signing keys or signature thresholds changed?
 #      (these live in the `bootloader` submodule -> keys/production/pubkeys.c)
-#   3. Was a submodule pointer moved (top level *and* one level of nesting)?
-#   4. What changed since the most recent APPROVED review?
+#   3. Was a submodule pointer moved / added / removed (top level *and* one
+#      level of nesting)?
+#   4. What changed since the most recent APPROVED review (including an
+#      approval that was later dismissed as stale)?
 #
 # This workflow is INFORMATIONAL ONLY. It never fails the PR, never blocks a
 # merge, never dismisses reviews and never edits branch-protection rules.
+#
+# It is, however, "fail closed" for its own reporting: when it cannot
+# determine something (API error, unparseable file, ...) it says so with a
+# ❓ marker and asks for manual review instead of printing a green ✅.
 #
 # ---------------------------------------------------------------------------
 # Security model (fork PRs)
@@ -26,8 +32,10 @@ name: PR Security & Change Guard
 #   * never checks out the PR head (no `actions/checkout` at all),
 #   * never runs any script, action or tool that comes from the PR,
 #   * only reads PR data through authenticated GitHub REST API calls,
-#   * only executes `actions/github-script` (pinned) with code that lives on
-#     the base repo default branch (i.e. this file).
+#   * only executes `actions/github-script` (pinned to a full commit SHA)
+#     with code that lives on the base repo default branch (i.e. this file),
+#   * never interpolates PR-controlled text (`${{ github.event.* }}`) into a
+#     shell `run:` step (there are no `run:` steps at all).
 #
 # Because nothing from the PR is executed, the write-capable token is never
 # exposed to attacker-controlled code.
@@ -60,11 +68,14 @@ jobs:
       github.event.pull_request.state == 'open'
     steps:
       - name: Build & publish report
-        uses: actions/github-script@v7
+        # Pinned to the commit the `v7` tag pointed at (v7.0.1). Update the
+        # SHA and the trailing comment together when bumping.
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.0.1
         with:
           # Default GITHUB_TOKEN. Scope is limited by `permissions:` above.
           script: |
             const STICKY_MARKER = '<!-- pr-security-change-guard -->';
+            const BOT_LOGIN = 'github-actions[bot]';
 
             const owner = context.repo.owner;
             const repo = context.repo.repo;
@@ -72,9 +83,9 @@ jobs:
             const prNumber = pr.number;
             const baseSha = pr.base.sha;
             const headSha = pr.head.sha;
-            // PR head commits are always reachable in the BASE repo under this
-            // ref, so we never need the fork remote for tree reads.
-            const headRef = [headSha, `refs/pull/${prNumber}/head`];
+            // PR head commits are reachable in the BASE repo both as the head
+            // SHA and as refs/pull/<n>/head; try both.
+            const headRefs = [headSha, `refs/pull/${prNumber}/head`];
             const headRepoFull =
               (pr.head.repo && pr.head.repo.full_name) || `${owner}/${repo}`;
 
@@ -84,6 +95,16 @@ jobs:
             // ---------------------------------------------------------------
             // Helpers
             // ---------------------------------------------------------------
+            // Escape a string that came from outside (file names, key owner
+            // comments, ...) so it cannot break out of the surrounding
+            // Markdown / inline-code context in the generated report.
+            function mdEsc(s) {
+              return String(s)
+                .replace(/[\r\n]+/g, ' ')
+                .replace(/[`|*_~<>\[\]\\]/g, '\\$&')
+                .trim();
+            }
+
             async function getRaw(o, r, path, ref) {
               const res = await github.rest.repos.getContent({
                 owner: o, repo: r, path, ref,
@@ -94,12 +115,12 @@ jobs:
                 : Buffer.from(res.data.content, 'base64').toString('utf8');
             }
 
-            // Submodule pointer at `path` for a given ref, or null.
-            // `ref` may be a string or an array of candidate refs (first hit wins);
-            // this is used for the PR head, which is reachable in the base repo
-            // both as the head SHA and as refs/pull/<n>/head depending on setup.
-            async function submodulePointer(o, r, path, ref) {
+            // Resolve what is at `path` for a given ref (or list of candidate
+            // refs). Returns { kind, sha?, url? } where kind is one of:
+            //   'submodule' | 'other' | 'absent' | 'error'
+            async function pathState(o, r, path, ref) {
               const refs = Array.isArray(ref) ? ref : [ref];
+              let lastErr = null;
               for (const rf of refs) {
                 try {
                   const res = await github.rest.repos.getContent({
@@ -107,20 +128,21 @@ jobs:
                   });
                   const d = res.data;
                   if (d && d.type === 'submodule') {
-                    return { sha: d.sha, url: d.submodule_git_url || null };
+                    return { kind: 'submodule', sha: d.sha, url: d.submodule_git_url || null };
                   }
+                  return { kind: 'other' };
                 } catch (e) {
-                  // try next candidate ref
+                  if (e.status === 404) return { kind: 'absent' };
+                  lastErr = e;
                 }
               }
-              return null;
+              return { kind: 'error', message: lastErr ? lastErr.message : 'unknown' };
             }
 
-            // Parse a .gitmodules file into [{ name, path, url }].
             function parseGitmodules(text) {
               const out = [];
               let cur = null;
-              for (const line of text.split('\n')) {
+              for (const line of String(text).split('\n')) {
                 const s = line.trim();
                 const h = s.match(/^\[submodule "(.+)"\]$/);
                 if (h) { cur = { name: h[1], path: null, url: null }; out.push(cur); continue; }
@@ -133,27 +155,25 @@ jobs:
               return out.filter((m) => m.path);
             }
 
-            // Resolve a submodule URL (absolute or relative) to
-            // { host, owner, repo } when it is a GitHub repo, else null.
             function resolveRepo(url, parentOwner) {
               if (!url) return null;
               let u = url.replace(/\.git$/, '');
-              const rel = u.match(/^\.\.\/\.\.\/([^/]+)\/(.+)$/); // ../../owner/repo
-              if (rel) return { host: 'github.com', owner: rel[1], repo: rel[2] };
-              const rel1 = u.match(/^\.\.\/([^/]+)$/);            // ../repo (same owner)
-              if (rel1) return { host: 'github.com', owner: parentOwner, repo: rel1[1] };
+              const rel2 = u.match(/^\.\.\/\.\.\/([^/]+)\/(.+)$/); // ../../owner/repo
+              if (rel2) return { owner: rel2[1], repo: rel2[2] };
+              const rel1 = u.match(/^\.\.\/([^/]+)$/);             // ../repo (same owner)
+              if (rel1) return { owner: parentOwner, repo: rel1[1] };
               const m = u.match(/github\.com[/:]([^/]+)\/(.+)$/);
-              if (m) return { host: 'github.com', owner: m[1], repo: m[2] };
+              if (m) return { owner: m[1], repo: m[2] };
               return null;
             }
 
             function compareLink(url, parentOwner, oldSha, newSha) {
               const g = resolveRepo(url, parentOwner);
-              if (!g) return null;
+              if (!g || !oldSha || !newSha) return null;
               return `https://github.com/${g.owner}/${g.repo}/compare/${oldSha}...${newSha}`;
             }
 
-            function short(sha) { return sha ? sha.substring(0, 12) : '(none)'; }
+            const short = (sha) => (sha ? sha.substring(0, 12) : '(none)');
 
             // ---------------------------------------------------------------
             // Security-sensitive path catalogue
@@ -170,7 +190,7 @@ jobs:
                 globs: ['boot/**'] },
               { label: 'Build / release tooling',
                 globs: ['build_firmware.sh', 'Dockerfile', 'Makefile',
-                        'flake.nix', 'flake.lock', 'shell.nix',
+                        'flake.nix', 'flake.lock', 'shell.nix', 'simulate.py',
                         'manifests/**', 'tools/**'] },
               { label: 'CI / GitHub Actions',
                 globs: ['.github/workflows/**', '.github/actions/**'] },
@@ -183,6 +203,8 @@ jobs:
                 globs: ['src/rng.py', 'src/apps/getrandom.py'] },
               { label: 'Wallet / PSBT / descriptor / transaction handling',
                 globs: ['src/apps/wallets/**', 'src/gui/screens/transaction.py'] },
+              { label: 'XPUB export / authorization',
+                globs: ['src/apps/xpubs/**'] },
               { label: 'Message signing',
                 globs: ['src/apps/signmessage/**'] },
               { label: 'Blinding keys (Liquid)',
@@ -218,11 +240,13 @@ jobs:
             // 1. Changed files in the PR (via API, no checkout)
             // ---------------------------------------------------------------
             let files = [];
+            let filesOk = true;
             try {
               files = await github.paginate(github.rest.pulls.listFiles, {
                 owner, repo, pull_number: prNumber, per_page: 100,
               });
             } catch (e) {
+              filesOk = false;
               note(`Could not list PR files: ${e.message}`);
             }
 
@@ -239,62 +263,94 @@ jobs:
             const submoduleReport = [];
             let bootloaderOld = null;
             let bootloaderNew = null;
+            let bootloaderResolved = true;
+
+            function classify(before, after) {
+              const b = before.kind === 'submodule';
+              const a = after.kind === 'submodule';
+              if (before.kind === 'error' || after.kind === 'error') return 'unverified';
+              if (b && a) return before.sha === after.sha ? 'unchanged' : 'changed';
+              if (!b && a) return 'added';
+              if (b && !a) return 'removed';
+              return 'none';
+            }
+
+            async function nestedChanges(parentUrl, parentOwner, oldSha, newSha) {
+              const g = resolveRepo(parentUrl, parentOwner);
+              const result = { ok: true, entries: [] };
+              if (!g) { result.ok = false; return result; }
+              let gmOld = '';
+              let gmNew = '';
+              try {
+                [gmOld, gmNew] = await Promise.all([
+                  getRaw(g.owner, g.repo, '.gitmodules', oldSha).catch(() => ''),
+                  getRaw(g.owner, g.repo, '.gitmodules', newSha).catch(() => ''),
+                ]);
+              } catch (e) {
+                result.ok = false;
+                return result;
+              }
+              const modsOld = parseGitmodules(gmOld);
+              const modsNew = parseGitmodules(gmNew);
+              const paths = new Set([
+                ...modsOld.map((m) => m.path),
+                ...modsNew.map((m) => m.path),
+              ]);
+              for (const np of paths) {
+                const nb = await pathState(g.owner, g.repo, np, oldSha);
+                const na = await pathState(g.owner, g.repo, np, newSha);
+                const state = classify(nb, na);
+                if (state === 'unchanged' || state === 'none') continue;
+                const nurl =
+                  na.url || nb.url ||
+                  (modsNew.find((m) => m.path === np) || {}).url ||
+                  (modsOld.find((m) => m.path === np) || {}).url;
+                result.entries.push({
+                  path: np,
+                  state,
+                  old: nb.sha || null,
+                  new: na.sha || null,
+                  link: compareLink(nurl, g.owner, nb.sha, na.sha),
+                });
+              }
+              return result;
+            }
 
             for (const path of TOP_SUBMODULES) {
-              const before = await submodulePointer(owner, repo, path, baseSha);
-              const after = await submodulePointer(owner, repo, path, headRef);
-              if (!before || !after) {
-                if (!before && !after) continue; // not a submodule here
-                note(`Could not resolve both pointers for submodule '${path}'.`);
+              const before = await pathState(owner, repo, path, baseSha);
+              const after = await pathState(owner, repo, path, headRefs);
+              const state = classify(before, after);
+
+              if (path === 'bootloader') {
+                if (before.kind === 'submodule') bootloaderOld = before.sha;
+                if (after.kind === 'submodule') bootloaderNew = after.sha;
+                if (state === 'unverified') bootloaderResolved = false;
+              }
+
+              if (state === 'none' || state === 'unchanged') continue;
+
+              if (state === 'unverified') {
+                note(`Could not resolve the '${path}' submodule pointer on both sides.`);
+                submoduleReport.push({ path, state, old: before.sha || null,
+                                       new: after.sha || null, nested: [], nestedOk: false });
                 continue;
               }
-              if (path === 'bootloader') {
-                bootloaderOld = before.sha;
-                bootloaderNew = after.sha;
-              }
-              if (before.sha === after.sha) continue;
 
               const entry = {
                 path,
-                old: before.sha,
-                new: after.sha,
-                url: before.url || after.url,
+                state,
+                old: before.sha || null,
+                new: after.sha || null,
+                url: (before.url || after.url),
                 link: compareLink(before.url || after.url, owner, before.sha, after.sha),
                 nested: [],
+                nestedOk: true,
               };
-
-              // one level of nesting
-              const g = resolveRepo(entry.url, owner);
-              if (g) {
-                try {
-                  const [gmOld, gmNew] = await Promise.all([
-                    getRaw(g.owner, g.repo, '.gitmodules', before.sha).catch(() => ''),
-                    getRaw(g.owner, g.repo, '.gitmodules', after.sha).catch(() => ''),
-                  ]);
-                  const modsOld = parseGitmodules(gmOld);
-                  const modsNew = parseGitmodules(gmNew);
-                  const paths = new Set([
-                    ...modsOld.map((m) => m.path),
-                    ...modsNew.map((m) => m.path),
-                  ]);
-                  for (const np of paths) {
-                    const nOld = await submodulePointer(g.owner, g.repo, np, before.sha);
-                    const nNew = await submodulePointer(g.owner, g.repo, np, after.sha);
-                    if (!nOld || !nNew) continue;
-                    if (nOld.sha === nNew.sha) continue;
-                    const nurl = nNew.url || nOld.url ||
-                      (modsNew.find((m) => m.path === np) || {}).url ||
-                      (modsOld.find((m) => m.path === np) || {}).url;
-                    entry.nested.push({
-                      path: np,
-                      old: nOld.sha,
-                      new: nNew.sha,
-                      link: compareLink(nurl, g.owner, nOld.sha, nNew.sha),
-                    });
-                  }
-                } catch (e) {
-                  note(`Nested submodule scan for '${path}' failed: ${e.message}`);
-                }
+              if (state === 'changed' && before.sha && after.sha) {
+                const nc = await nestedChanges(entry.url, owner, before.sha, after.sha);
+                entry.nestedOk = nc.ok;
+                entry.nested = nc.entries;
+                if (!nc.ok) note(`Nested submodule scan for '${path}' could not be completed.`);
               }
               submoduleReport.push(entry);
             }
@@ -306,35 +362,51 @@ jobs:
             let signingSection = '';
 
             function parsePubkeys(src) {
-              const res = { thresholds: {}, lists: {} };
+              const res = { thresholds: {}, lists: {}, ok: true, problems: [] };
               const t1 = src.match(/\.bootloader_sig_threshold\s*=\s*(\d+)/);
               const t2 = src.match(/\.main_fw_sig_threshold\s*=\s*(\d+)/);
-              res.thresholds.bootloader = t1 ? t1[1] : null;
-              res.thresholds.main_fw = t2 ? t2[1] : null;
+              res.thresholds.bootloader = t1 ? Number(t1[1]) : null;
+              res.thresholds.main_fw = t2 ? Number(t2[1]) : null;
+              if (!t1) res.problems.push('bootloader_sig_threshold not found');
+              if (!t2) res.problems.push('main_fw_sig_threshold not found');
 
               for (const listName of ['vendor_pubkey_list', 'maintainer_pubkey_list']) {
-                // list body runs from `name[] = {` to the first `};`
-                // (individual entries end in `}},` so `};` is unambiguous)
+                // list body: from `name[] = {` to the first `};`
                 const re = new RegExp(
                   listName + '\\s*\\[\\]\\s*=\\s*\\{([\\s\\S]*?)\\}\\s*;');
                 const m = src.match(re);
                 const keys = [];
-                if (m) {
+                if (!m) {
+                  res.problems.push(`${listName} not found`);
+                } else {
                   const body = m[1];
-                  // split into "{.bytes = { ... }}" blocks, keep preceding // comment
-                  const blockRe = /(?:\/\/\s*(.*)\s*\n\s*)?\{\s*\.bytes\s*=\s*\{([\s\S]*?)\}\s*\}/g;
+                  const blockRe = /(?:\/\/\s*([^\n]*?)\s*\n\s*)?\{\s*\.bytes\s*=\s*\{([\s\S]*?)\}\s*\}/g;
                   let bm;
                   while ((bm = blockRe.exec(body)) !== null) {
-                    const owner = (bm[1] || '').trim() || '(unlabelled)';
+                    const keyOwner = (bm[1] || '').trim() || '(unlabelled)';
                     const bytes = (bm[2].match(/0x[0-9a-fA-F]{1,2}/g) || [])
                       .map((h) => parseInt(h, 16).toString(16).padStart(2, '0'))
                       .join('');
-                    if (!bytes) continue;
-                    keys.push({ owner, bytes });
+                    keys.push({ owner: keyOwner, bytes });
                   }
+                  if (!keys.length) res.problems.push(`${listName} parsed as empty`);
                 }
                 res.lists[listName] = keys;
               }
+
+              // Validate: thresholds present & sane, both lists non-empty, each
+              // key a plausible uncompressed EC point (65 bytes, 0x04 prefix).
+              const tOk = [res.thresholds.bootloader, res.thresholds.main_fw]
+                .every((v) => Number.isInteger(v) && v >= 1 && v <= 16);
+              if (!tOk) res.problems.push('threshold values missing or out of range');
+              for (const listName of ['vendor_pubkey_list', 'maintainer_pubkey_list']) {
+                for (const k of res.lists[listName]) {
+                  if (k.bytes.length !== 130 || !k.bytes.startsWith('04')) {
+                    res.problems.push(`${listName}: key "${k.owner}" has unexpected format`);
+                  }
+                }
+              }
+              res.ok = res.problems.length === 0;
               return res;
             }
 
@@ -351,7 +423,11 @@ jobs:
               return sha256(parts.join('|'));
             }
 
-            if (bootloaderOld && bootloaderNew && bootloaderOld !== bootloaderNew) {
+            if (!bootloaderResolved) {
+              signingSection =
+                '❓ Could not resolve the `bootloader` submodule pointer on both sides — ' +
+                'production signing configuration **not verified**. Manual review recommended.';
+            } else if (bootloaderOld && bootloaderNew && bootloaderOld !== bootloaderNew) {
               try {
                 const [srcOld, srcNew] = await Promise.all([
                   getRaw('cryptoadvance', 'specter-bootloader', PUBKEYS_PATH, bootloaderOld),
@@ -360,56 +436,66 @@ jobs:
                 const pOld = parsePubkeys(srcOld);
                 const pNew = parsePubkeys(srcNew);
 
-                const digOld = keysetDigest(pOld);
-                const digNew = keysetDigest(pNew);
-
-                const lines = [];
-                const tChanged =
-                  pOld.thresholds.bootloader !== pNew.thresholds.bootloader ||
-                  pOld.thresholds.main_fw !== pNew.thresholds.main_fw;
-                const kChanged = digOld !== digNew;
-
-                if (!tChanged && !kChanged) {
-                  lines.push('✅ **Production signing configuration unchanged**');
-                  lines.push('');
-                  lines.push('The `bootloader` pointer moved, but the vendor / maintainer');
-                  lines.push('public keys and both signature thresholds are identical.');
+                if (!pOld.ok || !pNew.ok) {
+                  const probs = [...new Set([...pOld.problems, ...pNew.problems])];
+                  signingSection = [
+                    '❓ **Unable to verify production signing configuration — manual review required.**',
+                    '',
+                    `\`${PUBKEYS_PATH}\` could not be parsed with confidence ` +
+                    `(old \`${short(bootloaderOld)}\` → new \`${short(bootloaderNew)}\`):`,
+                    ...probs.slice(0, 8).map((p) => `- ${mdEsc(p)}`),
+                    '',
+                    'The parser is intentionally strict; treat this as "unknown", not "unchanged".',
+                  ].join('\n');
                 } else {
-                  lines.push('⚠️ **Production signing configuration changed**');
-                  lines.push('');
-                  lines.push('| Setting | Old | New |');
-                  lines.push('| --- | --- | --- |');
-                  lines.push(`| \`bootloader_sig_threshold\` | ${pOld.thresholds.bootloader ?? '?'} | ${pNew.thresholds.bootloader ?? '?'} |`);
-                  lines.push(`| \`main_fw_sig_threshold\` | ${pOld.thresholds.main_fw ?? '?'} | ${pNew.thresholds.main_fw ?? '?'} |`);
-                  lines.push(`| Production key set | ${kChanged ? '**CHANGED**' : 'unchanged'} | |`);
-                  lines.push('');
-                  lines.push(`Old key-set SHA256: \`${digOld}\``);
-                  lines.push(`New key-set SHA256: \`${digNew}\``);
-
-                  for (const ln of ['vendor_pubkey_list', 'maintainer_pubkey_list']) {
-                    const before = new Map(pOld.lists[ln].map((k) => [k.bytes, k.owner]));
-                    const after = new Map(pNew.lists[ln].map((k) => [k.bytes, k.owner]));
-                    const added = [...after].filter(([b]) => !before.has(b));
-                    const removed = [...before].filter(([b]) => !after.has(b));
-                    if (added.length || removed.length) {
-                      lines.push('');
-                      lines.push(`**${ln.replace('_pubkey_list', '')} keys**`);
-                      for (const [b, o] of added)
-                        lines.push(`- ➕ added — owner \`${o}\`, fingerprint \`${fpr(b)}\``);
-                      for (const [b, o] of removed)
-                        lines.push(`- ➖ removed — owner \`${o}\`, fingerprint \`${fpr(b)}\``);
+                  const digOld = keysetDigest(pOld);
+                  const digNew = keysetDigest(pNew);
+                  const tChanged =
+                    pOld.thresholds.bootloader !== pNew.thresholds.bootloader ||
+                    pOld.thresholds.main_fw !== pNew.thresholds.main_fw;
+                  const kChanged = digOld !== digNew;
+                  const lines = [];
+                  if (!tChanged && !kChanged) {
+                    lines.push('✅ **Production signing configuration unchanged**');
+                    lines.push('');
+                    lines.push('The `bootloader` pointer moved, but the vendor / maintainer');
+                    lines.push('public keys and both signature thresholds are identical.');
+                  } else {
+                    lines.push('⚠️ **Production signing configuration changed**');
+                    lines.push('');
+                    lines.push('| Setting | Old | New |');
+                    lines.push('| --- | --- | --- |');
+                    lines.push(`| \`bootloader_sig_threshold\` | ${pOld.thresholds.bootloader} | ${pNew.thresholds.bootloader} |`);
+                    lines.push(`| \`main_fw_sig_threshold\` | ${pOld.thresholds.main_fw} | ${pNew.thresholds.main_fw} |`);
+                    lines.push(`| Production key set | ${kChanged ? '**CHANGED**' : 'unchanged'} | |`);
+                    lines.push('');
+                    lines.push(`Old key-set SHA256: \`${digOld}\``);
+                    lines.push(`New key-set SHA256: \`${digNew}\``);
+                    for (const ln of ['vendor_pubkey_list', 'maintainer_pubkey_list']) {
+                      const before = new Map(pOld.lists[ln].map((k) => [k.bytes, k.owner]));
+                      const after = new Map(pNew.lists[ln].map((k) => [k.bytes, k.owner]));
+                      const added = [...after].filter(([b]) => !before.has(b));
+                      const removed = [...before].filter(([b]) => !after.has(b));
+                      if (added.length || removed.length) {
+                        lines.push('');
+                        lines.push(`**${ln.replace('_pubkey_list', '')} keys**`);
+                        for (const [b, o] of added)
+                          lines.push(`- ➕ added — owner \`${mdEsc(o)}\`, fingerprint \`${fpr(b)}\``);
+                        for (const [b, o] of removed)
+                          lines.push(`- ➖ removed — owner \`${mdEsc(o)}\`, fingerprint \`${fpr(b)}\``);
+                      }
                     }
+                    lines.push('');
+                    lines.push('> Flagged prominently but **not blocking**. A production');
+                    lines.push('> signing-config change must be reviewed by the maintainers.');
                   }
-                  lines.push('');
-                  lines.push('> This is flagged prominently but **not blocking**. A production');
-                  lines.push('> signing-config change must be reviewed by the maintainers.');
+                  signingSection = lines.join('\n');
                 }
-                signingSection = lines.join('\n');
               } catch (e) {
                 signingSection =
-                  `ℹ️ Could not load \`${PUBKEYS_PATH}\` from one/both bootloader commits ` +
-                  `(\`${short(bootloaderOld)}\` → \`${short(bootloaderNew)}\`): ${e.message}. ` +
-                  `Manual review of the bootloader bump is recommended.`;
+                  `❓ Could not load \`${PUBKEYS_PATH}\` from one/both bootloader commits ` +
+                  `(\`${short(bootloaderOld)}\` → \`${short(bootloaderNew)}\`): ${mdEsc(e.message)}. ` +
+                  `Production signing configuration **not verified** — manual review recommended.`;
               }
             } else if (bootloaderOld && bootloaderNew) {
               signingSection =
@@ -417,30 +503,55 @@ jobs:
                 'submodule pointer was not modified by this PR.';
             } else {
               signingSection =
-                'ℹ️ Could not resolve the `bootloader` submodule pointer on both sides; ' +
-                'skipping signing-config comparison.';
+                '❓ The `bootloader` submodule was added or removed by this PR — ' +
+                'production signing configuration **not verified**. Manual review required.';
             }
 
             // ---------------------------------------------------------------
-            // 4. Changes since last approval
+            // 4. Changes since last approval (incl. approvals dismissed as stale)
             // ---------------------------------------------------------------
             let approvalSection = '';
             try {
               const reviews = await github.paginate(github.rest.pulls.listReviews, {
                 owner, repo, pull_number: prNumber, per_page: 100,
               });
-              const approved = reviews.filter((r) => r.state === 'APPROVED');
-              const last = approved[approved.length - 1];
+
+              // Reviews that were APPROVED and later dismissed still matter as
+              // "the last approval". Recover them from the timeline.
+              const dismissedApprovalIds = new Set();
+              try {
+                const timeline = await github.paginate(
+                  github.rest.issues.listEventsForTimeline,
+                  { owner, repo, issue_number: prNumber, per_page: 100 });
+                for (const ev of timeline) {
+                  if (ev.event === 'review_dismissed' && ev.dismissed_review &&
+                      String(ev.dismissed_review.state).toLowerCase() === 'approved') {
+                    if (ev.dismissed_review.review_id != null)
+                      dismissedApprovalIds.add(ev.dismissed_review.review_id);
+                  }
+                }
+              } catch (e) {
+                note(`Could not read PR timeline for dismissed approvals: ${e.message}`);
+              }
+
+              const approvals = reviews
+                .filter((r) => r.state === 'APPROVED' || dismissedApprovalIds.has(r.id))
+                .sort((a, b) => new Date(a.submitted_at) - new Date(b.submitted_at));
+              const last = approvals[approvals.length - 1];
+
               if (!last) {
                 approvalSection = 'ℹ️ No previous approval found. (This is not an error.)';
               } else {
                 const lastSha = last.commit_id;
+                const staleTag = last.state !== 'APPROVED'
+                  ? ' _(this approval was later dismissed — likely stale; comparing against it anyway)_'
+                  : '';
                 if (lastSha === headSha) {
                   approvalSection =
                     `✅ No changes since last approval.\n\n` +
-                    `Approved by \`${last.user.login}\` at \`${short(lastSha)}\` (current HEAD).`;
+                    `Approved by \`${mdEsc(last.user.login)}\` at \`${short(lastSha)}\` (current HEAD).${staleTag}`;
                 } else {
-                  let cmp;
+                  let cmp = null;
                   try {
                     cmp = await github.rest.repos.compareCommitsWithBasehead({
                       owner: headRepoFull.split('/')[0],
@@ -448,11 +559,10 @@ jobs:
                       basehead: `${lastSha}...${headSha}`,
                     });
                   } catch (e) {
-                    cmp = null;
                     note(`compare ${short(lastSha)}...${short(headSha)} failed: ${e.message}`);
                   }
                   const L = [];
-                  L.push(`Last approved commit: \`${short(lastSha)}\` (by \`${last.user.login}\`)`);
+                  L.push(`Last approved commit: \`${short(lastSha)}\` (by \`${mdEsc(last.user.login)}\`)${staleTag}`);
                   L.push(`Current HEAD: \`${short(headSha)}\``);
                   L.push('');
                   if (cmp) {
@@ -467,18 +577,19 @@ jobs:
                     for (const f of changed.slice(0, 40)) {
                       const areas = matchAreas(f);
                       const sub = TOP_SUBMODULES.includes(f) ? ' _(submodule pointer)_' : '';
-                      L.push(`- \`${f}\`${areas.length ? ' — ⚠️ ' + areas.join('; ') : ''}${sub}`);
+                      L.push(`- \`${mdEsc(f)}\`${areas.length ? ' — ⚠️ ' + areas.map(mdEsc).join('; ') : ''}${sub}`);
                     }
                     if (changed.length > 40) L.push(`- … and ${changed.length - 40} more`);
                   } else {
-                    L.push('ℹ️ A clean commit-range comparison was not possible ' +
-                           '(rebased / force-pushed history). Manual review recommended.');
+                    L.push('❓ A commit-range comparison was not possible ' +
+                           '(rebased / force-pushed history, or the approved commit is gone). ' +
+                           'Manual review recommended.');
                   }
                   approvalSection = L.join('\n');
                 }
               }
             } catch (e) {
-              approvalSection = `ℹ️ Could not evaluate approval history: ${e.message}`;
+              approvalSection = `❓ Could not evaluate approval history: ${mdEsc(e.message)}`;
             }
 
             // ---------------------------------------------------------------
@@ -488,13 +599,15 @@ jobs:
             out.push(STICKY_MARKER);
             out.push('## PR Security & Change Guard');
             out.push('');
-            out.push('_Informational only — none of the findings below block this PR._');
+            out.push('_Informational only — none of the findings below block this PR. ' +
+                     '❓ marks something the workflow could not verify (treat as "unknown", not "safe")._');
             out.push(`<sub>base \`${short(baseSha)}\` · head \`${short(headSha)}\` · updated ${new Date().toISOString()}</sub>`);
             out.push('');
 
-            // Security-sensitive files
             out.push('### Security-sensitive files');
-            if (securityHits.size === 0) {
+            if (!filesOk) {
+              out.push('❓ Could not retrieve the list of changed files (API error). Manual review required.');
+            } else if (securityHits.size === 0) {
               out.push('✅ No security-sensitive files changed.');
             } else {
               out.push('⚠️ **Security-sensitive changes** — manual security review recommended.');
@@ -502,42 +615,49 @@ jobs:
               out.push('| File | Area |');
               out.push('| --- | --- |');
               for (const [f, areas] of securityHits) {
-                out.push(`| \`${f}\` | ${areas.join('; ')} |`);
+                out.push(`| \`${mdEsc(f)}\` | ${areas.map(mdEsc).join('; ')} |`);
               }
             }
             out.push('');
 
-            // Production signing configuration
             out.push('### Production signing configuration');
             out.push(signingSection);
             out.push('');
 
-            // Submodules
             out.push('### Submodules');
             if (submoduleReport.length === 0) {
               out.push('✅ No submodule pointer changes.');
             } else {
               for (const s of submoduleReport) {
-                out.push(`**${s.path}**`);
-                out.push(`- old: \`${s.old}\``);
-                out.push(`- new: \`${s.new}\``);
-                if (s.link) out.push(`- compare: ${s.link}`);
-                if (s.nested.length) {
+                out.push(`**${mdEsc(s.path)}** — ${s.state}`);
+                if (s.state === 'unverified') {
+                  out.push('- ❓ could not resolve this pointer on both sides — manual review');
                   out.push('');
-                  out.push('  Nested pointer changes:');
-                  for (const n of s.nested) {
-                    out.push(`  - \`${n.path}\`: \`${short(n.old)}\` → \`${short(n.new)}\`` +
-                             (n.link ? ` ([compare](${n.link}))` : ''));
+                  continue;
+                }
+                if (s.old) out.push(`- old: \`${s.old}\``);
+                if (s.new) out.push(`- new: \`${s.new}\``);
+                if (s.link) out.push(`- compare: ${s.link}`);
+                if (s.state === 'changed') {
+                  if (!s.nestedOk) {
+                    out.push('- ❓ nested submodule scan could not be completed — manual review');
+                  } else if (s.nested.length) {
+                    out.push('');
+                    out.push('  Nested submodule changes:');
+                    for (const n of s.nested) {
+                      out.push(`  - \`${mdEsc(n.path)}\` (${n.state}): ` +
+                               `\`${short(n.old)}\` → \`${short(n.new)}\`` +
+                               (n.link ? ` ([compare](${n.link}))` : ''));
+                    }
+                  } else {
+                    out.push('- nested submodule pointers: unchanged');
                   }
-                } else {
-                  out.push('- nested submodule pointers: unchanged');
                 }
                 out.push('');
               }
             }
             out.push('');
 
-            // Changes since last approval
             out.push('### Changes since last approval');
             out.push(approvalSection);
             out.push('');
@@ -546,22 +666,23 @@ jobs:
               out.push('---');
               out.push('<details><summary>Diagnostics (non-fatal)</summary>');
               out.push('');
-              for (const n of notes) out.push(`- ${n}`);
+              for (const n of notes) out.push(`- ${mdEsc(n)}`);
               out.push('');
               out.push('</details>');
             }
 
             const body = out.join('\n');
 
-            // Step summary (always)
             await core.summary.addRaw(body).write();
 
-            // Sticky comment (find-or-create by marker, author = github-actions[bot])
+            // Sticky comment: find-or-create, but only ever touch our own
+            // bot comment carrying the marker.
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner, repo, issue_number: prNumber, per_page: 100,
             });
             const existing = comments.find(
-              (c) => c.body && c.body.includes(STICKY_MARKER));
+              (c) => c.body && c.body.includes(STICKY_MARKER) &&
+                     c.user && c.user.login === BOT_LOGIN);
             if (existing) {
               await github.rest.issues.updateComment({
                 owner, repo, comment_id: existing.id, body,
