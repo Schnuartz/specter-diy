@@ -44,8 +44,13 @@ name: PR Security & Change Guard
 on:
   pull_request_target:
     types: [opened, reopened, synchronize, ready_for_review]
-  pull_request_review:
-    types: [submitted]
+  # NOTE: `pull_request_review` is deliberately NOT a trigger. For pull
+  # requests from a fork, GitHub runs a `pull_request_review` workflow with a
+  # read-only GITHUB_TOKEN (only `pull_request_target` keeps write access on
+  # fork PRs), so the sticky-comment update would fail there. It is not needed
+  # either: the "changes since approval" section matters once new commits
+  # arrive after an approval, and that fires `synchronize` on
+  # `pull_request_target`, which does have write access.
 
 # Minimal permissions. `contents: read` is only used for REST reads of this
 # repo; `pull-requests: write` is required to create/update the sticky comment.
@@ -68,9 +73,10 @@ jobs:
       github.event.pull_request.state == 'open'
     steps:
       - name: Build & publish report
-        # Pinned to the commit the `v7` tag pointed at (v7.0.1). Update the
+        # Pinned to a full commit SHA. This SHA is the actions/github-script
+        # v7.1.0 release (also where the moving `v7` tag points). Update the
         # SHA and the trailing comment together when bumping.
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.0.1
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         with:
           # Default GITHUB_TOKEN. Scope is limited by `permissions:` above.
           script: |
@@ -121,6 +127,7 @@ jobs:
             async function pathState(o, r, path, ref) {
               const refs = Array.isArray(ref) ? ref : [ref];
               let lastErr = null;
+              let saw404 = false;
               for (const rf of refs) {
                 try {
                   const res = await github.rest.repos.getContent({
@@ -132,11 +139,15 @@ jobs:
                   }
                   return { kind: 'other' };
                 } catch (e) {
-                  if (e.status === 404) return { kind: 'absent' };
+                  // Only conclude "absent" after every candidate ref 404s;
+                  // a non-404 (403/429/5xx/network) is an unknown, not absent.
+                  if (e.status === 404) { saw404 = true; continue; }
                   lastErr = e;
                 }
               }
-              return { kind: 'error', message: lastErr ? lastErr.message : 'unknown' };
+              if (lastErr) return { kind: 'error', message: lastErr.message };
+              if (saw404) return { kind: 'absent' };
+              return { kind: 'error', message: 'no candidate ref resolved' };
             }
 
             function parseGitmodules(text) {
@@ -275,23 +286,33 @@ jobs:
               return 'none';
             }
 
+            // Fetch a repo's .gitmodules at a ref. A 404 means "this commit
+            // has no .gitmodules" (legitimately empty); any other failure is
+            // unknown and must NOT be silently treated as empty.
+            async function getGitmodules(o, r, ref) {
+              try {
+                return { ok: true, text: await getRaw(o, r, '.gitmodules', ref) };
+              } catch (e) {
+                if (e.status === 404) return { ok: true, text: '' };
+                return { ok: false, text: '' };
+              }
+            }
+
             async function nestedChanges(parentUrl, parentOwner, oldSha, newSha) {
               const g = resolveRepo(parentUrl, parentOwner);
               const result = { ok: true, entries: [] };
               if (!g) { result.ok = false; return result; }
-              let gmOld = '';
-              let gmNew = '';
-              try {
-                [gmOld, gmNew] = await Promise.all([
-                  getRaw(g.owner, g.repo, '.gitmodules', oldSha).catch(() => ''),
-                  getRaw(g.owner, g.repo, '.gitmodules', newSha).catch(() => ''),
-                ]);
-              } catch (e) {
+              const [gmOldR, gmNewR] = await Promise.all([
+                getGitmodules(g.owner, g.repo, oldSha),
+                getGitmodules(g.owner, g.repo, newSha),
+              ]);
+              if (!gmOldR.ok || !gmNewR.ok) {
+                // Could not read one/both .gitmodules for a non-404 reason.
                 result.ok = false;
                 return result;
               }
-              const modsOld = parseGitmodules(gmOld);
-              const modsNew = parseGitmodules(gmNew);
+              const modsOld = parseGitmodules(gmOldR.text);
+              const modsNew = parseGitmodules(gmNewR.text);
               const paths = new Set([
                 ...modsOld.map((m) => m.path),
                 ...modsNew.map((m) => m.path),
@@ -300,6 +321,7 @@ jobs:
                 const nb = await pathState(g.owner, g.repo, np, oldSha);
                 const na = await pathState(g.owner, g.repo, np, newSha);
                 const state = classify(nb, na);
+                if (state === 'unverified') { result.ok = false; continue; }
                 if (state === 'unchanged' || state === 'none') continue;
                 const nurl =
                   na.url || nb.url ||
@@ -519,6 +541,7 @@ jobs:
               // Reviews that were APPROVED and later dismissed still matter as
               // "the last approval". Recover them from the timeline.
               const dismissedApprovalIds = new Set();
+              let timelineOk = true;
               try {
                 const timeline = await github.paginate(
                   github.rest.issues.listEventsForTimeline,
@@ -531,15 +554,23 @@ jobs:
                   }
                 }
               } catch (e) {
+                timelineOk = false;
                 note(`Could not read PR timeline for dismissed approvals: ${e.message}`);
               }
 
+              const hasCurrentApproval = reviews.some((r) => r.state === 'APPROVED');
               const approvals = reviews
                 .filter((r) => r.state === 'APPROVED' || dismissedApprovalIds.has(r.id))
                 .sort((a, b) => new Date(a.submitted_at) - new Date(b.submitted_at));
               const last = approvals[approvals.length - 1];
 
-              if (!last) {
+              if (!last && !hasCurrentApproval && !timelineOk) {
+                // No standing approval, and we could not check the timeline for
+                // a dismissed one -> unknown, not "none".
+                approvalSection =
+                  '❓ Could not determine whether a previously dismissed approval ' +
+                  'exists (PR timeline API unavailable). Manual review recommended.';
+              } else if (!last) {
                 approvalSection = 'ℹ️ No previous approval found. (This is not an error.)';
               } else {
                 const lastSha = last.commit_id;
