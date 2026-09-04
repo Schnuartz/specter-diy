@@ -47,13 +47,14 @@ jobs:
 
     steps:
       - name: Checkout exact release tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.release_tag }}
           submodules: recursive
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Validate release tag and source
+      - name: Validate release tag and bind it to reviewed master
         shell: bash
         run: |
           set -euo pipefail
@@ -75,6 +76,20 @@ jobs:
             echo "ERROR: Checked-out commit does not match release tag."
             echo "Tag:  $TAG_COMMIT"
             echo "HEAD: $HEAD_COMMIT"
+            exit 1
+          fi
+
+          # The tag must point at a commit that is part of the reviewed master
+          # history. Otherwise a tag could be moved onto arbitrary code and this
+          # workflow would still happily build and "verify" it.
+          git fetch --no-tags --quiet origin \
+            "+refs/heads/master:refs/remotes/origin/master"
+
+          if ! git merge-base --is-ancestor \
+                 "$TAG_COMMIT" refs/remotes/origin/master; then
+            echo "ERROR: Release tag $RELEASE_TAG ($TAG_COMMIT) is not an"
+            echo "       ancestor of origin/master. Only tags on reviewed"
+            echo "       master history can be finalized."
             exit 1
           fi
 
@@ -158,10 +173,38 @@ jobs:
           test -f release/specter_upgrade_unsigned.bin
           test -f release/initial_firmware.bin
 
-      - name: Verify release tag matches firmware signing message
+      - name: Verify release tag matches firmware version
         shell: bash
         run: |
           set -euo pipefail
+
+          DUMP="$(
+            docker run --rm \
+              --platform linux/amd64 \
+              -v "$PWD:/app" \
+              specter-reproducible \
+              python3 ./bootloader/tools/upgrade-generator.py \
+                dump ./release/specter_upgrade.bin
+          )"
+          printf '%s\n' "$DUMP" > release/meta/upgrade-dump-before.txt
+
+          # Version of the "main" payload section, display format
+          # (e.g. "1.10.5" or "1.10.5-rc3").
+          MAIN_VER="$(
+            printf '%s\n' "$DUMP" \
+              | awk '/^SECTION "main"/{f=1} f&&/^  version:/{print $2; exit}'
+          )"
+
+          if [ -z "$MAIN_VER" ]; then
+            echo "ERROR: could not read main firmware version from upgrade file."
+            exit 1
+          fi
+
+          if [ "$MAIN_VER" != "$VERSION" ]; then
+            echo "ERROR: main firmware version ($MAIN_VER) does not match"
+            echo "       release tag version ($VERSION)."
+            exit 1
+          fi
 
           BEFORE_MESSAGE="$(
             docker run --rm \
@@ -169,17 +212,8 @@ jobs:
               -v "$PWD:/app" \
               specter-reproducible \
               python3 ./bootloader/tools/upgrade-generator.py \
-                message \
-                ./release/specter_upgrade.bin
+                message ./release/specter_upgrade.bin
           )"
-
-          if [[ "$BEFORE_MESSAGE" != "$VERSION"-* ]]; then
-            echo "ERROR: Firmware version does not match release tag."
-            echo "Release tag: $RELEASE_TAG"
-            echo "Expected version prefix: $VERSION-"
-            echo "Signing message: $BEFORE_MESSAGE"
-            exit 1
-          fi
 
           printf '%s\n' "$BEFORE_MESSAGE" \
             > release/meta/signing-message-before.txt
@@ -218,6 +252,8 @@ jobs:
             exit 1
           fi
 
+          echo "PROVIDED_SIG_COUNT=$COUNT" >> "$GITHUB_ENV"
+
       - name: Verify signing did not modify firmware payload
         shell: bash
         run: |
@@ -248,11 +284,94 @@ jobs:
 
           echo "Payload signing message unchanged."
 
-      - name: Cryptographically verify signatures and threshold
+      - name: Enforce bootloader signature policy (vendor keys only)
         shell: bash
         run: |
           set -euo pipefail
 
+          # This is the authoritative signature gate. It reproduces the policy
+          # of the on-device bootloader (verify_multisig): a bootloader upgrade
+          # is accepted only on >= bootloader_sig_threshold valid signatures
+          # from *vendor* keys. It does NOT rely on introspect-binary.py, which
+          # currently checks vendor+maintainer keys together.
+          docker run --rm \
+            --platform linux/amd64 \
+            -v "$PWD:/app" \
+            -e BOOT_THRESHOLD \
+            -e PROVIDED_SIG_COUNT \
+            specter-reproducible \
+            python3 - <<'PY' | tee release/meta/vendor-policy-check.txt
+          import os, sys
+          sys.path.insert(0, "bootloader/tools")
+
+          from core.blsection import (
+              load_sections, parse_sections, make_signature_message
+          )
+          from core.signature import verify
+          from parse_pubkeys import get_pubkey_info
+
+          threshold = int(os.environ["BOOT_THRESHOLD"])
+          provided = int(os.environ["PROVIDED_SIG_COUNT"])
+
+          info = get_pubkey_info("bootloader/keys/production/pubkeys.c")
+          vendor = {bytes.fromhex(fp): pk for _, fp, pk in info["vendor"]}
+          maint = {bytes.fromhex(fp): owner for owner, fp, _ in info["maintainer"]}
+          vendor_owner = {bytes.fromhex(fp): owner for owner, fp, _ in info["vendor"]}
+
+          with open("release/specter_upgrade.bin", "rb") as fh:
+              sections = load_sections(fh)
+          payload_sections, sig_section = parse_sections(sections)
+          if sig_section is None:
+              print("ERROR: upgrade file has no signature section")
+              sys.exit(1)
+
+          message = make_signature_message(payload_sections)
+          is_boot = any(s.name == "boot" for s in payload_sections)
+          sigs = sig_section.signatures
+
+          # Every provided signature must have landed as a distinct signer.
+          # Fewer distinct entries than provided => a key signed twice.
+          if len(sigs) != provided:
+              print(f"ERROR: {provided} signatures provided but the upgrade file "
+                    f"holds {len(sigs)} distinct signers (duplicate signer?).")
+              sys.exit(1)
+
+          valid_vendor = 0
+          for fp, sig in sigs.items():
+              if fp in vendor:
+                  if not verify(sig, message, vendor[fp]):
+                      print(f"ERROR: invalid signature for vendor key "
+                            f"{vendor_owner[fp]} ({fp.hex()})")
+                      sys.exit(1)
+                  valid_vendor += 1
+                  print(f"OK   vendor signature: {vendor_owner[fp]} ({fp.hex()})")
+              elif fp in maint:
+                  print(f"NOTE maintainer-only signer, not counted for bootloader "
+                        f"policy: {maint[fp]} ({fp.hex()})")
+              else:
+                  print(f"ERROR: signer {fp.hex()} is not a production key")
+                  sys.exit(1)
+
+          print(f"\nPayload sections: {[s.name for s in payload_sections]}")
+          print(f"Bootloader upgrade: {is_boot}")
+          print(f"Valid vendor signatures: {valid_vendor} (threshold {threshold})")
+
+          if is_boot and valid_vendor < threshold:
+              print("ERROR: not enough valid VENDOR signatures for a bootloader "
+                    "upgrade; the on-device bootloader would reject this file.")
+              sys.exit(1)
+
+          print("Vendor signature policy satisfied.")
+          PY
+
+      - name: Cross-check with introspect-binary.py
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Secondary, non-authoritative check. Uses the upstream helper as an
+          # independent second implementation. See the vendor-policy step above
+          # for the gate that actually decides pass/fail.
           docker run --rm \
             --platform linux/amd64 \
             -v "$PWD:/app" \
@@ -294,12 +413,58 @@ jobs:
               ./release/initial_firmware.bin \
             | tee release/introspection-initial.txt
 
-          if ! grep -q "Found ICR" release/introspection-initial.txt; then
-            echo "ERROR: Initial firmware does not contain a valid ICR."
-            exit 1
-          fi
+      - name: Validate initial firmware integrity check record
+        shell: bash
+        run: |
+          set -euo pipefail
 
-      - name: Verify all expected production keys are embedded
+          # Real structural validation of the ICR at the end of
+          # initial_firmware.bin: magic, supported struct revision, and the
+          # record's own CRC32. Full payload-CRC validation needs the memory
+          # map and is left to dedicated bootloader tooling.
+          VERSION="$VERSION" python3 - <<'PY' | tee release/meta/icr-check.txt
+          import os, struct, sys, zlib
+
+          data = open("release/initial_firmware.bin", "rb").read()
+          if len(data) < 32:
+              print("ERROR: initial firmware too small to contain an ICR")
+              sys.exit(1)
+
+          icr = data[-32:]
+          (magic, struct_rev, pl_ver,
+           main_size, main_crc, aux_size, aux_crc, struct_crc) = struct.unpack("<8I", icr)
+
+          if magic != 0x47544E49:  # "INTG" little-endian
+              print(f"ERROR: ICR magic mismatch: 0x{magic:08x}")
+              sys.exit(1)
+
+          if struct_rev != 1:
+              print(f"ERROR: unsupported ICR struct revision: {struct_rev}")
+              sys.exit(1)
+
+          calc_crc = zlib.crc32(icr[:28]) & 0xffffffff
+          if calc_crc != struct_crc:
+              print(f"ERROR: ICR self-CRC invalid "
+                    f"(stored 0x{struct_crc:08x}, computed 0x{calc_crc:08x})")
+              sys.exit(1)
+
+          major = pl_ver // 100_000_000
+          minor = pl_ver // 100_000 % 1000
+          patch = pl_ver // 100 % 1000
+          rc = pl_ver % 100
+          icr_ver = f"{major}.{minor}.{patch}" + ("" if rc == 99 else f"-rc{rc}")
+
+          print(f"ICR OK: struct_rev={struct_rev} payload_version={icr_ver} "
+                f"main_size={main_size} self_crc=0x{struct_crc:08x}")
+
+          want = os.environ.get("VERSION", "")
+          if want and icr_ver != want:
+              print(f"ERROR: ICR payload version ({icr_ver}) does not match "
+                    f"release tag version ({want}).")
+              sys.exit(1)
+          PY
+
+      - name: Verify expected production keys are present in initial firmware
         shell: bash
         run: |
           set -euo pipefail
@@ -334,7 +499,8 @@ jobs:
 
           missing = []
 
-          print(f"Checking {len(expected)} unique production public keys:")
+          print(f"Checking {len(expected)} unique production public keys are "
+                f"present as byte sequences in the image:")
 
           for pubkey, meta in expected.items():
               types = "/".join(sorted(meta["types"]))
@@ -352,10 +518,12 @@ jobs:
                   )
 
           if missing:
-              print("ERROR: Not all expected production keys are embedded.")
+              print("ERROR: Not all expected production keys are present in the image.")
               sys.exit(1)
 
-          print("All expected production keys are embedded.")
+          print("All expected production keys are present in the image.")
+          print("NOTE: this confirms presence only, not that they form the "
+                "bootloader's effective active key set / thresholds.")
           PY
 
       - name: Prepare final release files and SHA-256 manifest
@@ -393,7 +561,7 @@ jobs:
 
           (
             cd "$FINAL_DIR"
-            sha256sum *.bin > sha256.txt
+            sha256sum -- *.bin > sha256.txt
           )
 
       - name: Create final release summary
@@ -414,14 +582,15 @@ jobs:
             echo ""
             echo "- Release tag exists: **$RELEASE_TAG**"
             echo "- Tag commit: \`$TAG_COMMIT\`"
-            echo "- Firmware version matches tag: **$VERSION**"
-            echo "- Firmware payload unchanged while importing signatures"
-            echo "- Production signature threshold verified"
-            echo "- Vendor signatures cryptographically verified"
-            echo "- Signers checked against production key set"
-            echo "- Initial firmware integrity record detected"
-            echo "- Expected production public keys found in initial firmware"
-            echo "- Final SHA-256 manifest generated"
+            echo "- Tag commit is an ancestor of \`origin/master\` (reviewed history)"
+            echo "- Main firmware version matches tag: **$VERSION**"
+            echo "- Firmware signing message unchanged while importing signatures"
+            echo "- **$PROVIDED_SIG_COUNT** signatures imported, all from production keys, no duplicate signer"
+            echo "- Bootloader policy enforced: >= $BOOT_THRESHOLD valid **vendor** signatures"
+            echo "- Cross-checked with \`introspect-binary.py\`"
+            echo "- \`initial_firmware.bin\` ICR structurally valid (magic, revision, self-CRC, version)"
+            echo "- Expected production public keys present in \`initial_firmware.bin\`"
+            echo "- Final SHA-256 manifest generated from the signed binaries"
             echo ""
 
             echo "## 🔐 Firmware signing message"
@@ -473,8 +642,9 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload final release package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: specter-diy-${{ inputs.release_tag }}-final
           path: final-release/
           retention-days: 90
+          if-no-files-found: error
