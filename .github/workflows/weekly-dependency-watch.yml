@@ -1,0 +1,434 @@
+name: Weekly Dependency Watch
+
+# ---------------------------------------------------------------------------
+# Purpose
+# ---------------------------------------------------------------------------
+# Once a week, check whether the pinned Specter-DIY dependencies have moved on
+# upstream. Specter-DIY *intentionally* pins its dependencies, so "behind
+# upstream" is NOT a problem by itself. This workflow only reads, compares and
+# reports. It never updates a submodule, never creates a commit / branch / PR
+# and never touches a release.
+#
+# Output:
+#   * GITHUB_STEP_SUMMARY  (always)
+#   * a single tracking issue (hidden marker <!-- specter-dependency-watch -->)
+#     that is updated only when the set of upstream changes actually changed,
+#     and closed once every dependency is level with upstream again.
+#
+# ---------------------------------------------------------------------------
+# Schedule
+# ---------------------------------------------------------------------------
+# GitHub cron is always UTC. "0 8 * * 1" => Mondays 08:00 UTC.
+# ---------------------------------------------------------------------------
+
+on:
+  schedule:
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: weekly-dependency-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: Compare pinned dependencies with upstream
+    runs-on: ubuntu-latest
+    if: github.repository == 'cryptoadvance/specter-diy'
+    steps:
+      - name: Compare & report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const ISSUE_MARKER = '<!-- specter-dependency-watch -->';
+            const ISSUE_TITLE = 'Dependency Watch: upstream changes available';
+            const MAX_COMMITS_SHOWN = 10;
+
+            const SECURITY_TERMS = [
+              'security', 'cve-', 'vulnerabilit', 'overflow', 'underflow',
+              'use-after-free', 'use after free', 'double free',
+              'signature validation', 'sig verification', 'verify signature',
+              'cryptographic', 'constant-time', 'constant time', 'timing attack',
+              'memory corruption', 'out-of-bounds', 'out of bounds', 'oob ',
+              'sanitize', 'malicious', 'exploit', 'rce', 'dos ', 'denial of service',
+            ];
+
+            const selfOwner = context.repo.owner; // cryptoadvance
+            const selfRepo = context.repo.repo;   // specter-diy
+
+            const notes = [];
+            const note = (m) => { notes.push(m); core.warning(m); };
+
+            // ---------------------------------------------------------------
+            // low-level helpers (each guarded, never throws to top level)
+            // ---------------------------------------------------------------
+            async function defaultBranch(owner, repo) {
+              const r = await github.rest.repos.get({ owner, repo });
+              return r.data.default_branch;
+            }
+            async function headSha(owner, repo, branch) {
+              const r = await github.rest.repos.getBranch({ owner, repo, branch });
+              return r.data.commit.sha;
+            }
+            async function getRaw(owner, repo, path, ref) {
+              const res = await github.rest.repos.getContent({
+                owner, repo, path, ref, mediaType: { format: 'raw' },
+              });
+              return typeof res.data === 'string'
+                ? res.data
+                : Buffer.from(res.data.content, 'base64').toString('utf8');
+            }
+            async function submodulePointer(owner, repo, path, ref) {
+              const res = await github.rest.repos.getContent({ owner, repo, path, ref });
+              if (res.data && res.data.type === 'submodule') {
+                return { sha: res.data.sha, url: res.data.submodule_git_url || null };
+              }
+              throw new Error(`'${path}' is not a submodule at ${ref}`);
+            }
+            function parseGitmodules(text) {
+              const out = [];
+              let cur = null;
+              for (const line of text.split('\n')) {
+                const s = line.trim();
+                const h = s.match(/^\[submodule "(.+)"\]$/);
+                if (h) { cur = { name: h[1] }; out.push(cur); continue; }
+                if (!cur) continue;
+                const kv = s.match(/^(\w+)\s*=\s*(.+)$/);
+                if (!kv) continue;
+                if (kv[1] === 'path') cur.path = kv[2].trim();
+                if (kv[1] === 'url') cur.url = kv[2].trim();
+              }
+              return out.filter((m) => m.path);
+            }
+            function resolveRepo(url, parentOwner) {
+              if (!url) return null;
+              let u = url.replace(/\.git$/, '');
+              let m = u.match(/^\.\.\/\.\.\/([^/]+)\/(.+)$/);
+              if (m) return { owner: m[1], repo: m[2] };
+              m = u.match(/^\.\.\/([^/]+)$/);
+              if (m) return { owner: parentOwner, repo: m[1] };
+              m = u.match(/github\.com[/:]([^/]+)\/(.+)$/);
+              if (m) return { owner: m[1], repo: m[2] };
+              return null;
+            }
+            const short = (s) => (s ? s.substring(0, 12) : '(unknown)');
+
+            // Resolve a nested submodule pointer from a parent repo/ref by
+            // reading the parent's .gitmodules (so new submodules are picked
+            // up automatically) and matching by path.
+            async function nestedPointer(parent, ref, wantPath) {
+              const gm = await getRaw(parent.owner, parent.repo, '.gitmodules', ref);
+              const mods = parseGitmodules(gm);
+              const mod = mods.find((m) => m.path === wantPath);
+              if (!mod) throw new Error(`no submodule '${wantPath}' in ${parent.owner}/${parent.repo}@${short(ref)}`);
+              const ptr = await submodulePointer(parent.owner, parent.repo, wantPath, ref);
+              return { ...ptr, url: ptr.url || mod.url };
+            }
+
+            // ---------------------------------------------------------------
+            // Discover pinned SHAs from the current default branch
+            // ---------------------------------------------------------------
+            const selfBranch = await defaultBranch(selfOwner, selfRepo);
+
+            // deps: { key, title, group, upstream:{owner,repo}, pinned, kind, error }
+            const deps = [];
+            const addDep = (d) => deps.push(d);
+
+            let bootloader = null, f469 = null;
+            try {
+              bootloader = await submodulePointer(selfOwner, selfRepo, 'bootloader', selfBranch);
+            } catch (e) { note(`bootloader pointer: ${e.message}`); }
+            try {
+              f469 = await submodulePointer(selfOwner, selfRepo, 'f469-disco', selfBranch);
+            } catch (e) { note(`f469-disco pointer: ${e.message}`); }
+
+            // 1. specter-bootloader (top-level submodule)
+            addDep({
+              key: 'specter-bootloader', title: 'specter-bootloader',
+              group: 'platform', upstream: { owner: 'cryptoadvance', repo: 'specter-bootloader' },
+              pinned: bootloader ? bootloader.sha : null,
+              error: bootloader ? null : 'pinned SHA could not be read',
+            });
+            // 2. f469-disco (top-level submodule)
+            addDep({
+              key: 'f469-disco', title: 'f469-disco',
+              group: 'platform', upstream: { owner: 'diybitcoinhardware', repo: 'f469-disco' },
+              pinned: f469 ? f469.sha : null,
+              error: f469 ? null : 'pinned SHA could not be read',
+            });
+
+            // nested under bootloader: lib/secp256k1 -> bitcoin-core/secp256k1,
+            //                          lib/fatfs     -> cryptoadvance/fatfs
+            if (bootloader) {
+              for (const [p, key, title, group] of [
+                ['lib/secp256k1', 'bitcoin-core/secp256k1', 'bitcoin-core/secp256k1', 'crypto'],
+                ['lib/fatfs', 'cryptoadvance/fatfs', 'cryptoadvance/fatfs', 'platform'],
+              ]) {
+                try {
+                  const ptr = await nestedPointer(
+                    { owner: 'cryptoadvance', repo: 'specter-bootloader' }, bootloader.sha, p);
+                  const g = resolveRepo(ptr.url, 'cryptoadvance');
+                  addDep({ key, title, group, upstream: g, pinned: ptr.sha, error: g ? null : 'cannot resolve upstream repo' });
+                } catch (e) {
+                  addDep({ key, title, group, upstream: null, pinned: null, error: e.message });
+                }
+              }
+            }
+
+            // nested under f469-disco: micropython -> diybitcoinhardware/micropython
+            //                          usermods/secp256k1 -> diybitcoinhardware/secp256k1-embedded
+            if (f469) {
+              for (const [p, key, title, group] of [
+                ['micropython', 'diybitcoinhardware/micropython', 'micropython', 'platform'],
+                ['usermods/secp256k1', 'diybitcoinhardware/secp256k1-embedded', 'secp256k1-embedded', 'crypto'],
+              ]) {
+                try {
+                  const ptr = await nestedPointer(
+                    { owner: 'diybitcoinhardware', repo: 'f469-disco' }, f469.sha, p);
+                  const g = resolveRepo(ptr.url, 'diybitcoinhardware');
+                  addDep({ key, title, group, upstream: g, pinned: ptr.sha, error: g ? null : 'cannot resolve upstream repo' });
+                } catch (e) {
+                  addDep({ key, title, group, upstream: null, pinned: null, error: e.message });
+                }
+              }
+            }
+
+            // embit: vendored copy in f469-disco/libs/common/embit, NOT a
+            // submodule -> there is no pinned SHA to compare against.
+            addDep({
+              key: 'embit', title: 'embit', group: 'crypto',
+              upstream: { owner: 'diybitcoinhardware', repo: 'embit' },
+              pinned: null, kind: 'vendored',
+              error: 'vendored into f469-disco/libs/common/embit (no submodule pin) — comparison requires manual review',
+            });
+
+            // ---------------------------------------------------------------
+            // Compare each dependency with its upstream default branch
+            // ---------------------------------------------------------------
+            for (const d of deps) {
+              d.status = 'unknown';
+              if (!d.upstream) { d.status = 'error'; continue; }
+              try {
+                d.branch = await defaultBranch(d.upstream.owner, d.upstream.repo);
+                d.latest = await headSha(d.upstream.owner, d.upstream.repo, d.branch);
+              } catch (e) {
+                d.status = 'error';
+                d.error = d.error || `upstream lookup failed: ${e.message}`;
+                continue;
+              }
+              if (!d.pinned) { d.status = d.kind === 'vendored' ? 'manual' : 'error'; continue; }
+              if (d.pinned === d.latest) { d.status = 'uptodate'; continue; }
+              try {
+                const cmp = await github.rest.repos.compareCommitsWithBasehead({
+                  owner: d.upstream.owner, repo: d.upstream.repo,
+                  basehead: `${d.pinned}...${d.latest}`,
+                });
+                const c = cmp.data;
+                // status: 'ahead' means latest is ahead of pinned (normal case)
+                if (c.status === 'identical' || c.ahead_by === 0) {
+                  d.status = 'uptodate';
+                } else if (c.status === 'ahead' || c.status === 'diverged') {
+                  d.status = c.status === 'diverged' ? 'diverged' : 'behind';
+                  d.aheadBy = c.ahead_by;
+                  d.commits = (c.commits || []).slice(-MAX_COMMITS_SHOWN).reverse().map((x) => ({
+                    sha: x.sha,
+                    title: (x.commit.message || '').split('\n')[0],
+                    url: x.html_url,
+                  }));
+                  d.compareUrl = `https://github.com/${d.upstream.owner}/${d.upstream.repo}/compare/${d.pinned}...${d.latest}`;
+                } else {
+                  d.status = 'diverged';
+                }
+              } catch (e) {
+                // deleted / rebased upstream commit, etc.
+                d.status = 'manual';
+                d.error = `comparison not possible (${e.message})`;
+                d.compareUrl = `https://github.com/${d.upstream.owner}/${d.upstream.repo}/compare/${d.pinned}...${d.latest}`;
+              }
+            }
+
+            // ---------------------------------------------------------------
+            // Render
+            // ---------------------------------------------------------------
+            function secHits(commits) {
+              const hits = [];
+              for (const c of commits || []) {
+                const t = c.title.toLowerCase();
+                if (SECURITY_TERMS.some((w) => t.includes(w))) hits.push(c);
+              }
+              return hits;
+            }
+
+            function renderDep(d) {
+              const L = [];
+              L.push(`#### ${d.title}`);
+              if (d.status === 'uptodate') {
+                L.push('✅ Up to date');
+                L.push(`Pinned = Latest: \`${short(d.pinned)}\``);
+              } else if (d.status === 'behind') {
+                L.push(`ℹ️ ${d.aheadBy} upstream commit(s) available`);
+                L.push('');
+                L.push(`Pinned: \`${short(d.pinned)}\``);
+                L.push(`Latest upstream (\`${d.branch}\`): \`${short(d.latest)}\``);
+                if (d.compareUrl) L.push(`Compare: ${d.compareUrl}`);
+                const sec = secHits(d.commits);
+                if (sec.length) {
+                  L.push('');
+                  L.push('⚠️ Possible security-related upstream change detected — commit wording may be security-relevant, manual review recommended:');
+                  for (const c of sec) L.push(`  - \`${short(c.sha)}\` ${c.title}`);
+                }
+                L.push('');
+                if (d.aheadBy > MAX_COMMITS_SHOWN)
+                  L.push(`Showing newest ${MAX_COMMITS_SHOWN} of ${d.aheadBy}:`);
+                for (const c of d.commits) L.push(`- \`${short(c.sha)}\` ${c.title} ([link](${c.url}))`);
+                L.push('');
+                L.push('_No action required. Specter-DIY intentionally uses pinned dependencies._');
+              } else if (d.status === 'diverged') {
+                L.push('ℹ️ Branch history diverged / comparison requires manual review');
+                L.push(`Pinned: \`${short(d.pinned)}\` · Latest: \`${short(d.latest)}\``);
+                if (d.compareUrl) L.push(`Compare: ${d.compareUrl}`);
+              } else if (d.status === 'manual') {
+                L.push('ℹ️ Comparison not available — manual review');
+                if (d.pinned) L.push(`Pinned: \`${short(d.pinned)}\``);
+                if (d.latest) L.push(`Latest upstream: \`${short(d.latest)}\``);
+                if (d.compareUrl) L.push(`Compare: ${d.compareUrl}`);
+                if (d.error) L.push(`_${d.error}_`);
+              } else {
+                L.push('⚠️ Unknown — dependency could not be evaluated');
+                if (d.error) L.push(`_${d.error}_`);
+              }
+              L.push('');
+              return L.join('\n');
+            }
+
+            const groups = [
+              ['Bitcoin / Crypto', 'crypto'],
+              ['Platform / Release', 'platform'],
+            ];
+            const out = [];
+            out.push('## Weekly Dependency Watch');
+            out.push('');
+            out.push(`<sub>base: \`${selfOwner}/${selfRepo}@${selfBranch}\` · run ${new Date().toISOString()} · GitHub cron is UTC</sub>`);
+            out.push('');
+            for (const [label, g] of groups) {
+              out.push(`### ${label}`);
+              out.push('');
+              for (const d of deps.filter((x) => x.group === g)) out.push(renderDep(d));
+            }
+
+            const behind = deps.filter((d) => d.status === 'behind');
+            const diverged = deps.filter((d) => d.status === 'diverged');
+            const manual = deps.filter((d) => d.status === 'manual' || d.status === 'error');
+            const anySecurity = behind.some((d) => secHits(d.commits).length);
+
+            out.push('### Summary');
+            out.push('');
+            if (behind.length === 0 && diverged.length === 0) {
+              out.push('✅ Every comparable dependency is level with upstream.');
+            } else {
+              out.push(`ℹ️ ${behind.length} dependency/-ies have upstream changes available` +
+                       (diverged.length ? `, ${diverged.length} diverged` : '') + '.');
+              out.push('No dependency was updated automatically. Manual review can be performed when convenient.');
+            }
+            if (manual.length)
+              out.push(`ℹ️ ${manual.length} dependency/-ies need manual review (see above).`);
+            if (anySecurity)
+              out.push('⚠️ At least one upstream commit title looks potentially security-relevant. This does **not** mean Specter-DIY is vulnerable — manual review recommended.');
+            if (notes.length) {
+              out.push('');
+              out.push('<details><summary>Diagnostics (non-fatal)</summary>');
+              out.push('');
+              for (const n of notes) out.push(`- ${n}`);
+              out.push('');
+              out.push('</details>');
+            }
+
+            const report = out.join('\n');
+            await core.summary.addRaw(report).write();
+
+            // ---------------------------------------------------------------
+            // Tracking issue (single, deduplicated, no spam)
+            // ---------------------------------------------------------------
+            // State key = only the facts that matter for "is there something
+            // new to look at". If unchanged since last run -> do not touch the
+            // issue (no notification).
+            const crypto = require('crypto');
+            const stateObj = deps
+              .filter((d) => d.status === 'behind' || d.status === 'diverged')
+              .map((d) => ({ k: d.key, s: d.status, latest: d.latest, pinned: d.pinned }))
+              .sort((a, b) => a.k.localeCompare(b.k));
+            const stateKey = crypto.createHash('sha256')
+              .update(JSON.stringify(stateObj)).digest('hex').substring(0, 16);
+            const hasChanges = stateObj.length > 0;
+
+            // find existing tracking issue by marker
+            let tracking = null;
+            const open = await github.paginate(github.rest.issues.listForRepo, {
+              owner: selfOwner, repo: selfRepo, state: 'all', per_page: 100,
+              labels: undefined, creator: undefined, sort: 'created', direction: 'desc',
+            });
+            for (const i of open) {
+              if (i.pull_request) continue;
+              if (i.body && i.body.includes(ISSUE_MARKER)) { tracking = i; break; }
+            }
+
+            const stateTag = `<!-- state:${stateKey} -->`;
+            const issueBody = [
+              ISSUE_MARKER,
+              stateTag,
+              '',
+              '> This issue is maintained automatically by the **Weekly Dependency Watch**',
+              '> workflow. It is a *hint only* — no dependency is ever updated automatically.',
+              '> Specter-DIY intentionally pins its dependencies, so "upstream changes',
+              '> available" is not by itself a problem.',
+              '',
+              report,
+            ].join('\n');
+
+            if (hasChanges) {
+              if (!tracking) {
+                const created = await github.rest.issues.create({
+                  owner: selfOwner, repo: selfRepo,
+                  title: ISSUE_TITLE, body: issueBody,
+                });
+                core.info(`Created tracking issue #${created.data.number}`);
+              } else {
+                const already =
+                  tracking.state === 'open' &&
+                  tracking.body && tracking.body.includes(stateTag);
+                if (already) {
+                  core.info('Tracking issue already up to date — not updating (no notification).');
+                } else {
+                  await github.rest.issues.update({
+                    owner: selfOwner, repo: selfRepo, issue_number: tracking.number,
+                    state: 'open', body: issueBody,
+                  });
+                  core.info(`Updated tracking issue #${tracking.number}`);
+                }
+              }
+            } else {
+              // everything level with upstream -> close the tracking issue if open
+              if (tracking && tracking.state === 'open') {
+                await github.rest.issues.createComment({
+                  owner: selfOwner, repo: selfRepo, issue_number: tracking.number,
+                  body: [
+                    ISSUE_MARKER,
+                    '',
+                    '✅ All comparable dependencies are now level with their upstream default branch. Closing automatically.',
+                    '',
+                    report,
+                  ].join('\n'),
+                });
+                await github.rest.issues.update({
+                  owner: selfOwner, repo: selfRepo, issue_number: tracking.number,
+                  state: 'closed',
+                });
+                core.info(`Closed tracking issue #${tracking.number}`);
+              } else {
+                core.info('No upstream changes and no open tracking issue — nothing to do.');
+              }
+            }
