@@ -72,6 +72,27 @@ def check_signatures(upgrade_bytes, pubkeys_c_path, boot_threshold,
     vendor = {bytes.fromhex(fp): (owner, pk) for owner, fp, pk in info["vendor"]}
     maint = {bytes.fromhex(fp): (owner, pk) for owner, fp, pk in info["maintainer"]}
 
+    # Mirror the on-device validate_pubkey_set(): a threshold must be >= 1 and
+    # must not exceed the number of keys that can ever satisfy it. Otherwise the
+    # key set itself is invalid and the bootloader would refuse to boot with it,
+    # so "policy satisfied" would be a false statement.
+    n_vendor = len(vendor)
+    n_maint = len(maint)
+    if not 1 <= boot_threshold <= n_vendor:
+        return PolicyResult(
+            False,
+            f"invalid key set: bootloader_sig_threshold {boot_threshold} is not "
+            f"in [1, {n_vendor}] (number of vendor keys)",
+            [], True, boot_threshold,
+        )
+    if not 1 <= main_threshold <= n_vendor + n_maint:
+        return PolicyResult(
+            False,
+            f"invalid key set: main_fw_sig_threshold {main_threshold} is not in "
+            f"[1, {n_vendor + n_maint}] (vendor + maintainer keys)",
+            [], False, main_threshold,
+        )
+
     sections = load_sections(io.BytesIO(upgrade_bytes))
     payload_sections, sig_section = parse_sections(sections)
     if sig_section is None:

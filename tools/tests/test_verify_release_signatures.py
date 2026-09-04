@@ -183,3 +183,31 @@ def test_main_only_maintainers_count_toward_threshold():
 def test_main_only_below_threshold_rejected():
     u = sign_with(build_unsigned(with_boot=False), "maint1", "vend1")
     assert not check(u, 2).ok
+
+
+# --- key set / threshold invariants (mirror validate_pubkey_set) -----------
+def test_zero_bootloader_threshold_rejected():
+    u = sign_with(build_unsigned(with_boot=True), "vend1", "vend2")
+    res = vrs.check_signatures(u, TEST_PUBKEYS_C, 0, MAIN_THRESHOLD, provided_count=2)
+    assert not res.ok and "invalid key set" in res.reason
+
+
+def test_bootloader_threshold_above_vendor_key_count_rejected():
+    u = sign_with(build_unsigned(with_boot=True), "vend1", "vend2")
+    res = vrs.check_signatures(u, TEST_PUBKEYS_C, 999, MAIN_THRESHOLD, provided_count=2)
+    assert not res.ok and "invalid key set" in res.reason
+
+
+def test_zero_main_threshold_rejected():
+    u = sign_with(build_unsigned(with_boot=False), "maint1", "maint2", "vend1")
+    res = vrs.check_signatures(u, TEST_PUBKEYS_C, BOOT_THRESHOLD, 0, provided_count=3)
+    assert not res.ok and "invalid key set" in res.reason
+
+
+def test_production_thresholds_are_valid():
+    prod = os.path.join(REPO_ROOT, "bootloader", "keys", "production", "pubkeys.c")
+    u = sign_with(build_unsigned(with_boot=True), "vend1", "vend2")
+    # production is 2-of-4 vendor / 2-of-8 vendor+maintainer -> key set is valid,
+    # so this must fail on the signatures (test keys), not on "invalid key set".
+    res = vrs.check_signatures(u, prod, 2, 2, provided_count=2)
+    assert "invalid key set" not in res.reason

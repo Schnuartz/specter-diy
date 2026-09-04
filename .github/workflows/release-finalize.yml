@@ -522,11 +522,14 @@ jobs:
           cp release/specter_upgrade.bin \
             "$FINAL_DIR/specter_upgrade_${RELEASE_TAG}.bin"
 
-          cp release/specter_upgrade_unsigned.bin \
-            "$FINAL_DIR/specter_upgrade_unsigned_${RELEASE_TAG}.bin"
-
           cp release/initial_firmware.bin \
             "$FINAL_DIR/initial_firmware_${RELEASE_TAG}.bin"
+
+          # The unsigned upgrade is a reproducibility artifact, not part of the
+          # signed release. Keep it out of final-release/sha256.txt so that
+          # manifest only covers files that carry the vendor signatures.
+          cp release/specter_upgrade_unsigned.bin \
+            "$FINAL_DIR/verification/specter_upgrade_unsigned_${RELEASE_TAG}.bin"
 
           cp release/introspection-upgrade.txt \
             "$FINAL_DIR/verification/"
@@ -570,11 +573,12 @@ jobs:
             echo "- Main firmware version matches tag: **$VERSION**"
             echo "- Firmware signing message unchanged while importing signatures"
             echo "- **$PROVIDED_SIG_COUNT** signatures imported, all from production keys, no duplicate signer"
+            echo "- Key set valid: thresholds within [1, number of eligible keys]"
             echo "- Bootloader policy enforced: >= $BOOT_THRESHOLD valid **vendor** signatures"
             echo "- Cross-checked with \`introspect-binary.py\`"
             echo "- \`initial_firmware.bin\` ICR structurally valid (magic, revision, self-CRC, version)"
             echo "- Expected production public keys present in \`initial_firmware.bin\`"
-            echo "- Final SHA-256 manifest generated from the signed binaries"
+            echo "- \`final-release/sha256.txt\` covers the signed upgrade + initial firmware (the unsigned reproducibility build is under \`verification/\`)"
             echo ""
 
             echo "## 🔐 Firmware signing message"
@@ -597,7 +601,8 @@ jobs:
 
             echo "## 📦 FINAL release SHA-256 manifest"
             echo ""
-            echo "> These hashes are generated from the final signed firmware files."
+            echo "> Hashes of \`specter_upgrade_${RELEASE_TAG}.bin\` (carries the vendor"
+            echo "> signatures) and \`initial_firmware_${RELEASE_TAG}.bin\`."
             echo "> This is the manifest that must be GPG-signed."
             echo ""
             echo '```text'
