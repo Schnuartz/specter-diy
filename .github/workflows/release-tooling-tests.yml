@@ -11,6 +11,7 @@ on:
       - master
     paths:
       - tools/verify_release_signatures.py
+      - tools/release-requirements.*
       - tools/tests/**
       - .github/workflows/release-finalize.yml
       - .github/workflows/release-tooling-tests.yml
@@ -18,6 +19,7 @@ on:
   pull_request:
     paths:
       - tools/verify_release_signatures.py
+      - tools/release-requirements.*
       - tools/tests/**
       - .github/workflows/release-finalize.yml
       - .github/workflows/release-tooling-tests.yml
@@ -44,7 +46,8 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install cryptography intelhex bitstring click pytest
+        # Same fully pinned + hashed set the release workflow uses.
+        run: pip install --require-hashes -r tools/release-requirements.txt
 
       - name: Run signature-policy tests
         run: python3 -m pytest tools/tests -v

@@ -107,9 +107,9 @@ jobs:
 
       - name: Install trusted verifier dependencies
         working-directory: ${{ github.workspace }}
-        # pytest is needed only because bootloader/tools/core/blsection.py imports
-        # it at module scope; the verifier itself does not use it.
-        run: pip install cryptography intelhex bitstring click pytest
+        # Fully pinned + hashed, and taken from trusted/ (master), so the
+        # authoritative gate never runs against unverified code from PyPI.
+        run: pip install --require-hashes -r trusted/tools/release-requirements.txt
 
       - name: Validate release tag and bind it to reviewed master
         shell: bash
