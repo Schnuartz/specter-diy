@@ -315,101 +315,24 @@ jobs:
         run: |
           set -euo pipefail
 
-          # This is the authoritative signature gate. It reproduces the policy
-          # of the on-device bootloader (verify_multisig): a bootloader upgrade
-          # is accepted only on >= bootloader_sig_threshold valid signatures
-          # from *vendor* keys. It does NOT rely on introspect-binary.py, which
-          # currently checks vendor+maintainer keys together.
+          # Authoritative signature gate. tools/verify_release_signatures.py
+          # reproduces the on-device bootloader policy (verify_multisig): a
+          # bootloader upgrade is accepted only on >= bootloader_sig_threshold
+          # valid signatures from VENDOR keys. It does NOT rely on
+          # introspect-binary.py, which checks vendor + maintainer keys together.
           #
-          # The verifier is written to a file and executed inside the container
-          # (it needs core.signature / cryptography). It is NOT piped over
-          # stdin: `docker run` without `-i` does not forward stdin, so a
-          # heredoc would silently run an empty program and exit 0.
-          mkdir -p release/meta
-          cat > release/meta/vendor_policy_check.py <<'PY'
-          import importlib.util
-          import os
-          import sys
-
-          tools = os.path.join(os.getcwd(), "bootloader", "tools")
-          sys.path.insert(0, tools)
-
-          # load_sections / parse_sections live in upgrade-generator.py, whose
-          # hyphenated name blocks a normal import (same trick as
-          # introspect-binary.py). make_signature_message is in core.blsection.
-          from core.blsection import make_signature_message
-          from core.signature import verify
-          from parse_pubkeys import get_pubkey_info
-
-          _spec = importlib.util.spec_from_file_location(
-              "upgrade_generator", os.path.join(tools, "upgrade-generator.py")
-          )
-          _ug = importlib.util.module_from_spec(_spec)
-          _spec.loader.exec_module(_ug)
-          load_sections = _ug.load_sections
-          parse_sections = _ug.parse_sections
-
-          threshold = int(os.environ["BOOT_THRESHOLD"])
-          provided = int(os.environ["PROVIDED_SIG_COUNT"])
-
-          info = get_pubkey_info("bootloader/keys/production/pubkeys.c")
-          vendor = {bytes.fromhex(fp): pk for _, fp, pk in info["vendor"]}
-          vendor_owner = {bytes.fromhex(fp): o for o, fp, _ in info["vendor"]}
-          maint_owner = {bytes.fromhex(fp): o for o, fp, _ in info["maintainer"]}
-
-          with open("release/specter_upgrade.bin", "rb") as fh:
-              sections = load_sections(fh)
-          payload_sections, sig_section = parse_sections(sections)
-          if sig_section is None:
-              print("ERROR: upgrade file has no signature section")
-              sys.exit(1)
-
-          message = make_signature_message(payload_sections)
-          is_boot = any(s.name == "boot" for s in payload_sections)
-          sigs = sig_section.signatures
-
-          # Every provided signature must have landed as a distinct signer.
-          # Fewer distinct entries than provided => a key signed twice.
-          if len(sigs) != provided:
-              print(f"ERROR: {provided} signatures provided but the upgrade file "
-                    f"holds {len(sigs)} distinct signers (duplicate signer?).")
-              sys.exit(1)
-
-          valid_vendor = 0
-          for fp, sig in sigs.items():
-              if fp in vendor:
-                  if not verify(sig, message, vendor[fp]):
-                      print(f"ERROR: invalid signature for vendor key "
-                            f"{vendor_owner[fp]} ({fp.hex()})")
-                      sys.exit(1)
-                  valid_vendor += 1
-                  print(f"OK   vendor signature: {vendor_owner[fp]} ({fp.hex()})")
-              elif fp in maint_owner:
-                  print(f"NOTE maintainer-only signer, not counted for bootloader "
-                        f"policy: {maint_owner[fp]} ({fp.hex()})")
-              else:
-                  print(f"ERROR: signer {fp.hex()} is not a production key")
-                  sys.exit(1)
-
-          print(f"\nPayload sections: {[s.name for s in payload_sections]}")
-          print(f"Bootloader upgrade: {is_boot}")
-          print(f"Valid vendor signatures: {valid_vendor} (threshold {threshold})")
-
-          if is_boot and valid_vendor < threshold:
-              print("ERROR: not enough valid VENDOR signatures for a bootloader "
-                    "upgrade; the on-device bootloader would reject this file.")
-              sys.exit(1)
-
-          print("Vendor signature policy satisfied.")
-          PY
-
+          # This module is covered by tools/tests/ (release-tooling-tests.yml).
+          # Run it inside the image because it needs core.signature / cryptography.
           docker run --rm \
             --platform linux/amd64 \
             -v "$PWD:/app" \
-            -e BOOT_THRESHOLD \
-            -e PROVIDED_SIG_COUNT \
             specter-reproducible \
-            python3 ./release/meta/vendor_policy_check.py \
+            python3 tools/verify_release_signatures.py \
+              --upgrade release/specter_upgrade.bin \
+              --pubkeys bootloader/keys/production/pubkeys.c \
+              --boot-threshold "$BOOT_THRESHOLD" \
+              --main-threshold "$MAIN_THRESHOLD" \
+              --provided-count "$PROVIDED_SIG_COUNT" \
             | tee release/meta/vendor-policy-check.txt
 
       - name: Cross-check with introspect-binary.py
