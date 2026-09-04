@@ -286,15 +286,21 @@ jobs:
               return 'none';
             }
 
-            // Fetch a repo's .gitmodules at a ref. A 404 means "this commit
-            // has no .gitmodules" (legitimately empty); any other failure is
-            // unknown and must NOT be silently treated as empty.
+            // Fetch a repo's .gitmodules at a ref. A 404 is only safe to read
+            // as "this commit has no .gitmodules" once we have confirmed the
+            // commit itself resolves — a 404 on the contents endpoint can also
+            // mean the ref / repo is unreachable. Any other failure is unknown.
             async function getGitmodules(o, r, ref) {
               try {
                 return { ok: true, text: await getRaw(o, r, '.gitmodules', ref) };
               } catch (e) {
-                if (e.status === 404) return { ok: true, text: '' };
-                return { ok: false, text: '' };
+                if (e.status !== 404) return { ok: false, text: '' };
+                try {
+                  await github.rest.repos.getCommit({ owner: o, repo: r, ref });
+                  return { ok: true, text: '' }; // commit exists, no .gitmodules
+                } catch (e2) {
+                  return { ok: false, text: '' }; // ref/repo not resolvable
+                }
               }
             }
 
@@ -596,7 +602,12 @@ jobs:
                   L.push(`Last approved commit: \`${short(lastSha)}\` (by \`${mdEsc(last.user.login)}\`)${staleTag}`);
                   L.push(`Current HEAD: \`${short(headSha)}\``);
                   L.push('');
-                  if (cmp) {
+                  // Only `status === 'ahead'` is a clean linear "everything
+                  // added on top of the approved commit". `diverged` / `behind`
+                  // mean the approved commit is no longer an ancestor of HEAD
+                  // (rebase / force-push / rewrite) and the file list would
+                  // misrepresent that as a normal post-approval diff.
+                  if (cmp && cmp.data.status === 'ahead') {
                     const c = cmp.data;
                     const add = (c.files || []).reduce((a, f) => a + (f.additions || 0), 0);
                     const del = (c.files || []).reduce((a, f) => a + (f.deletions || 0), 0);
@@ -611,9 +622,14 @@ jobs:
                       L.push(`- \`${mdEsc(f)}\`${areas.length ? ' — ⚠️ ' + areas.map(mdEsc).join('; ') : ''}${sub}`);
                     }
                     if (changed.length > 40) L.push(`- … and ${changed.length - 40} more`);
+                  } else if (cmp) {
+                    L.push(`❓ The approved commit \`${short(lastSha)}\` is no longer a clean ` +
+                           `ancestor of the current HEAD (compare status: \`${cmp.data.status}\`). ` +
+                           `The branch was rebased / force-pushed / rewritten, so the diff since ` +
+                           `approval cannot be shown reliably. **Manual review required.**`);
                   } else {
                     L.push('❓ A commit-range comparison was not possible ' +
-                           '(rebased / force-pushed history, or the approved commit is gone). ' +
+                           '(API error, or the approved commit is no longer reachable). ' +
                            'Manual review recommended.');
                   }
                   approvalSection = L.join('\n');
