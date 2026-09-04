@@ -163,11 +163,19 @@ jobs:
             // default branch while this run is in flight cannot produce an
             // inconsistent snapshot of the dependency tree.
             let selfRef = selfBranch;
+            // Set whenever this run's view of the dependency tree is provably
+            // incomplete / not a clean snapshot. It becomes an `error`
+            // sentinel dependency below, so the run can never claim "every
+            // dependency was checked" and the tracking issue cannot be closed.
+            let discoveryIncomplete = false;
+            let discoveryProblems = [];
             try {
               selfRef = await branchHead(selfOwner, selfRepo, selfBranch);
             } catch (e) {
               note(`Could not resolve ${selfBranch} HEAD (${e.message}); ` +
-                   `reading the dependency tree from the branch tip instead.`);
+                   `reading the dependency tree from the moving branch tip instead.`);
+              discoveryIncomplete = true;
+              discoveryProblems.push(`could not resolve an immutable ${selfBranch} snapshot`);
             }
             const deps = [];
 
@@ -193,7 +201,12 @@ jobs:
               }
             } catch (e) {
               note(`Could not read root .gitmodules (${e.message}); ` +
-                   `falling back to the known top-level submodule list.`);
+                   `falling back to the known top-level submodule list — a ` +
+                   `top-level submodule added since is invisible this run.`);
+              // The fallback still checks bootloader / f469-disco, but a
+              // newer top-level submodule would be silently missed. Flag it.
+              discoveryIncomplete = true;
+              discoveryProblems.push('could not enumerate top-level submodules from root .gitmodules');
               TOP = Object.entries(KNOWN_TOP).map(([path, meta]) => ({
                 path, owner: meta.key.split('/')[0], repo: meta.key.split('/')[1],
                 key: meta.key, title: meta.title, group: meta.group, unknown: false,
@@ -274,6 +287,21 @@ jobs:
                   });
                 }
               }
+            }
+
+            // If the dependency tree could not be fully / immutably
+            // enumerated, record it as a first-class error dependency. It
+            // flows into the report, the summary, the state hash and
+            // `wantIssue`, so the run can never report "everything checked"
+            // and the tracking issue stays open.
+            if (discoveryIncomplete) {
+              deps.push({
+                key: 'top-level-discovery',
+                title: 'Top-level dependency discovery',
+                group: 'platform', upstream: null, pinned: null, status: 'error',
+                error: `${discoveryProblems.join('; ')} — the dependency list ` +
+                       `this run may be incomplete; treat as "not fully checked".`,
+              });
             }
 
             // ---------------------------------------------------------------
