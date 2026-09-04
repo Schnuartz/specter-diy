@@ -41,6 +41,13 @@ jobs:
     name: Verify and finalize signed release firmware
     runs-on: ubuntu-24.04
 
+    # Every `run:` step operates on the RELEASE-TAG checkout (source/). The one
+    # exception is the authoritative signature gate, which runs from the
+    # MASTER checkout (trusted/) - see that step.
+    defaults:
+      run:
+        working-directory: source
+
     env:
       RELEASE_TAG: ${{ github.event.client_payload.release_tag }}
       SIG1: ${{ github.event.client_payload.signature_1 }}
@@ -50,6 +57,7 @@ jobs:
 
     steps:
       - name: Require the master version of this workflow
+        working-directory: ${{ github.workspace }}
         env:
           WORKFLOW_REF: ${{ github.workflow_ref }}
           REPO: ${{ github.repository }}
@@ -71,13 +79,37 @@ jobs:
           fi
           echo "OK: running the master version of this workflow."
 
+      # trusted/ = the reviewed master checkout. With repository_dispatch this is
+      # always the default branch. The authoritative verifier and its bootloader
+      # tooling are run from here, never from the release tag.
+      - name: Checkout trusted tooling (master)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: trusted
+          submodules: recursive
+          persist-credentials: false
+
+      # source/ = the exact release tag. Everything that is built or inspected
+      # comes from here.
       - name: Checkout exact release tag
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ env.RELEASE_TAG }}
+          path: source
           submodules: recursive
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Set up Python for the trusted verifier
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
+      - name: Install trusted verifier dependencies
+        working-directory: ${{ github.workspace }}
+        # pytest is needed only because bootloader/tools/core/blsection.py imports
+        # it at module scope; the verifier itself does not use it.
+        run: pip install cryptography intelhex bitstring click pytest
 
       - name: Validate release tag and bind it to reviewed master
         shell: bash
@@ -323,30 +355,40 @@ jobs:
 
           echo "Payload signing message unchanged."
 
-      - name: Enforce bootloader signature policy (vendor keys only)
+      - name: Enforce bootloader signature policy (trusted verifier from master)
+        working-directory: ${{ github.workspace }}
         shell: bash
         run: |
           set -euo pipefail
 
-          # Authoritative signature gate. tools/verify_release_signatures.py
-          # reproduces the on-device bootloader policy (verify_multisig): a
-          # bootloader upgrade is accepted only on >= bootloader_sig_threshold
-          # valid signatures from VENDOR keys. It does NOT rely on
-          # introspect-binary.py, which checks vendor + maintainer keys together.
-          #
-          # This module is covered by tools/tests/ (release-tooling-tests.yml).
-          # Run it inside the image because it needs core.signature / cryptography.
-          docker run --rm \
-            --platform linux/amd64 \
-            -v "$PWD:/app" \
-            specter-reproducible \
-            python3 tools/verify_release_signatures.py \
-              --upgrade release/specter_upgrade.bin \
-              --pubkeys bootloader/keys/production/pubkeys.c \
-              --boot-threshold "$BOOT_THRESHOLD" \
-              --main-threshold "$MAIN_THRESHOLD" \
-              --provided-count "$PROVIDED_SIG_COUNT" \
-            | tee release/meta/vendor-policy-check.txt
+          # Authoritative signature gate. Both the verifier and the bootloader
+          # crypto/parsing code it imports are taken from trusted/ (master), not
+          # from the release tag, so a tag cannot ship a weakened verifier.
+          # verify_release_signatures.py reproduces the on-device
+          # verify_multisig() policy: a bootloader upgrade is accepted only on
+          # >= bootloader_sig_threshold valid signatures from VENDOR keys.
+          # Covered by tools/tests/ (release-tooling-tests.yml).
+
+          # The key set the release ships must be the reviewed master key set.
+          # A key or threshold change must go through an explicit transition
+          # procedure, not the normal finalization workflow.
+          master_keyset="$(sha256sum trusted/bootloader/keys/production/pubkeys.c | awk '{print $1}')"
+          tag_keyset="$(sha256sum source/bootloader/keys/production/pubkeys.c | awk '{print $1}')"
+          if [ "$master_keyset" != "$tag_keyset" ]; then
+            echo "ERROR: production key set differs between master and the"
+            echo "       release tag ($tag_keyset vs $master_keyset)."
+            echo "       Key rotation / threshold changes are out of scope for"
+            echo "       this workflow."
+            exit 1
+          fi
+
+          python3 trusted/tools/verify_release_signatures.py \
+            --upgrade source/release/specter_upgrade.bin \
+            --pubkeys trusted/bootloader/keys/production/pubkeys.c \
+            --boot-threshold "$BOOT_THRESHOLD" \
+            --main-threshold "$MAIN_THRESHOLD" \
+            --provided-count "$PROVIDED_SIG_COUNT" \
+          | tee source/release/meta/vendor-policy-check.txt
 
       - name: Cross-check with introspect-binary.py
         shell: bash
@@ -573,9 +615,10 @@ jobs:
             echo "- Main firmware version matches tag: **$VERSION**"
             echo "- Firmware signing message unchanged while importing signatures"
             echo "- **$PROVIDED_SIG_COUNT** signatures imported, all from production keys, no duplicate signer"
+            echo "- Release key set is byte-identical to the reviewed master key set"
             echo "- Key set valid: thresholds within [1, number of eligible keys]"
-            echo "- Bootloader policy enforced: >= $BOOT_THRESHOLD valid **vendor** signatures"
-            echo "- Cross-checked with \`introspect-binary.py\`"
+            echo "- Bootloader policy enforced by the **master** copy of \`verify_release_signatures.py\`: >= $BOOT_THRESHOLD valid **vendor** signatures"
+            echo "- Cross-checked with \`introspect-binary.py\` (from the release tag, non-authoritative)"
             echo "- \`initial_firmware.bin\` ICR structurally valid (magic, revision, self-CRC, version)"
             echo "- Expected production public keys present in \`initial_firmware.bin\`"
             echo "- \`final-release/sha256.txt\` covers the signed upgrade + initial firmware (the unsigned reproducibility build is under \`verification/\`)"
@@ -634,6 +677,6 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: specter-diy-${{ env.RELEASE_TAG }}-final
-          path: final-release/
+          path: source/final-release/
           retention-days: 90
           if-no-files-found: error
