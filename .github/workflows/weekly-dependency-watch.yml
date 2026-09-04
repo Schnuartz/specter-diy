@@ -43,9 +43,10 @@ jobs:
     if: github.repository == 'cryptoadvance/specter-diy'
     steps:
       - name: Compare & report
-        # Pinned to the commit the `v7` tag pointed at (v7.0.1). Update the
+        # Pinned to a full commit SHA. This SHA is the actions/github-script
+        # v7.1.0 release (also where the moving `v7` tag points). Update the
         # SHA and the trailing comment together when bumping.
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.0.1
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         with:
           script: |
             const ISSUE_MARKER = '<!-- specter-dependency-watch -->';
@@ -176,13 +177,31 @@ jobs:
             // -- one nested level, discovered dynamically -----------------
             for (const t of TOP) {
               const ptr = topPointers[t.path];
-              if (!ptr) continue;
+              if (!ptr) {
+                // The parent pointer itself is unreadable (already reported as
+                // an error dep above). Record that its nested tree is
+                // therefore unknown, so it cannot silently vanish from the
+                // report / state hash / tracking issue.
+                deps.push({
+                  key: `${t.key}:nested`, title: `${t.title} (nested submodules)`,
+                  group: t.group, upstream: null, pinned: null, status: 'error',
+                  error: `parent pointer unreadable — nested dependencies not enumerated`,
+                });
+                continue;
+              }
               const parent = { owner: t.owner, repo: t.repo };
-              let mods = [];
+              let mods = null;
               try {
                 mods = parseGitmodules(await getRaw(parent.owner, parent.repo, '.gitmodules', ptr.sha));
               } catch (e) {
                 note(`${t.path}: could not read nested .gitmodules (${e.message})`);
+              }
+              if (mods === null) {
+                deps.push({
+                  key: `${t.key}:nested`, title: `${t.title} (nested submodules)`,
+                  group: t.group, upstream: null, pinned: null, status: 'error',
+                  error: `could not read ${t.path}/.gitmodules — nested dependencies not enumerated`,
+                });
                 continue;
               }
               for (const mod of mods) {
@@ -411,9 +430,13 @@ jobs:
               .update(JSON.stringify(stateObj)).digest('hex').substring(0, 16);
             const stateTag = `<!-- state:${stateKey} -->`;
 
-            // Something worth an *open* tracking issue?
-            const wantIssue = deps.some(
-              (d) => ['behind', 'diverged', 'pinned-ahead'].includes(d.status));
+            // Something worth an *open* tracking issue? Anything in stateObj:
+            // real upstream movement (behind / diverged / pinned-ahead) OR a
+            // dependency that could not be checked (manual / error). For an
+            // unattended weekly watcher, "could not verify X" is exactly the
+            // kind of thing that must not stay invisible. The issue only
+            // closes once every dependency was checked AND is level.
+            const wantIssue = stateObj.length > 0;
 
             // Find our own tracking issue: marker + created by github-actions[bot].
             let tracking = null;
@@ -458,26 +481,17 @@ jobs:
                 core.info(`Updated / reopened tracking issue #${tracking.number}`);
               }
             } else if (tracking && tracking.state === 'open') {
-              // No dependency is behind/diverged any more.
-              if (needsManual.length && !tracking.body.includes(stateTag)) {
-                // still something un-comparable: keep open, refresh once.
-                await github.rest.issues.update({
-                  owner: selfOwner, repo: selfRepo, issue_number: tracking.number, body: issueBody,
-                });
-                core.info(`Refreshed tracking issue #${tracking.number} (manual-review items remain).`);
-              } else if (!needsManual.length) {
-                await github.rest.issues.createComment({
-                  owner: selfOwner, repo: selfRepo, issue_number: tracking.number,
-                  body: `${ISSUE_MARKER}\n\n✅ All comparable dependencies are now level with ` +
-                        `their upstream default branch. Closing automatically.\n\n${report}`,
-                });
-                await github.rest.issues.update({
-                  owner: selfOwner, repo: selfRepo, issue_number: tracking.number, state: 'closed',
-                });
-                core.info(`Closed tracking issue #${tracking.number}`);
-              } else {
-                core.info('Tracking issue already reflects the current (manual-review) state.');
-              }
+              // stateObj is empty: every dependency was checked AND is level
+              // with upstream. Safe to close.
+              await github.rest.issues.createComment({
+                owner: selfOwner, repo: selfRepo, issue_number: tracking.number,
+                body: `${ISSUE_MARKER}\n\n✅ Every dependency was checked and is level with ` +
+                      `its upstream default branch. Closing automatically.\n\n${report}`,
+              });
+              await github.rest.issues.update({
+                owner: selfOwner, repo: selfRepo, issue_number: tracking.number, state: 'closed',
+              });
+              core.info(`Closed tracking issue #${tracking.number}`);
             } else {
               core.info('Nothing to report and no open tracking issue — done.');
             }
