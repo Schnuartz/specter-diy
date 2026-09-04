@@ -294,29 +294,42 @@ jobs:
           # is accepted only on >= bootloader_sig_threshold valid signatures
           # from *vendor* keys. It does NOT rely on introspect-binary.py, which
           # currently checks vendor+maintainer keys together.
-          docker run --rm \
-            --platform linux/amd64 \
-            -v "$PWD:/app" \
-            -e BOOT_THRESHOLD \
-            -e PROVIDED_SIG_COUNT \
-            specter-reproducible \
-            python3 - <<'PY' | tee release/meta/vendor-policy-check.txt
-          import os, sys
-          sys.path.insert(0, "bootloader/tools")
+          #
+          # The verifier is written to a file and executed inside the container
+          # (it needs core.signature / cryptography). It is NOT piped over
+          # stdin: `docker run` without `-i` does not forward stdin, so a
+          # heredoc would silently run an empty program and exit 0.
+          mkdir -p release/meta
+          cat > release/meta/vendor_policy_check.py <<'PY'
+          import importlib.util
+          import os
+          import sys
 
-          from core.blsection import (
-              load_sections, parse_sections, make_signature_message
-          )
+          tools = os.path.join(os.getcwd(), "bootloader", "tools")
+          sys.path.insert(0, tools)
+
+          # load_sections / parse_sections live in upgrade-generator.py, whose
+          # hyphenated name blocks a normal import (same trick as
+          # introspect-binary.py). make_signature_message is in core.blsection.
+          from core.blsection import make_signature_message
           from core.signature import verify
           from parse_pubkeys import get_pubkey_info
+
+          _spec = importlib.util.spec_from_file_location(
+              "upgrade_generator", os.path.join(tools, "upgrade-generator.py")
+          )
+          _ug = importlib.util.module_from_spec(_spec)
+          _spec.loader.exec_module(_ug)
+          load_sections = _ug.load_sections
+          parse_sections = _ug.parse_sections
 
           threshold = int(os.environ["BOOT_THRESHOLD"])
           provided = int(os.environ["PROVIDED_SIG_COUNT"])
 
           info = get_pubkey_info("bootloader/keys/production/pubkeys.c")
           vendor = {bytes.fromhex(fp): pk for _, fp, pk in info["vendor"]}
-          maint = {bytes.fromhex(fp): owner for owner, fp, _ in info["maintainer"]}
-          vendor_owner = {bytes.fromhex(fp): owner for owner, fp, _ in info["vendor"]}
+          vendor_owner = {bytes.fromhex(fp): o for o, fp, _ in info["vendor"]}
+          maint_owner = {bytes.fromhex(fp): o for o, fp, _ in info["maintainer"]}
 
           with open("release/specter_upgrade.bin", "rb") as fh:
               sections = load_sections(fh)
@@ -345,9 +358,9 @@ jobs:
                       sys.exit(1)
                   valid_vendor += 1
                   print(f"OK   vendor signature: {vendor_owner[fp]} ({fp.hex()})")
-              elif fp in maint:
+              elif fp in maint_owner:
                   print(f"NOTE maintainer-only signer, not counted for bootloader "
-                        f"policy: {maint[fp]} ({fp.hex()})")
+                        f"policy: {maint_owner[fp]} ({fp.hex()})")
               else:
                   print(f"ERROR: signer {fp.hex()} is not a production key")
                   sys.exit(1)
@@ -363,6 +376,15 @@ jobs:
 
           print("Vendor signature policy satisfied.")
           PY
+
+          docker run --rm \
+            --platform linux/amd64 \
+            -v "$PWD:/app" \
+            -e BOOT_THRESHOLD \
+            -e PROVIDED_SIG_COUNT \
+            specter-reproducible \
+            python3 ./release/meta/vendor_policy_check.py \
+            | tee release/meta/vendor-policy-check.txt
 
       - name: Cross-check with introspect-binary.py
         shell: bash
