@@ -1,0 +1,113 @@
+name: Firmware test build
+
+# On-demand firmware build for hardware testing.
+#
+# Manual run: Actions -> "Firmware test build" -> Run workflow, then pick the
+# ref you want. To build an upstream pull request without pulling it into the
+# fork, set repository=cryptoadvance/specter-diy and ref=refs/pull/<N>/head.
+#
+# It also runs on every push to a non-default branch of this fork, so any
+# work-in-progress branch gets a flashable artifact automatically.
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: "Repository to build from (owner/name)"
+        required: true
+        default: Schnuartz/specter-diy
+      ref:
+        description: "Branch, tag, SHA, or refs/pull/<N>/head"
+        required: true
+        default: master
+      build_simulator:
+        description: "Also build the unix simulator binary"
+        type: boolean
+        required: false
+        default: false
+  push:
+    branches-ignore:
+      - master
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testbuild-${{ github.event.inputs.repository || github.repository }}-${{ github.event.inputs.ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  firmware:
+    name: Build disco firmware
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.inputs.repository || github.repository }}
+          ref: ${{ github.event.inputs.ref || github.ref }}
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Record what is being built
+        id: src
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          git log -1 --pretty='%h %s' | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v14
+
+      - name: Cache Nix store
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/nix
+            /nix/store
+          key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          restore-keys: |
+            nix-${{ runner.os }}-
+
+      - name: Build STM32F469 Discovery firmware
+        run: nix develop -c make disco
+
+      - name: Build unix simulator
+        if: ${{ github.event.inputs.build_simulator == 'true' }}
+        run: nix develop -c make unix
+
+      - name: Checksums
+        run: |
+          cd bin
+          sha256sum specter-diy.bin specter-diy.hex | tee SHA256SUMS
+          {
+            echo '### Firmware for `${{ steps.src.outputs.short }}`'
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+            echo
+            echo 'Reproduce locally with `nix develop -c make disco` at commit `${{ steps.src.outputs.sha }}`.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: specter-diy-${{ steps.src.outputs.short }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            bin/specter-diy.bin
+            bin/specter-diy.hex
+            bin/SHA256SUMS
+
+      - name: Upload simulator
+        if: ${{ github.event.inputs.build_simulator == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: micropython-unix-${{ steps.src.outputs.short }}
+          if-no-files-found: error
+          retention-days: 30
+          path: bin/micropython_unix
