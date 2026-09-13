@@ -1,0 +1,94 @@
+name: Publish browser simulator
+
+# This workflow runs only from the trusted default branch. PR builds have no
+# write token or secrets. It treats downloaded PR artifacts strictly as data.
+on:
+  workflow_run:
+    workflows: [Build]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+  issues: write
+  pull-requests: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: specter-pages-publisher
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+      - name: Download immutable workflow target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          mkdir -p /tmp/specter-artifacts/target
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name build-target --dir /tmp/specter-artifacts/target
+      - name: Download both build artifacts from the same workflow run
+        if: github.event.workflow_run.conclusion == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          mkdir -p /tmp/specter-artifacts/browser /tmp/specter-artifacts/firmware
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name browser-simulator --dir /tmp/specter-artifacts/browser
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name firmware-binaries --dir /tmp/specter-artifacts/firmware
+      - name: Prepare GitHub Pages branch
+        run: |
+          if git fetch origin gh-pages:refs/remotes/origin/gh-pages; then
+            git worktree add -B gh-pages pages origin/gh-pages
+          else
+            git worktree add --detach pages
+            git -C pages switch --orphan gh-pages
+            git -C pages rm -rf . || true
+          fi
+          git -C pages config user.name 'github-actions[bot]'
+          git -C pages config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+      - name: Verify provenance and stage current preview
+        id: prepare
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 web/tools/publish_preview.py prepare \
+            --event "$GITHUB_EVENT_PATH" \
+            --target /tmp/specter-artifacts/target/target.json \
+            --browser /tmp/specter-artifacts/browser \
+            --firmware /tmp/specter-artifacts/firmware \
+            --pages pages --state /tmp/specter-preview-state.json
+          if test -f pages/index.html || test -d pages/pr; then
+            echo 'has_site=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'has_site=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish static Pages branch
+        run: |
+          git -C pages add -A
+          if ! git -C pages diff --cached --quiet; then
+            git -C pages commit -m "Update Specter browser preview from run ${{ github.event.workflow_run.id }}"
+            git -C pages push origin HEAD:gh-pages
+          fi
+      - name: Stage a clean static Pages artifact
+        if: steps.prepare.outputs.has_site == 'true'
+        run: python3 -c "import shutil; shutil.copytree('pages', 'site-dist', ignore=shutil.ignore_patterns('.git'))"
+      - uses: actions/upload-pages-artifact@v3
+        if: steps.prepare.outputs.has_site == 'true'
+        with:
+          path: site-dist
+      - uses: actions/deploy-pages@v4
+        if: steps.prepare.outputs.has_site == 'true'
+      - name: Replace the single PR build comment
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 web/tools/publish_preview.py comment --state /tmp/specter-preview-state.json

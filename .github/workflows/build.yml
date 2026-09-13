@@ -6,38 +6,133 @@ on:
   push:
     branches: [main, master]
 
+permissions:
+  contents: read
+
+env:
+  EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  SPECTER_SOURCE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+
 jobs:
-  build:
-    name: Build Firmware
+  target:
+    name: Record workflow target
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Record PR head or default-branch commit
+        env:
+          TARGET_EVENT: ${{ github.event_name }}
+          TARGET_PR: ${{ github.event.pull_request.number || 0 }}
+          TARGET_BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          with open('target.json', 'w') as file:
+              json.dump({'event': os.environ['TARGET_EVENT'],
+                         'number': int(os.environ['TARGET_PR']),
+                         'branch': os.environ['TARGET_BRANCH'],
+                         'commit': os.environ['EXPECTED_SHA'],
+                         'repository': os.environ['SPECTER_SOURCE_REPOSITORY']}, file)
+          PY
+      - uses: actions/upload-artifact@v4
         with:
+          name: build-target
+          if-no-files-found: error
+          path: target.json
+
+  native-tests:
+    name: Specter native tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SPECTER_SOURCE_REPOSITORY }}
+          ref: ${{ env.EXPECTED_SHA }}
           submodules: recursive
-      
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v14
-
-      - name: Cache Nix store
-        uses: actions/cache@v3
+      - uses: actions/setup-python@v5
         with:
-          path: |
-            ~/.cache/nix
-            /nix/store
-          key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
-          restore-keys: |
-            nix-${{ runner.os }}-
+          python-version: '3.11'
+      - run: pip install -r requirements.txt -r test/integration/requirements.txt
+      - run: python3 run_native_tests.py
+        working-directory: test
+      - name: Install Unix simulator test libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libffi-dev libgmp-dev libreadline-dev libsdl2-dev pkg-config
+      - name: Run firmware integration tests on the Unix simulator
+        run: make test LDFLAGS_EXTRA=-Wl,--allow-multiple-definition
 
-      - name: Build Unix simulator
-        run: nix develop -c make unix
-
-      - name: Build STM32F469 Discovery firmware
-        run: nix develop -c make disco
-
-      - name: Upload firmware artifacts
-        uses: actions/upload-artifact@v4
+  build:
+    name: Build firmware from PR head
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SPECTER_SOURCE_REPOSITORY }}
+          ref: ${{ env.EXPECTED_SHA }}
+          submodules: recursive
+      - uses: DeterminateSystems/nix-installer-action@v14
+      - name: Build Unix simulator and STM32 firmware
+        run: |
+          nix develop -c make unix
+          nix develop -c make disco
+      - name: Record firmware provenance
+        run: python3 web/tools/source_info.py firmware
+      - uses: actions/upload-artifact@v4
         with:
           name: firmware-binaries
+          if-no-files-found: error
           path: |
             bin/specter-diy.bin
             bin/specter-diy.hex
+            source.json
+
+  browser:
+    name: Build and smoke-test browser simulator
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SPECTER_SOURCE_REPOSITORY }}
+          ref: ${{ env.EXPECTED_SHA }}
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pinned Emscripten
+        run: |
+          git clone https://github.com/emscripten-core/emsdk.git .browser-work/emsdk
+          .browser-work/emsdk/emsdk install 3.1.74
+          .browser-work/emsdk/emsdk activate 3.1.74
+      - name: Build actual Specter code for WebAssembly
+        run: bash web/browser/build-browser.sh
+      - name: Verify source commit and artifact hashes
+        run: python3 web/browser/verify_build.py
+      - name: Test preview provenance and publication rules
+        run: python3 web/tests/test-publisher.py
+      - name: Browser smoke tests
+        run: |
+          npm ci --prefix web
+          npx --prefix web playwright install --with-deps chromium
+          python3 -m http.server 8765 --directory web > /tmp/specter-browser.log 2>&1 &
+          CI=true npm run test:browser --prefix web
+      - name: Record browser provenance
+        run: python3 web/tools/source_info.py browser
+      - uses: actions/upload-artifact@v4
+        with:
+          name: browser-simulator
+          if-no-files-found: error
+          path: |
+            web/index.html
+            web/assets/**
+            web/browser/site.js
+            web/browser/runtime-worker.js
+            web/browser/runtime/**
+            web/browser/current.json
+            web/builds/**
+            source.json
