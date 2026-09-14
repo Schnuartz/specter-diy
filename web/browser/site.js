@@ -195,7 +195,10 @@ function onWorkerMessage({ data }) {
   } else if (data.type === 'sd-state') {
     inserted = data.inserted;
     $('#sd-state').textContent = inserted ? 'Inserted' : 'Ejected';
-    $('#sd-toggle').textContent = inserted ? 'Eject SD card' : 'Insert SD card';
+    $('#sd-toggle').setAttribute('aria-label', inserted ? 'Remove SD card' : 'Insert SD card');
+    $('#sd-toggle').setAttribute('aria-pressed', String(inserted));
+    $('#sd-toggle').title = inserted ? 'Click to remove SD card' : 'Click to insert SD card';
+    $('#sd-hint').textContent = inserted ? 'Click to remove' : 'Click to insert';
     $('#sd-stage').classList.toggle('inserted', inserted);
     notifyParent({ type: 'peripheral-state', variant, sdInserted: inserted, cardSlot: activeCard });
   } else if (data.type === 'sd-list') {

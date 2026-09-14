@@ -229,7 +229,8 @@
     .source-commit-link {
       color: var(--specter-primary);
       font-size: 12px;
-      text-decoration: none;
+      text-decoration: underline;
+      text-underline-offset: 3px;
     }
     .source-commit-link:hover { text-decoration: underline; }
     .source-commit-link:not([href]) { opacity: .65; }
@@ -286,6 +287,12 @@
     #camera-screen.active #camera-screen-start { display:none; }
     .peripheral-card { border:1px solid #3b4a5e; border-radius:12px; background:linear-gradient(135deg,#111c2b,#202d3e); padding:12px; margin:9px 0; }
     .sd-stage { display:flex; align-items:center; gap:16px; min-height:100px; }
+    .sd-card-control { display:flex; flex-direction:column; align-items:center; flex:none; gap:4px; }
+    .sim-panel #sd-toggle { display:block; width:84px; min-height:84px; padding:0; margin:0; border:0; background:transparent; }
+    .sim-panel #sd-toggle:hover { border:0; }
+    #sd-toggle:hover .sd-card-graphic { filter:drop-shadow(0 7px 10px #1f99e588); }
+    #sd-toggle:focus-visible { outline:2px solid var(--specter-primary); outline-offset:3px; }
+    #sd-hint { color:#aab8c8; font-size:11px; white-space:nowrap; }
     .sd-card-graphic { width:84px; height:84px; object-fit:contain; flex:none; filter:drop-shadow(5px 7px 7px #0008); transition:transform .25s ease,filter .25s ease; }
     .sd-stage.inserted .sd-card-graphic { transform:translateY(-5px) rotate(-5deg); filter:drop-shadow(0 9px 10px #1f99e588); }
     .sd-stage span { line-height:1.45; }
@@ -385,8 +392,7 @@
     <p id="isolation-warning" hidden></p>
     <div class="peripheral-card">
       <h3>Virtual SD card <span id="sd-state">Ejected</span></h3>
-      <div id="sd-stage" class="sd-stage"><img class="sd-card-graphic" src="./assets/sd-card-32gb.png" alt="DK 32 GB SD card"><span>Session-only · files stay in this tab</span></div>
-      <button id="sd-toggle">Insert SD card</button>
+      <div id="sd-stage" class="sd-stage"><div class="sd-card-control"><button id="sd-toggle" type="button" aria-label="Insert SD card" aria-pressed="false" title="Click to insert SD card"><img class="sd-card-graphic" src="./assets/sd-card-32gb.png" alt=""></button><small id="sd-hint">Click to insert</small></div><span>Session-only · files stay in this tab</span></div>
       <button id="sd-add">Add files</button>
       <button id="sd-clear">Clear card</button>
       <input id="sd-picker" type="file" multiple hidden>

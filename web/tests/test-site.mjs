@@ -41,6 +41,10 @@ if (before.equals(after)) throw new Error('Pointer input did not change the Spec
 
 await page.locator('#sd-toggle').click();
 await page.locator('#sd-state').getByText('Inserted').waitFor();
+if (await page.locator('#sd-hint').textContent() !== 'Click to remove' ||
+    await page.locator('#sd-toggle').getAttribute('aria-pressed') !== 'true') {
+  throw new Error('SD card image did not switch to the inserted state');
+}
 await page.locator('#sd-picker').setInputFiles({
   name: 'probe.bin', mimeType: 'application/octet-stream', buffer: Buffer.from([0, 1, 2, 255]),
 });
@@ -51,6 +55,14 @@ const download = await downloadPromise;
 if (!(await readFile(await download.path())).equals(Buffer.from([0, 1, 2, 255]))) {
   throw new Error('Virtual SD export bytes differ from imported bytes');
 }
+await page.locator('#sd-toggle').click();
+await page.locator('#sd-state').getByText('Ejected').waitFor();
+if (await page.locator('#sd-hint').textContent() !== 'Click to insert' ||
+    await page.locator('#sd-toggle').getAttribute('aria-pressed') !== 'false') {
+  throw new Error('SD card image did not switch to the ejected state');
+}
+await page.locator('#sd-toggle').click();
+await page.locator('#sd-state').getByText('Inserted').waitFor();
 
 const previousCanvas = await canvas.elementHandle();
 await page.locator('#restart-btn').click();

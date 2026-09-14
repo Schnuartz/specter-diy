@@ -19,7 +19,8 @@ try {
     await page.goto(base, { waitUntil: 'domcontentloaded' });
     const link = page.locator('#source-commit-link');
     await link.filter({ hasText: `GitHub · ${commit.slice(0, 7)}` }).waitFor();
-    if (await link.getAttribute('href') !== `https://github.com/${repository}/commit/${commit}`) {
+    const expectedUrl = `https://github.com/${repository}/commit/${commit}`;
+    if (await link.getAttribute('href') !== expectedUrl) {
       throw new Error('Preview source link does not target the exact build commit');
     }
     const buttonBox = await page.locator('#restart-btn').boundingBox();
@@ -27,6 +28,15 @@ try {
     if (!buttonBox || !linkBox || linkBox.y < buttonBox.y + buttonBox.height) {
       throw new Error('Preview source link is not visible below Restart');
     }
+    if (!await link.evaluate(element => getComputedStyle(element).textDecorationLine.includes('underline'))) {
+      throw new Error('Preview source link is not visibly styled as a link');
+    }
+    await page.context().route('https://github.com/**', route => route.fulfill({ body: 'GitHub link test' }));
+    const popupPromise = page.waitForEvent('popup');
+    await link.click();
+    const popup = await popupPromise;
+    await popup.waitForURL(expectedUrl);
+    await popup.close();
     await page.close();
   }
   const badPage = await browser.newPage();
