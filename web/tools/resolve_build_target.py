@@ -16,8 +16,8 @@ def fetch_pull(repository: str, number: str, token: str) -> dict:
 
 def resolve(env, fetch=fetch_pull) -> dict:
     event = env["TARGET_EVENT"]
-    number = str(env["TARGET_PR"])
-    sha = env["TARGET_SHA"]
+    number = str(env["TARGET_PR"]).strip(" \t")
+    sha = env["TARGET_SHA"].strip(" \t")
     branch = env["TARGET_BRANCH"]
     repository = env["TARGET_REPOSITORY"]
     if event == "workflow_dispatch":
@@ -29,11 +29,15 @@ def resolve(env, fetch=fetch_pull) -> dict:
             raise ValueError("Invalid PR number")
         pr = fetch(env["GITHUB_REPOSITORY"], number, env["GH_TOKEN"])
         current_sha = pr["head"]["sha"]
-        if pr["state"] != "open" or not re.fullmatch(r"[a-f0-9]{40}", current_sha) or \
-                not current_sha.startswith(sha) or \
-                pr["base"]["repo"]["full_name"].lower() != env["GITHUB_REPOSITORY"].lower() or \
-                pr["base"]["ref"] != env["TARGET_DEFAULT_BRANCH"]:
-            raise ValueError("PR is closed, targets another branch, or its head SHA changed")
+        if pr["state"] != "open":
+            raise ValueError(f"PR #{number} is not open")
+        if not isinstance(current_sha, str) or not re.fullmatch(r"[a-f0-9]{40}", current_sha):
+            raise ValueError(f"PR #{number} has no valid head SHA")
+        if not current_sha.startswith(sha):
+            raise ValueError(f"PR #{number} currently points to {current_sha[:12]}, not {sha}")
+        if (pr["base"]["repo"]["full_name"].lower() != env["GITHUB_REPOSITORY"].lower() or
+                pr["base"]["ref"] != env["TARGET_DEFAULT_BRANCH"]):
+            raise ValueError("PR targets another repository or branch")
         sha = current_sha
         repository = pr["head"]["repo"]["full_name"]
         branch = pr["head"]["ref"]

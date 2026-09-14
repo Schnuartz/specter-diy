@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "browser"))
 from verify_build import verify  # type: ignore[import-not-found]
 
 MARKER = "<!-- specter-pr-build-comment -->"
-MANUAL_RUN = re.compile(r"Manual PR ([1-9][0-9]{0,6}) ([a-f0-9]{7,40})")
+MANUAL_RUN = re.compile(r"Manual PR[ \t]+([1-9][0-9]{0,6})[ \t]+([a-f0-9]{7,40})[ \t]*")
 
 
 def read_json_file(path: Path) -> dict:
@@ -227,7 +227,11 @@ def prepare(args):
 
     event = json.loads(Path(args.event).read_text())
     run = event["workflow_run"]
-    if run["name"] != "Build" or run["event"] not in ("pull_request", "push", "workflow_dispatch"):
+    # GitHub sets workflow_run.name to the dynamic run-name, e.g. "PR 17" or
+    # "Manual PR 17 abc1234". Its workflow file path is the stable identity.
+    workflow_path = str(run.get("path", "")).split("@", 1)[0]
+    if workflow_path != ".github/workflows/build.yml" or \
+            run["event"] not in ("pull_request", "push", "workflow_dispatch"):
         raise ValueError("Unrecognized workflow run")
     repository = os.environ["GITHUB_REPOSITORY"]
     browser = Path(args.browser)
