@@ -218,6 +218,21 @@
     .restart-btn:disabled {
       opacity: 0.5;
     }
+    .device-actions {
+      width: 100%;
+      max-width: 380px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 7px;
+    }
+    .source-commit-link {
+      color: var(--specter-primary);
+      font-size: 12px;
+      text-decoration: none;
+    }
+    .source-commit-link:hover { text-decoration: underline; }
+    .source-commit-link:not([href]) { opacity: .65; }
 
     /* Status card */
     .status-card {
@@ -298,14 +313,14 @@
     .embedded .phone-wrapper { max-width:330px; }
     .gallery .page { display:block; width:100%; padding:0; }
     .gallery, .gallery body { background:transparent; }
-    .gallery .warning, .gallery .restart-btn, .gallery .sim-panel, .gallery .status-card { display:none; }
+    .gallery .warning, .gallery .device-actions, .gallery .sim-panel, .gallery .status-card { display:none; }
     .gallery .phone-wrapper { max-width:100%; }
     .gallery .phone-wrapper .phone-mockup { width:100%; height:auto; }
     @media (min-width:900px) {
       .page { display:grid; grid-template-columns:380px 380px; grid-template-areas:'warning warning' 'device peripherals' 'restart peripherals' 'cta cta'; gap:16px 22px; width:100%; max-width:822px; margin:auto; align-items:start; }
       .warning { grid-area:warning; max-width:none; }
       .phone-wrapper { grid-area:device; }
-      .restart-btn { grid-area:restart; }
+      .device-actions { grid-area:restart; }
       .sim-panel { grid-area:peripherals; }
       .cta-section { grid-area:cta; justify-self:center; }
       .embedded .page { grid-template-columns:330px 380px; max-width:760px; }
@@ -357,9 +372,12 @@
     <img src="./assets/Specter-Shield-Metal-mockup.png" class="phone-mockup" alt="Specter Shield Metal device">
   </div>
 
-  <button class="restart-btn" id="restart-btn">
-    &#x1F504; Restart Simulator
-  </button>
+  <div class="device-actions">
+    <button class="restart-btn" id="restart-btn">
+      &#x1F504; Restart Simulator
+    </button>
+    <a id="source-commit-link" class="source-commit-link" target="_blank" rel="noopener noreferrer">GitHub · loading…</a>
+  </div>
 
   <section class="sim-panel" aria-label="Simulator and peripherals">
     <h2>Simulator <span style="font-size:11px;color:#7c9">Running locally in your browser</span></h2>

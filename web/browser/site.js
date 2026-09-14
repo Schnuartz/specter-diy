@@ -462,13 +462,20 @@ try {
       !pointer.build.includes(`/${manifest.repository}/${manifest.commit}/`)) {
     throw new Error('Wrong source repository in build manifest');
   }
+  if (!/^[a-f0-9]{40}$/.test(manifest.commit)) throw new Error('Invalid source commit in build manifest');
   program = manifest.entrypoint === 'mockui' ? 'mockui' : 'wallet';
   $('#build-label').textContent = `${manifest.repository} · ${manifest.commit.slice(0, 7)} · Browser / WASM`;
-  $('#build-link').href = `${manifest.source_url}/commit/${manifest.commit}`;
+  const commitUrl = `https://github.com/${manifest.repository}/commit/${manifest.commit}`;
+  $('#source-commit-link').href = commitUrl;
+  $('#source-commit-link').textContent = `GitHub · ${manifest.commit.slice(0, 7)}`;
+  $('#build-link').href = commitUrl;
   $('#build-link').textContent = manifest.commit.slice(0, 12);
   $('#build-details').textContent = JSON.stringify(manifest, null, 2);
   $('#card-panel').hidden = !manifest.capabilities?.smartcard;
   // The browser build does not require SharedArrayBuffer. GitHub Pages cannot
   // set COOP/COEP headers, and its absence is not a simulator error.
   await start();
-} catch (error) { failure(`Browser build failed to load: ${error.message}`); }
+} catch (error) {
+  if (!$('#source-commit-link').hasAttribute('href')) $('#source-commit-link').textContent = 'GitHub · unavailable';
+  failure(`Browser build failed to load: ${error.message}`);
+}
