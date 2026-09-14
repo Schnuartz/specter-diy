@@ -53,6 +53,12 @@ changing wallet screens or logic. Browser-specific Python, JS, and source
 patching stay under `web/browser/`. The existing Unix simulator and hardware
 firmware build remain separate.
 
+For newer board revisions, the browser freeze uses the board's curated
+`f469-disco/manifests/common.py`, including embit from its `src/` package path.
+Older revisions without that manifest retain the original flat-library freeze.
+The build checks the resulting module list before compiling WebAssembly, so
+CPython-only embit examples and tests cannot enter a current browser build.
+
 ## CI and Pages
 
 The existing `Build` workflow now runs native tests, builds Unix and STM32
