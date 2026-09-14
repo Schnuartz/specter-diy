@@ -21,7 +21,7 @@ the shell fetches static assets only. Runtime sockets and SSL are disabled.
 Reloading discards simulated state. Normal restart retains simulated flash and
 peripheral files; factory reset wipes flash separately. The webcam requires
 HTTPS or localhost and browser permission. Some browser versions need the
-legacy Unix/VNC simulator; physical-device camera, secure element, air-gap,
+local Unix simulator; physical-device camera, secure element, air-gap,
 STM32 timing, battery, and physical card properties are not simulated.
 
 ## Build locally

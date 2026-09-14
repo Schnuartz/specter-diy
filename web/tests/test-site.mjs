@@ -131,12 +131,15 @@ if (mobileBefore.equals(await mobileCanvas.screenshot())) {
 }
 await mobile.close();
 
-const legacy = await page.locator('a[href="https://try.clavastack.com/legacy/"]').count();
-if (!legacy) throw new Error('Legacy fallback link missing');
+if (await page.locator('img[alt="ClavaStack"]').count() ||
+    (await page.title()).includes('ClavaStack') ||
+    !await page.locator('a[href="https://github.com/Schnuartz/specter-diy"]').count()) {
+  throw new Error('Fork page branding or source link is incorrect');
+}
 console.log(JSON.stringify({ result: 'pass', canvasColors: colors.size,
   crossOriginIsolated: isolated,
   pointer: 'changed Specter screen', sd: 'import/export/restart/Specter platform read+write',
   mobileTouch: 'changed Specter screen', cameraDenied: 'handled', noCamera: 'handled',
-  workerCrash: 'handled', legacy: 'linked',
+  workerCrash: 'handled', branding: 'Specter DIY',
   legacyRequestsInBrowserMode: 0 }, null, 2));
 await browser.close();

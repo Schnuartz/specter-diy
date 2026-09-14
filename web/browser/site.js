@@ -1,12 +1,11 @@
 const $ = selector => document.querySelector(selector);
 const siteRoot = new URL('../', import.meta.url);
 const params = new URLSearchParams(location.search);
-if (params.has('legacy')) location.replace('https://try.clavastack.com/legacy/');
 const embedded = params.get('embedded') === '1' && window.parent !== window;
 const gallery = embedded && params.get('gallery') === '1';
 const variant = 'diy';
 const diagnosticQrProbe = params.get('probe') === 'qr' &&
-  ['127.0.0.1', 'localhost', 'try.clavastack.com'].includes(location.hostname);
+  ['127.0.0.1', 'localhost'].includes(location.hostname);
 if (embedded) document.documentElement.classList.add('embedded');
 if (gallery) document.documentElement.classList.add('gallery');
 const notifyParent = message => { if (embedded) parent.postMessage(message, location.origin); };
@@ -234,11 +233,7 @@ async function start() {
   const canvas = newCanvas();
   const transferable = Boolean(canvas.transferControlToOffscreen);
   if (program === 'mockui' && !transferable) {
-    failure('This browser cannot run the Playground LVGL 9 display without OffscreenCanvas. Open the legacy Playground at /simulators/legacy/.');
-    const fallback = document.createElement('a');
-    fallback.href = '/simulators/legacy/';
-    fallback.textContent = 'Open legacy Playground';
-    loading.append(fallback);
+    failure('This browser needs OffscreenCanvas to render this simulator build.');
     return;
   }
   softwareContext = transferable ? undefined : canvas.getContext('2d');
