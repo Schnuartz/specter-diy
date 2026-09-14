@@ -272,6 +272,76 @@ class PublisherTests(unittest.TestCase):
         self.assertIn("does not match current run", result["reason"])
         self.assertFalse(preview.exists())
 
+    def test_manual_failure_without_artifacts_removes_current_preview(self):
+        platform_sha = "b" * 40
+        pages = self.root / "pages"
+        preview = pages / "pr/17"
+        preview.mkdir(parents=True)
+        (preview / "index.html").write_text("old preview")
+        event = self.root / "event.json"
+        event.write_text(json.dumps({"repository": {"default_branch": "master"}, "workflow_run": {
+            "id": 22, "html_url": "https://github.com/example/actions/runs/22",
+            "name": "Build", "event": "workflow_dispatch", "conclusion": "failure",
+            "display_title": f"Manual PR 17 {SHA[:7]}", "head_sha": platform_sha,
+            "head_branch": "master", "head_repository": {"full_name": REPO},
+        }}))
+        pr = {"number": 17, "state": "open", "head": {
+            "sha": SHA, "ref": "feature", "repo": {"full_name": REPO}},
+            "base": {"ref": "master", "repo": {"full_name": REPO}}}
+        args = SimpleNamespace(event=event, target=self.root / "missing-target.json",
+                               state=self.root / "state.json", browser=self.root / "missing-browser",
+                               firmware=self.root / "missing-firmware", pages=pages)
+        with patch.dict("os.environ", {"GITHUB_REPOSITORY": REPO}), \
+                patch.object(publish_preview, "api", return_value=pr):
+            result = publish_preview.prepare(args)
+        self.assertFalse(result["skip"])
+        self.assertFalse(result["published"])
+        self.assertFalse(preview.exists())
+        event_data = json.loads(event.read_text())
+        event_data["workflow_run"]["display_title"] = "Manual PR 17 fffffff"
+        event.write_text(json.dumps(event_data))
+        preview.mkdir(parents=True)
+        (preview / "index.html").write_text("newer preview")
+        with patch.dict("os.environ", {"GITHUB_REPOSITORY": REPO}), \
+                patch.object(publish_preview, "api", return_value=pr):
+            result = publish_preview.prepare(args)
+        self.assertTrue(result["skip"])
+        self.assertEqual((preview / "index.html").read_text(), "newer preview")
+
+    def test_manual_success_checks_platform_commit(self):
+        platform_sha = "b" * 40
+        event = self.root / "event.json"
+        target = self.root / "target.json"
+        event.write_text(json.dumps({"repository": {"default_branch": "master"}, "workflow_run": {
+            "id": 22, "html_url": "https://github.com/example/actions/runs/22",
+            "name": "Build", "event": "workflow_dispatch", "conclusion": "success",
+            "display_title": f"Manual PR 17 {SHA}", "head_sha": platform_sha,
+            "head_branch": "master", "head_repository": {"full_name": REPO},
+        }}))
+        target.write_text(json.dumps({"event": "workflow_dispatch", "number": 17,
+                                      "commit": SHA, "repository": REPO, "branch": "feature",
+                                      "platform_commit": platform_sha}))
+        pr = {"number": 17, "state": "open", "head": {
+            "sha": SHA, "ref": "feature", "repo": {"full_name": REPO}},
+            "base": {"ref": "master", "repo": {"full_name": REPO}}}
+        args = SimpleNamespace(event=event, target=target, state=self.root / "state.json",
+                               browser=self.browser, firmware=self.firmware, pages=self.root / "pages")
+        with patch.dict("os.environ", {"GITHUB_REPOSITORY": REPO}), \
+                patch.object(publish_preview, "api", return_value=pr), \
+                patch.object(publish_preview, "validate_bundles",
+                             return_value={"platform_commit": platform_sha}):
+            result = publish_preview.prepare(args)
+        self.assertTrue(result["published"])
+        self.assertTrue((self.root / "pages/pr/17/index.html").is_file())
+        target_data = json.loads(target.read_text())
+        target_data["platform_commit"] = "f" * 40
+        target.write_text(json.dumps(target_data))
+        with patch.dict("os.environ", {"GITHUB_REPOSITORY": REPO}), \
+                patch.object(publish_preview, "api", return_value=pr):
+            result = publish_preview.prepare(args)
+        self.assertFalse(result["published"])
+        self.assertFalse((self.root / "pages/pr/17").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

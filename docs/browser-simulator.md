@@ -78,6 +78,32 @@ publisher keeps an
 `gh-pages` branch as static state and uses `actions/deploy-pages` to deploy the
 complete tree. PRs receive no write token or deployment credentials.
 
+### Rebuild an older open PR without a commit
+
+Once this workflow is on the default branch, use **Actions → Build → Run
+workflow**, select the default branch, and enter the PR number and the first
+seven (or more) hexadecimal characters of its current head SHA. The Build job
+resolves the prefix against that PR's current full head SHA before checking out
+source. If the head changes to a different prefix before publication, the
+publisher ignores the stale run. Seven characters are convenient but are not
+globally unique; use a longer prefix when comparing closely spaced revisions.
+The CLI helper needs only the PR number and reads the SHA itself:
+
+```sh
+python3 web/tools/trigger_pr_build.py 123 --repo Schnuartz/specter-diy
+```
+
+This starts the existing `Build` workflow; it does not create another Actions
+workflow or add a commit to the PR. Manual runs check out the PR's exact head
+for Specter source and firmware, but use the current default branch's browser
+build tools and website shell. The browser manifest records both the PR source
+commit and the tooling (`platform_commit`) commit. The publisher checks both,
+and it can remove a failed current manual preview without downloading any
+artifact. A very old PR with incompatible MicroPython/LVGL or firmware sources
+may still fail to build; its build log will show the concrete incompatibility.
+GitHub's manual Run workflow button is unavailable until this workflow file is
+present on the repository's default branch.
+
 For this fork, enable **Settings → Pages → Build and deployment → GitHub
 Actions** once. Confirm Actions are enabled and allow the publisher workflow
 to write to the repository. After the first successful default-branch build,

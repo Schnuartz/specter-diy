@@ -5,34 +5,45 @@ on:
     branches: [main, master]
   push:
     branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Open PR number to build'
+        required: true
+        type: string
+      head_sha:
+        description: 'Current PR head SHA (7 to 40 hexadecimal characters)'
+        required: true
+        type: string
+
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('Manual PR {0} {1}', inputs.pr_number, inputs.head_sha) || github.event_name == 'pull_request' && format('PR {0}', github.event.pull_request.number) || github.sha }}
 
 permissions:
   contents: read
-
-env:
-  EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-  SPECTER_SOURCE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+  pull-requests: read
 
 jobs:
   target:
     name: Record workflow target
     runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      repository: ${{ steps.resolve.outputs.repository }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
       - name: Record PR head or default-branch commit
+        id: resolve
         env:
           TARGET_EVENT: ${{ github.event_name }}
-          TARGET_PR: ${{ github.event.pull_request.number || 0 }}
+          TARGET_PR: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number || 0 }}
+          TARGET_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha || github.event.pull_request.head.sha || github.sha }}
           TARGET_BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
-        run: |
-          python3 - <<'PY'
-          import json, os
-          with open('target.json', 'w') as file:
-              json.dump({'event': os.environ['TARGET_EVENT'],
-                         'number': int(os.environ['TARGET_PR']),
-                         'branch': os.environ['TARGET_BRANCH'],
-                         'commit': os.environ['EXPECTED_SHA'],
-                         'repository': os.environ['SPECTER_SOURCE_REPOSITORY']}, file)
-          PY
+          TARGET_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          TARGET_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 web/tools/resolve_build_target.py
       - uses: actions/upload-artifact@v4
         with:
           name: build-target
@@ -42,6 +53,10 @@ jobs:
   native-tests:
     name: Specter native tests
     runs-on: ubuntu-latest
+    needs: target
+    env:
+      EXPECTED_SHA: ${{ needs.target.outputs.sha }}
+      SPECTER_SOURCE_REPOSITORY: ${{ needs.target.outputs.repository }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -64,19 +79,33 @@ jobs:
   build:
     name: Build firmware from PR head
     runs-on: ubuntu-latest
+    needs: target
+    env:
+      EXPECTED_SHA: ${{ needs.target.outputs.sha }}
+      SPECTER_SOURCE_REPOSITORY: ${{ needs.target.outputs.repository }}
     steps:
       - uses: actions/checkout@v4
         with:
           repository: ${{ env.SPECTER_SOURCE_REPOSITORY }}
           ref: ${{ env.EXPECTED_SHA }}
           submodules: recursive
+      - uses: actions/checkout@v4
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          ref: ${{ github.sha }}
+          path: trusted-tools
       - uses: DeterminateSystems/nix-installer-action@v14
       - name: Build Unix simulator and STM32 firmware
         run: |
           nix develop -c make unix
           nix develop -c make disco
       - name: Record firmware provenance
-        run: python3 web/tools/source_info.py firmware
+        run: |
+          if test "$GITHUB_EVENT_NAME" = workflow_dispatch; then
+            python3 trusted-tools/web/tools/source_info.py firmware
+          else
+            python3 web/tools/source_info.py firmware
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: firmware-binaries
@@ -90,12 +119,27 @@ jobs:
     name: Build and smoke-test browser simulator
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    needs: target
+    env:
+      EXPECTED_SHA: ${{ needs.target.outputs.sha }}
+      SPECTER_SOURCE_REPOSITORY: ${{ needs.target.outputs.repository }}
+      BROWSER_PLATFORM_COMMIT: ${{ github.event_name == 'workflow_dispatch' && github.sha || '' }}
     steps:
       - uses: actions/checkout@v4
         with:
           repository: ${{ env.SPECTER_SOURCE_REPOSITORY }}
           ref: ${{ env.EXPECTED_SHA }}
           submodules: recursive
+      - uses: actions/checkout@v4
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          ref: ${{ github.sha }}
+          path: trusted-tools
+      - name: Use trusted current browser tooling for an older PR
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          mkdir -p web
+          rsync -a --delete trusted-tools/web/ web/
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -114,7 +158,10 @@ jobs:
       - name: Verify source commit and artifact hashes
         run: python3 web/browser/verify_build.py
       - name: Test preview provenance and publication rules
-        run: python3 web/tests/test-publisher.py
+        run: |
+          python3 web/tests/test-publisher.py
+          python3 web/tests/test-trigger-pr.py
+          python3 web/tests/test-resolve-build-target.py
       - name: Browser smoke tests
         run: |
           npm ci --prefix web

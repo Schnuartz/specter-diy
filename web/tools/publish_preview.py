@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "browser"))
 from verify_build import verify  # type: ignore[import-not-found]
 
 MARKER = "<!-- specter-pr-build-comment -->"
+MANUAL_RUN = re.compile(r"Manual PR ([1-9][0-9]{0,6}) ([a-f0-9]{7,40})")
 
 
 def read_json_file(path: Path) -> dict:
@@ -84,6 +85,30 @@ def find_current_pr(run: dict) -> dict | None:
             continue
         matches.append(pr)
     return matches[0] if len(matches) == 1 else None
+
+
+def find_current_manual_pr(run: dict, repository: str, default_branch: str) -> dict | None:
+    """A dispatch run names its PR and SHA before any untrusted job executes."""
+    title = run.get("display_title")
+    match = MANUAL_RUN.fullmatch(title) if isinstance(title, str) else None
+    head_repo = run.get("head_repository") or {}
+    run_sha = run.get("head_sha")
+    if not match or run.get("head_branch") != default_branch or \
+            head_repo.get("full_name", "").lower() != repository.lower() or \
+            not isinstance(run_sha, str) or not re.fullmatch(r"[a-f0-9]{40}", run_sha):
+        return None
+    number, sha = int(match[1]), match[2]
+    pr = api("GET", f"/pulls/{number}")
+    head = pr.get("head") or {}
+    base = pr.get("base") or {}
+    current_sha = head.get("sha")
+    if pr.get("state") != "open" or not isinstance(current_sha, str) or \
+            not re.fullmatch(r"[a-f0-9]{40}", current_sha) or \
+            not current_sha.startswith(sha) or \
+            (base.get("repo") or {}).get("full_name", "").lower() != repository.lower() or \
+            base.get("ref") != default_branch:
+        return None
+    return pr
 
 
 def read_source(directory: Path, kind: str, sha: str, repo: str) -> dict:
@@ -202,13 +227,15 @@ def prepare(args):
 
     event = json.loads(Path(args.event).read_text())
     run = event["workflow_run"]
-    if run["name"] != "Build" or run["event"] not in ("pull_request", "push"):
+    if run["name"] != "Build" or run["event"] not in ("pull_request", "push", "workflow_dispatch"):
         raise ValueError("Unrecognized workflow run")
     repository = os.environ["GITHUB_REPOSITORY"]
     browser = Path(args.browser)
     firmware = Path(args.firmware)
-    if run["event"] == "pull_request":
-        pr = find_current_pr(run)
+    if run["event"] in ("pull_request", "workflow_dispatch"):
+        pr = (find_current_pr(run) if run["event"] == "pull_request"
+              else find_current_manual_pr(run, repository,
+                                          event["repository"]["default_branch"]))
         if not pr:
             return skip("PR head advanced or PR closed; skip stale workflow run")
         sha, repo, number = pr["head"]["sha"], pr["head"]["repo"]["full_name"], pr["number"]
@@ -228,9 +255,14 @@ def prepare(args):
                     not isinstance(target.get("repository"), str) or \
                     target["repository"].lower() != repo.lower() or \
                     target.get("number") != (number or 0) or \
-                    (number and target.get("branch") != pr["head"]["ref"]):
+                    (number and target.get("branch") != pr["head"]["ref"]) or \
+                    (run["event"] == "workflow_dispatch" and
+                     target.get("platform_commit") != run["head_sha"]):
                 raise ValueError("Workflow target does not match current run")
-            validate_bundles(browser, firmware, sha, repo)
+            manifest = validate_bundles(browser, firmware, sha, repo)
+            if run["event"] == "workflow_dispatch" and \
+                    manifest.get("platform_commit") != run["head_sha"]:
+                raise ValueError("Browser tooling does not match dispatch commit")
         except Exception as error:
             # Artifact content is untrusted data. Any missing or malformed
             # artifact makes this current PR build unpublishable.

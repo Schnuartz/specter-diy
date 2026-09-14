@@ -63,5 +63,9 @@ mkdir -p "$OUT"
 cp "$SPECTER_SRC/f469-disco/micropython/ports/unix/micropython.js" "$OUT/"
 cp "$SPECTER_SRC/f469-disco/micropython/ports/unix/micropython.wasm" "$OUT/"
 cp "$SPECTER_SRC/f469-disco/micropython/ports/unix/micropython.data" "$OUT/"
-python3 "$ROOT/browser/write-manifest.py" "$SPECTER_SRC" "$OUT" "$SOURCE_REPOSITORY"
+manifest_extra=()
+if [[ -n "${BROWSER_PLATFORM_COMMIT:-}" ]]; then
+  manifest_extra+=("$BROWSER_PLATFORM_COMMIT")
+fi
+python3 "$ROOT/browser/write-manifest.py" "$SPECTER_SRC" "$OUT" "$SOURCE_REPOSITORY" "${manifest_extra[@]}"
 echo "Browser artifacts: $OUT"
