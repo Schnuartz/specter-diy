@@ -52,6 +52,23 @@ await page.locator('#camera-toggle').getByText('Hide backup preview').waitFor();
 await page.locator('#camera-preview').waitFor({ state: 'visible' });
 await page.locator('#camera-toggle').click();
 await page.locator('#camera-state').getByText('Camera off').waitFor();
+await page.goto(base);
+await page.locator('#st').getByText('Running locally').waitFor({ timeout: 45000 });
+await page.evaluate(() => {
+  const decode = window.jsQR;
+  window.__decodeCount = 0;
+  window.jsQR = (...args) => { window.__decodeCount++; return decode(...args); };
+});
+await page.locator('#camera-toggle').click();
+await page.locator('#camera-state').getByText('Camera active', { exact: false }).waitFor();
+await page.waitForTimeout(500);
+if (await page.evaluate(() => window.__decodeCount) !== 0) {
+  throw new Error('Backup camera decoded QR frames while Specter scanner was inactive');
+}
+await page.locator('#restart-btn').click();
+await page.locator('#st').getByText('Starting locally').waitFor({ timeout: 10000 });
+await page.locator('#st').getByText('Running locally').waitFor({ timeout: 45000 });
+await page.locator('#camera-state').getByText('Camera off').waitFor();
 const denied = await browser.newPage();
 await denied.addInitScript(() => Object.defineProperty(navigator, 'mediaDevices', {
   configurable: true,
@@ -63,5 +80,6 @@ await denied.locator('#camera-state').getByText('Camera permission denied').wait
 await denied.locator('#camera-screen-start').waitFor({ state: 'visible' });
 await denied.close();
 console.log(JSON.stringify({ result: 'pass', camera: 'fake webcam to browser decoder to Specter QRHost',
+  backupPreview: 'no idle QR decoding; restart closes camera',
   payload: text }, null, 2));
 await browser.close();

@@ -37,7 +37,9 @@ let backupEnabled = false;
 let cameraRequest = 0;
 let lastQr = '';
 let lastQrAt = 0;
+let lastScanFrameAt = 0;
 let startupTimer;
+let startupStage = 'waiting for the browser worker';
 let requestId = 0;
 const snapshots = new Map();
 
@@ -48,9 +50,19 @@ function setStatus(message, running = false) {
   status.textContent = message;
   dot.classList.toggle('on', running);
 }
+function bootStage(stage) {
+  startupStage = stage;
+  clearTimeout(startupTimer);
+  startupTimer = setTimeout(() => failure(
+    `Specter did not finish loading after ${startupStage}. Open Technical details for the runtime log or use Legacy mode.`
+  ), 45000);
+}
 function failure(message) {
   clearTimeout(startupTimer);
   stopCamera();
+  scannerActive = false;
+  backupEnabled = false;
+  screenCamera.hidden = true;
   worker?.terminate();
   worker = undefined;
   setStatus('Simulator error');
@@ -168,6 +180,11 @@ function onWorkerMessage({ data }) {
     notifyParent({ type: 'simulator-running', variant });
   } else if (data.type === 'log') {
     log(data.message);
+    if (data.message === 'SPECTER_BROWSER_BOOT') bootStage('the firmware entry point');
+    else if (data.message === 'SPECTER_IMPORTS_DONE') bootStage('firmware imports');
+    else if (data.message === 'SPECTER_MAIN_IMPORTED') bootStage('loading Specter');
+  } else if (data.type === 'wasm-ready') {
+    bootStage('initializing WebAssembly');
   } else if (data.type === 'debug') {
     if (!data.message.includes('registerOrRemoveHandler')) log(data.message);
   } else if (data.type === 'abort') {
@@ -251,7 +268,7 @@ async function start() {
   worker.onmessage = onWorkerMessage;
   worker.onerror = event => failure(`Worker crashed: ${event.message || 'unknown error'}`);
   worker.onmessageerror = () => failure('Worker communication failed');
-  startupTimer = setTimeout(() => failure('Specter did not finish loading. Open Technical details or use Legacy mode.'), 45000);
+  bootStage('starting the browser worker');
   const offscreen = transferable ? canvas.transferControlToOffscreen() : undefined;
   send({ type: 'start', build, version, program, canvas: offscreen, headlessDisplay: !transferable,
     stateFiles, sdInserted: inserted, cardSlot: activeCard, qrProbe: diagnosticQrProbe }, offscreen ? [offscreen] : []);
@@ -268,6 +285,10 @@ function snapshot() {
 async function restart(factory = false) {
   stateFiles = await snapshot();
   if (factory) stateFiles = stateFiles.filter(file => file.path.startsWith('sd/') || file.path.startsWith('cards/'));
+  stopCamera();
+  scannerActive = false;
+  backupEnabled = false;
+  screenCamera.hidden = true;
   worker?.terminate();
   worker = undefined;
   await start();
@@ -372,16 +393,17 @@ const scanCanvas = document.createElement('canvas');
 const scanContext = scanCanvas.getContext('2d', { willReadFrequently: true });
 function scanFrame() {
   if (!cameraStream) return;
-  if (video.readyState >= 2 && video.videoWidth) {
+  const now = performance.now();
+  if (scannerActive && now - lastScanFrameAt >= 100 && video.readyState >= 2 && video.videoWidth) {
+    lastScanFrameAt = now;
     const scale = Math.min(1, 640 / video.videoWidth);
     scanCanvas.width = Math.max(1, Math.floor(video.videoWidth * scale));
     scanCanvas.height = Math.max(1, Math.floor(video.videoHeight * scale));
     scanContext.drawImage(video, 0, 0, scanCanvas.width, scanCanvas.height);
     const pixels = scanContext.getImageData(0, 0, scanCanvas.width, scanCanvas.height);
     const qr = window.jsQR?.(pixels.data, pixels.width, pixels.height, { inversionAttempts: 'attemptBoth' });
-    if (scannerActive && qr?.binaryData?.length) {
+    if (qr?.binaryData?.length) {
       const key = Array.from(qr.binaryData).join(',');
-      const now = performance.now();
       if (key !== lastQr || now - lastQrAt > 1000) {
         const bytes = Uint8Array.from(qr.binaryData);
         send({ type: 'qr', bytes: bytes.buffer }, [bytes.buffer]);
