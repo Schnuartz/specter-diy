@@ -82,6 +82,14 @@ publisher keeps an
 `gh-pages` branch as static state and uses `actions/deploy-pages` to deploy the
 complete tree. PRs receive no write token or deployment credentials.
 
+The published simulator also offers a **Download matching test firmware** link
+beside its build label. The publisher writes only a small `firmware-link.json`
+that points to the firmware artifact from the *same Build run*. It does not
+compile firmware again or embed firmware binaries in the Pages deployment. The
+page shows the link only if its source repository and full commit match the
+browser manifest. GitHub may require a signed-in account to download an Actions
+artifact, and the link stops working when GitHub's artifact retention expires.
+
 ### Rebuild an older open PR without a commit
 
 Once this workflow is on the default branch, use **Actions → Build → Run

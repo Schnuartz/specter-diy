@@ -46,6 +46,27 @@ const snapshots = new Map();
 function log(message) {
   debug.textContent = `${String(message)}\n${debug.textContent}`.slice(0, 7000);
 }
+async function showFirmwareDownload(manifest) {
+  try {
+    const response = await fetch(new URL('firmware-link.json', siteRoot), { cache: 'no-store' });
+    if (!response.ok) return; // Local builds have no published firmware artifact.
+    const info = await response.json();
+    const baseRepo = manifest.platform_repository || manifest.repository;
+    const artifact = new URL(info.firmware_url);
+    const parts = artifact.pathname.split('/');
+    const valid = info.source_commit === manifest.commit &&
+      info.source_repository?.toLowerCase() === manifest.repository.toLowerCase() &&
+      info.build_repository?.toLowerCase() === baseRepo.toLowerCase() &&
+      artifact.origin === 'https://github.com' && !artifact.search && !artifact.hash &&
+      parts.length === 8 && parts[3] === 'actions' && parts[4] === 'runs' &&
+      parts[6] === 'artifacts' && /^[1-9][0-9]*$/.test(parts[5]) &&
+      /^[1-9][0-9]*$/.test(parts[7]) &&
+      `${parts[1]}/${parts[2]}`.toLowerCase() === baseRepo.toLowerCase();
+    if (!valid) throw new Error('Firmware artifact does not match this Specter build');
+    $('#firmware-download').href = artifact.href;
+    $('#firmware-download-row').hidden = false;
+  } catch (error) { log(`Firmware download unavailable: ${error.message}`); }
+}
 function setStatus(message, running = false) {
   status.textContent = message;
   dot.classList.toggle('on', running);
@@ -468,6 +489,7 @@ try {
   $('#build-link').textContent = manifest.commit.slice(0, 12);
   $('#build-details').textContent = JSON.stringify(manifest, null, 2);
   $('#card-panel').hidden = !manifest.capabilities?.smartcard;
+  showFirmwareDownload(manifest);
   // The browser build does not require SharedArrayBuffer. GitHub Pages cannot
   // set COOP/COEP headers, and its absence is not a simulator error.
   await start();

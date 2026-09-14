@@ -244,6 +244,8 @@
     .sim-panel h2 { color: var(--specter-light); font-size: 15px; margin-bottom: 8px; }
     .sim-panel h3 { color: var(--specter-light); font-size: 13px; margin: 12px 0 6px; }
     .sim-panel p { margin: 5px 0; }
+    .sim-panel .firmware-download-row { margin: 8px 0 12px; font-size: 12px; }
+    .sim-panel .firmware-download-row small { color: var(--specter-light-secondary); }
     .sim-panel button, .sim-panel select {
       background: var(--specter-dark-accent); color: var(--specter-light);
       border: 1px solid #536174; border-radius: 6px; padding: 8px;
@@ -364,6 +366,10 @@
   <section class="sim-panel" aria-label="Simulator and peripherals">
     <h2>Simulator <span style="font-size:11px;color:#7c9">Running locally in your browser</span></h2>
     <p id="build-label">Loading build information…</p>
+    <p id="firmware-download-row" class="firmware-download-row" hidden>
+      <a id="firmware-download" href="#" target="_blank" rel="noopener noreferrer">&#x2B07; Download matching test firmware (ZIP)</a><br>
+      <small>Same Specter commit · test devices only · GitHub artifact may expire</small>
+    </p>
     <p id="isolation-warning" hidden></p>
     <div class="peripheral-card">
       <h3>Virtual SD card <span id="sd-state">Ejected</span></h3>

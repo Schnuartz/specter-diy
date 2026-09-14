@@ -163,7 +163,9 @@ def validate_bundles(browser: Path, firmware: Path, sha: str, repo: str) -> dict
     return manifest
 
 
-def publish_files(web: Path, pages: Path, number: int | None, sha: str):
+def publish_files(web: Path, pages: Path, number: int | None, sha: str,
+                  firmware_url: str | None = None, source_repo: str | None = None,
+                  build_repo: str | None = None):
     pages = pages.resolve()
     target = pages / "pr" / str(number) if number else pages
     if not target.resolve().is_relative_to(pages) or pages == target and number:
@@ -181,6 +183,13 @@ def publish_files(web: Path, pages: Path, number: int | None, sha: str):
     index = target / "index.html"
     contents = index.read_text().replace('./browser/site.js"', f'./browser/site.js?v={sha[:12]}"')
     index.write_text(contents)
+    if firmware_url:
+        (target / "firmware-link.json").write_text(json.dumps({
+            "source_repository": source_repo,
+            "source_commit": sha,
+            "build_repository": build_repo,
+            "firmware_url": firmware_url,
+        }, indent=2) + "\n")
     (pages / ".nojekyll").touch()
 
 
@@ -209,10 +218,12 @@ def write_summary(state: dict):
     elif state["published"]:
         label = f"PR #{state['number']} simulator" if state["number"] else "stable simulator"
         body = ("## Specter browser simulator\n\n"
-                f"▶ **[Open {label}]({pages_url(state['number'])})**\n\n"
-                f"Source commit: `{state['sha'][:12]}` · "
-                f"[Build logs]({state['run_url']})\n\n"
-                "⚠️ Use test seeds only. Never enter a real seed phrase.\n")
+                f"▶ **[Open {label}]({pages_url(state['number'])})**\n\n")
+        if state.get("firmware_url"):
+            body += f"⬇️ [Download matching test firmware]({state['firmware_url']})\n\n"
+        body += (f"Source commit: `{state['sha'][:12]}` · "
+                 f"[Build logs]({state['run_url']})\n\n"
+                 "⚠️ Use test seeds only. Never enter a real seed phrase.\n")
     else:
         body = ("## Specter browser simulator\n\n"
                 "No preview was published for this build. "
@@ -228,7 +239,8 @@ def comment(state: dict):
     run_url = state["run_url"]
     sha = state["sha"]
     if state["published"]:
-        firmware_url = f"{run_url}/artifacts/{artifact_id(state['run_id'], 'firmware-binaries')}"
+        firmware_url = state.get("firmware_url") or \
+            f"{run_url}/artifacts/{artifact_id(state['run_id'], 'firmware-binaries')}"
         body = (f"{MARKER}\n🧪 **Specter PR Build** · `{sha[:12]}` ✅\n\n"
                 f"🖥️ [Open browser simulator]({pages_url(number)})\n\n"
                 f"⬇️ [Download firmware from the same commit]({firmware_url})\n\n"
@@ -301,13 +313,16 @@ def prepare(args):
             if run["event"] == "workflow_dispatch" and \
                     manifest.get("platform_commit") != run["head_sha"]:
                 raise ValueError("Browser tooling does not match dispatch commit")
+            state["firmware_url"] = (f"{run['html_url']}/artifacts/"
+                                     f"{artifact_id(run['id'], 'firmware-binaries')}")
         except Exception as error:
             # Artifact content is untrusted data. Any missing or malformed
             # artifact makes this current PR build unpublishable.
             state["reason"] = f"Build artifacts unavailable or invalid: {error}"
             print(state["reason"])
         else:
-            publish_files(browser / "web", pages, number, sha)
+            publish_files(browser / "web", pages, number, sha,
+                          state["firmware_url"], repo, repository)
             state["published"] = True
     if number and not state["published"]:
         target = pages.resolve() / "pr" / str(number)

@@ -120,12 +120,14 @@ class PublisherTests(unittest.TestCase):
     def test_actions_summary_has_direct_preview_link(self):
         summary = self.root / "summary.md"
         state = {"number": 17, "sha": SHA, "published": True,
-                 "run_url": "https://github.com/example/actions/runs/1"}
+                 "run_url": "https://github.com/example/actions/runs/1",
+                 "firmware_url": "https://github.com/example/actions/runs/1/artifacts/99"}
         with patch.dict("os.environ", {"GITHUB_REPOSITORY": REPO,
                                        "GITHUB_STEP_SUMMARY": str(summary)}):
             publish_preview.write_summary(state)
         contents = summary.read_text()
         self.assertIn(f"https://schnuartz.github.io/specter-diy/pr/17/", contents)
+        self.assertIn(state["firmware_url"], contents)
         self.assertIn("Never enter a real seed phrase", contents)
 
     def test_empty_run_pr_list_binds_to_fork_branch_and_commit(self):
@@ -206,10 +208,15 @@ class PublisherTests(unittest.TestCase):
         args = SimpleNamespace(event=event, target=target, state=self.root / "state.json",
                                browser=self.browser, firmware=self.firmware, pages=pages)
         with patch.dict("os.environ", {"GITHUB_REPOSITORY": REPO}), \
-                patch.object(publish_preview, "api", return_value=pr):
+                patch.object(publish_preview, "api", return_value=pr), \
+                patch.object(publish_preview, "artifact_id", return_value=99):
             result = publish_preview.prepare(args)
         self.assertTrue(result["published"])
         self.assertTrue((pages / "pr/17/index.html").is_file())
+        link = json.loads((pages / "pr/17/firmware-link.json").read_text())
+        self.assertEqual(link, {"source_repository": REPO, "source_commit": SHA,
+                                "build_repository": REPO,
+                                "firmware_url": "https://github.com/example/actions/runs/22/artifacts/99"})
 
     def test_failed_current_build_removes_preview_without_any_artifacts(self):
         pages = self.root / "pages"
@@ -366,6 +373,7 @@ class PublisherTests(unittest.TestCase):
                                browser=self.browser, firmware=self.firmware, pages=self.root / "pages")
         with patch.dict("os.environ", {"GITHUB_REPOSITORY": REPO}), \
                 patch.object(publish_preview, "api", return_value=pr), \
+                patch.object(publish_preview, "artifact_id", return_value=99), \
                 patch.object(publish_preview, "validate_bundles",
                              return_value={"platform_commit": platform_sha}):
             result = publish_preview.prepare(args)
