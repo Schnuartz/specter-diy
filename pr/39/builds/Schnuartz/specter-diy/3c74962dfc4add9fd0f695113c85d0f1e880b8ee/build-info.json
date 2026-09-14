@@ -1,0 +1,29 @@
+{
+  "repository": "Schnuartz/specter-diy",
+  "source_url": "https://github.com/Schnuartz/specter-diy",
+  "commit": "3c74962dfc4add9fd0f695113c85d0f1e880b8ee",
+  "branch": null,
+  "build_type": "Browser / WebAssembly",
+  "capabilities": {
+    "smartcard": true,
+    "smartcard_type": "MemoryCard"
+  },
+  "experimental": true,
+  "toolchain": "Emscripten 3.1.74",
+  "artifact_set_sha256": "73c05ee08aa288644bf19e9cdcd6384059c9d3e0d1cae8ffd93c6cb072177d1d",
+  "built_at": "2026-09-14T12:19:02.412655+00:00",
+  "artifacts": {
+    "micropython.js": {
+      "bytes": 430891,
+      "sha256": "f459fd53391a67570875ef43ec5448ad2a6978a7e423e69cbc1c0bd5e2a166f7"
+    },
+    "micropython.wasm": {
+      "bytes": 9021646,
+      "sha256": "1e6684b59c234aaaa61924ed360467e8a40207ba2b28ae1397ea5e81acad018e"
+    },
+    "micropython.data": {
+      "bytes": 17853,
+      "sha256": "145c489721e8d77e235d1d8e9398357009f9d110807131e1a1aa576d0ad10320"
+    }
+  }
+}
