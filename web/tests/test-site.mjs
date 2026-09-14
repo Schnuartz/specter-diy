@@ -12,6 +12,9 @@ page.on('request', request => requests.push(request.url()));
 page.on('pageerror', error => errors.push(error.message));
 await page.goto(base, { waitUntil: 'domcontentloaded' });
 await page.locator('#st').getByText('Running locally').waitFor({ timeout: 45000 });
+if (!await page.locator('.phone-mockup').evaluate(img => img.complete && img.naturalWidth > 0)) {
+  throw new Error('Specter Shield Metal device image did not load');
+}
 const isolated = await page.evaluate(() => crossOriginIsolated);
 // GitHub Pages cannot set COOP/COEP; this build does not require SharedArrayBuffer.
 const canvas = page.locator('#screen');
