@@ -59,7 +59,9 @@ The existing `Build` workflow now runs native tests, builds Unix and STM32
 firmware, builds the browser simulator, and runs browser/QR/SD/Smartcard smoke
 tests. It checks out the exact PR head SHA. The browser and firmware artifacts
 carry separate `source.json` records. The build workflow has **read-only**
-repository permissions and no deployment secret.
+repository permissions and no deployment secret. PR builds use browser tooling
+from their trusted base commit while compiling the PR's actual Specter source;
+this also supports older PR heads that do not yet contain the `web/` tooling.
 
 A separate `Publish browser simulator` workflow runs from the trusted default
 branch after `Build` completes. It verifies that the browser manifest, its
@@ -67,7 +69,9 @@ artifact hashes, the firmware hashes, and both provenance records identify the
 same still-current PR head. It never executes the downloaded build. A passing
 default-branch build updates the stable Pages root; a passing PR build updates
 `/pr/<number>/` and a single PR comment with links to the simulator, firmware
-artifact, and build log. A failed current PR build removes its stale preview
+artifact, and build log. The publisher also puts the direct simulator link in
+its Actions run summary, above the artifact list. A failed current PR build
+removes its stale preview
 and replaces that one comment with a failure notice, even when it uploaded no
 artifacts. Missing or invalid artifacts from a nominally successful run also
 invalidate its current PR preview. The failure path identifies the PR from the

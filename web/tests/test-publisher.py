@@ -19,6 +19,7 @@ POINTER = json.loads((ROOT / "browser/current.json").read_text())
 MANIFEST = json.loads((ROOT / POINTER["build"] / "build-info.json").read_text())
 SHA = MANIFEST["commit"]
 REPO = MANIFEST["repository"]
+PR17_URL = f"https://api.github.com/repos/{REPO}/pulls/17"
 
 
 class PublisherTests(unittest.TestCase):
@@ -99,6 +100,34 @@ class PublisherTests(unittest.TestCase):
             run["pull_requests"][0]["head"]["sha"] = "f" * 40
             self.assertIsNone(publish_preview.find_current_pr(run))
 
+    def test_ignores_upstream_pr_number_for_the_same_head_commit(self):
+        run = {"head_sha": SHA, "pull_requests": [
+            {"number": 17, "url": PR17_URL, "head": {"sha": SHA}},
+            {"number": 418,
+             "url": "https://api.github.com/repos/cryptoadvance/specter-diy/pulls/418",
+             "head": {"sha": SHA}},
+        ]}
+        pr = {"number": 17, "state": "open", "head": {
+            "sha": SHA, "ref": "feature", "repo": {"full_name": REPO}}}
+        calls = []
+        def get_pull(method, path, body=None):
+            calls.append(path)
+            return pr
+        with patch.object(publish_preview, "api", side_effect=get_pull):
+            self.assertEqual(publish_preview.find_current_pr(run, REPO), pr)
+        self.assertEqual(calls, ["/pulls/17"])
+
+    def test_actions_summary_has_direct_preview_link(self):
+        summary = self.root / "summary.md"
+        state = {"number": 17, "sha": SHA, "published": True,
+                 "run_url": "https://github.com/example/actions/runs/1"}
+        with patch.dict("os.environ", {"GITHUB_REPOSITORY": REPO,
+                                       "GITHUB_STEP_SUMMARY": str(summary)}):
+            publish_preview.write_summary(state)
+        contents = summary.read_text()
+        self.assertIn(f"https://schnuartz.github.io/specter-diy/pr/17/", contents)
+        self.assertIn("Never enter a real seed phrase", contents)
+
     def test_empty_run_pr_list_binds_to_fork_branch_and_commit(self):
         # Real upstream fork PR workflow_run payloads have pull_requests: [].
         run = {"head_sha": SHA, "head_branch": "feature",
@@ -148,7 +177,7 @@ class PublisherTests(unittest.TestCase):
         state = self.root / "state.json"
         event.write_text(json.dumps({"workflow_run": {
             "name": "PR 17", "path": ".github/workflows/build.yml", "event": "pull_request", "conclusion": "failure",
-            "head_sha": SHA, "pull_requests": [{"number": 17}],
+            "head_sha": SHA, "pull_requests": [{"number": 17, "url": PR17_URL}],
         }}))
         pr = {"number": 17, "state": "open", "merge_commit_sha": "1" * 40,
               "head": {"sha": "f" * 40, "ref": "feature", "repo": {"full_name": REPO}}}
@@ -167,7 +196,7 @@ class PublisherTests(unittest.TestCase):
         event.write_text(json.dumps({"workflow_run": {
             "id": 22, "html_url": "https://github.com/example/actions/runs/22",
             "name": "PR 17", "path": ".github/workflows/build.yml", "event": "pull_request", "conclusion": "success",
-            "head_sha": SHA, "pull_requests": [{"number": 17}],
+            "head_sha": SHA, "pull_requests": [{"number": 17, "url": PR17_URL}],
         }}))
         target.write_text(json.dumps({"event": "pull_request", "number": 17,
                                       "commit": SHA, "repository": REPO, "branch": "feature"}))
@@ -233,7 +262,7 @@ class PublisherTests(unittest.TestCase):
         event.write_text(json.dumps({"workflow_run": {
             "id": 22, "html_url": "https://github.com/example/actions/runs/22",
             "name": "PR 17", "path": ".github/workflows/build.yml", "event": "pull_request", "conclusion": "success",
-            "head_sha": SHA, "pull_requests": [{"number": 17}],
+            "head_sha": SHA, "pull_requests": [{"number": 17, "url": PR17_URL}],
         }}))
         pr = {"number": 17, "state": "open", "merge_commit_sha": "1" * 40,
               "head": {"sha": SHA, "ref": "feature", "repo": {"full_name": REPO}}}
@@ -257,7 +286,7 @@ class PublisherTests(unittest.TestCase):
         event.write_text(json.dumps({"workflow_run": {
             "id": 22, "html_url": "https://github.com/example/actions/runs/22",
             "name": "PR 17", "path": ".github/workflows/build.yml", "event": "pull_request", "conclusion": "success",
-            "head_sha": SHA, "pull_requests": [{"number": 17}],
+            "head_sha": SHA, "pull_requests": [{"number": 17, "url": PR17_URL}],
         }}))
         target.write_text(json.dumps({"event": "pull_request", "number": 18,
                                       "commit": SHA, "repository": REPO, "branch": "feature"}))
