@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Trusted Pages publisher. Never executes files from a PR build artifact."""
 from pathlib import Path
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 import argparse
 import json
@@ -38,31 +39,51 @@ def api(method: str, path: str, body=None):
     return json.loads(content) if content else None
 
 
-def find_current_pr(run: dict, target: dict) -> dict | None:
-    number = target.get("number")
-    if not isinstance(number, int) or not 0 < number < 1_000_000:
-        return None
-    numbers = {pr["number"] for pr in run.get("pull_requests", [])}
-    if numbers and number not in numbers:
-        return None
-    pr = api("GET", f"/pulls/{number}")
-    if pr["state"] != "open" or pr["head"]["sha"] != target["commit"] or \
-            pr["head"]["repo"]["full_name"].lower() != target["repository"].lower() or \
-            pr["head"]["ref"] != target["branch"]:
-        return None
-    # GitHub's workflow_run payload can leave pull_requests empty for fork PRs.
-    # In that case the run itself must identify the exact source branch/commit;
-    # otherwise an artifact-controlled target.json could nominate another PR.
-    if not numbers and (run.get("head_repository", {}).get("full_name", "").lower() !=
-            pr["head"]["repo"]["full_name"].lower() or
-            run.get("head_branch") != pr["head"]["ref"] or
-            run.get("head_sha") != pr["head"]["sha"]):
-        return None
-    # A pull_request workflow can report the synthetic merge commit as its
-    # run head; a checkout of the PR head reports the source commit instead.
-    if run["head_sha"] not in (pr["head"]["sha"], pr.get("merge_commit_sha")):
-        return None
-    return pr
+def find_current_pr(run: dict) -> dict | None:
+    """Identify a current PR using GitHub metadata, never a build artifact."""
+    associated = run.get("pull_requests") or []
+    event_heads = {}
+    if associated:
+        numbers = {item.get("number") for item in associated}
+        if any(type(number) is not int or not 0 < number < 1_000_000 for number in numbers):
+            return None
+        candidates = [api("GET", f"/pulls/{number}") for number in sorted(numbers)]
+        event_heads = {item["number"]: (item.get("head") or {}).get("sha")
+                       for item in associated}
+    else:
+        # workflow_run.pull_requests is empty for some fork PRs. GitHub's
+        # head filter narrows the API lookup; the SHA and full repository are
+        # checked below before any preview or comment can be changed.
+        head_repo = run.get("head_repository") or {}
+        full_name = head_repo.get("full_name", "")
+        branch = run.get("head_branch")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", full_name) or \
+                not isinstance(branch, str) or not branch:
+            return None
+        head_filter = quote(f"{full_name.split('/')[0]}:{branch}", safe="")
+        candidates = []
+        for page in range(1, 11):
+            batch = api("GET", f"/pulls?state=open&head={head_filter}&per_page=100&page={page}")
+            candidates.extend(batch)
+            if len(batch) < 100:
+                break
+    matches = []
+    for pr in candidates:
+        head = pr.get("head") or {}
+        repo = head.get("repo") or {}
+        event_head = event_heads.get(pr.get("number"))
+        event_head_present = isinstance(event_head, str) and \
+            bool(re.fullmatch(r"[a-f0-9]{40}", event_head))
+        if event_head_present and event_head != head.get("sha"):
+            continue
+        if pr.get("state") != "open" or not (event_head_present or
+                run.get("head_sha") in (head.get("sha"), pr.get("merge_commit_sha"))):
+            continue
+        if not associated and (repo.get("full_name", "").lower() != full_name.lower() or
+                head.get("ref") != branch or run.get("head_sha") != head.get("sha")):
+            continue
+        matches.append(pr)
+    return matches[0] if len(matches) == 1 else None
 
 
 def read_source(directory: Path, kind: str, sha: str, repo: str) -> dict:
@@ -184,36 +205,41 @@ def prepare(args):
     if run["name"] != "Build" or run["event"] not in ("pull_request", "push"):
         raise ValueError("Unrecognized workflow run")
     repository = os.environ["GITHUB_REPOSITORY"]
-    target = read_json_file(Path(args.target))
-    if target.get("event") != run["event"] or not re.fullmatch(r"[a-f0-9]{40}", target.get("commit", "")):
-        raise ValueError("Invalid workflow target artifact")
-    source = None
     browser = Path(args.browser)
     firmware = Path(args.firmware)
-    if run["conclusion"] == "success":
-        source = read_json_file(browser / "source.json")
     if run["event"] == "pull_request":
-        pr = find_current_pr(run, target)
+        pr = find_current_pr(run)
         if not pr:
             return skip("PR head advanced or PR closed; skip stale workflow run")
         sha, repo, number = pr["head"]["sha"], pr["head"]["repo"]["full_name"], pr["number"]
-        if source and (source["commit"] != sha or source["repository"].lower() != repo.lower()):
-            raise ValueError("Browser artifact is stale for current PR head")
     else:
         if run["head_branch"] not in ("master", "main"):
             return skip("Default-branch run is no longer publishable")
         sha, repo, number = run["head_sha"], repository, None
-        if target.get("commit") != sha or target.get("repository", "").lower() != repo.lower() or \
-                target.get("number") != 0:
-            raise ValueError("Default-branch target does not match workflow run")
     state = {"skip": False, "number": number, "sha": sha, "repo": repo,
              "run_id": run["id"], "run_url": run["html_url"], "published": False}
     pages = Path(args.pages)
     if run["conclusion"] == "success":
-        validate_bundles(browser, firmware, sha, repo)
-        publish_files(browser / "web", pages, number, sha)
-        state["published"] = True
-    elif number:
+        try:
+            if not args.target:
+                raise ValueError("Workflow target artifact missing")
+            target = read_json_file(Path(args.target))
+            if target.get("event") != run["event"] or target.get("commit") != sha or \
+                    not isinstance(target.get("repository"), str) or \
+                    target["repository"].lower() != repo.lower() or \
+                    target.get("number") != (number or 0) or \
+                    (number and target.get("branch") != pr["head"]["ref"]):
+                raise ValueError("Workflow target does not match current run")
+            validate_bundles(browser, firmware, sha, repo)
+        except Exception as error:
+            # Artifact content is untrusted data. Any missing or malformed
+            # artifact makes this current PR build unpublishable.
+            state["reason"] = f"Build artifacts unavailable or invalid: {error}"
+            print(state["reason"])
+        else:
+            publish_files(browser / "web", pages, number, sha)
+            state["published"] = True
+    if number and not state["published"]:
         target = pages.resolve() / "pr" / str(number)
         if target.exists() and target.is_relative_to(pages.resolve()):
             shutil.rmtree(target)

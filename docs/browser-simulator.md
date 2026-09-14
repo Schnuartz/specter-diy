@@ -68,8 +68,13 @@ same still-current PR head. It never executes the downloaded build. A passing
 default-branch build updates the stable Pages root; a passing PR build updates
 `/pr/<number>/` and a single PR comment with links to the simulator, firmware
 artifact, and build log. A failed current PR build removes its stale preview
-and replaces that one comment with a failure notice. A run superseded by a
-newer PR commit cannot replace the current preview. The publisher keeps an
+and replaces that one comment with a failure notice, even when it uploaded no
+artifacts. Missing or invalid artifacts from a nominally successful run also
+invalidate its current PR preview. The failure path identifies the PR from the
+trusted `workflow_run` event and GitHub's pull-request API; the untrusted
+`build-target` artifact is cross-checked only for successful runs. A run
+superseded by a newer PR commit cannot replace the current preview. The
+publisher keeps an
 `gh-pages` branch as static state and uses `actions/deploy-pages` to deploy the
 complete tree. PRs receive no write token or deployment credentials.
 
