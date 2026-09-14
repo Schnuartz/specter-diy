@@ -65,9 +65,12 @@ await page.waitForTimeout(500);
 if (await page.evaluate(() => window.__decodeCount) !== 0) {
   throw new Error('Backup camera decoded QR frames while Specter scanner was inactive');
 }
+const previousCanvas = await page.locator('#screen').elementHandle();
 await page.locator('#restart-btn').click();
-await page.locator('#st').getByText('Starting locally').waitFor({ timeout: 10000 });
+await page.waitForFunction(previous => document.querySelector('#screen') !== previous,
+  previousCanvas, { timeout: 10000 });
 await page.locator('#st').getByText('Running locally').waitFor({ timeout: 45000 });
+await previousCanvas.dispose();
 await page.locator('#camera-state').getByText('Camera off').waitFor();
 const denied = await browser.newPage();
 await denied.addInitScript(() => Object.defineProperty(navigator, 'mediaDevices', {
