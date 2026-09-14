@@ -18,10 +18,10 @@ If you want to encrypt your report (recommended for sensitive findings),
 use the GPG keys of the release signers — the same people who sign the
 firmware releases:
 
-| Person | GPG key | Key location |
-|--------|---------|--------------|
-| k9ert | `28B358A8843B0109` | <https://github.com/k9ert.gpg> |
-| Mike Tolkachev (@miketlk) | `DD5C1264EBD645BE` | <https://github.com/miketlk.gpg> |
+| Person | GPG key fingerprint | Key location |
+|--------|---------------------|--------------|
+| k9ert | `ECC0 B4AB D74E 716F 5ADE 0952 28B3 58A8 843B 0109` | <https://github.com/k9ert.gpg> |
+| Mike Tolkachev (@miketlk) | `F2DB C4C6 14C1 13E2 B15F 879A DD5C 1264 EBD6 45BE` | <https://github.com/miketlk.gpg> |
 
 For non-sensitive issues you can also open a public issue on
 [GitHub](https://github.com/cryptoadvance/specter-diy/issues). Please do
@@ -29,8 +29,12 @@ not disclose vulnerability details there — anything that could put users'
 funds at risk belongs in an (ideally encrypted) e-mail first, until a fix
 is released.
 
-The release hash manifests (`sha256.signed.txt`) are signed with the
-"Specter Signer 2026" key, controlled by k9ert, fingerprint
+The release hash manifests (`sha256.signed.txt`) are signed by one of the
+release signers above; which key was used for a given release is stated in
+that release's notes. As of v1.10.5 the manifest is signed with Mike
+Tolkachev's key from the table above
+(`F2DB C4C6 14C1 13E2 B15F 879A DD5C 1264 EBD6 45BE`). v1.10.3–v1.10.4 used a
+dedicated "Specter Signer 2026" key controlled by k9ert, fingerprint
 `9DC3 3CA8 3058 9DE3 B322 5C26 EEF5 756B 2EA4 2349`
 ([Ubuntu keyserver](http://keyserver.ubuntu.com/pks/lookup?op=get&search=0x9dc33ca830589de3b3225c26eef5756b2ea42349)).
 
@@ -40,7 +44,7 @@ In scope:
 
 - The Specter-DIY firmware (this repository)
 - The secure bootloader ([specter-bootloader](https://github.com/cryptoadvance/specter-bootloader))
-- The smartcard applets
+- The smartcard applets ([specter-javacard](https://github.com/cryptoadvance/specter-javacard))
 - The build and release pipeline
 
 Out of scope:

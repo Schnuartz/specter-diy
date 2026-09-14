@@ -88,14 +88,18 @@ After the initial installation, the device only accepts signed firmware:
 The **initial** installation is the trust-critical step, because the
 bootloader is not installed at the factory — you flash it yourself:
 
-1. Verify the PGP signature of `sha256.signed.txt`. Since v1.10.3 the
-   hash file is signed with the **"Specter Signer 2026"** key,
-   controlled by k9ert
-   (fingerprint `9DC3 3CA8 3058 9DE3 B322 5C26 EEF5 756B 2EA4 2349`,
-   available from the
-   [Ubuntu keyserver](http://keyserver.ubuntu.com/pks/lookup?op=get&search=0x9dc33ca830589de3b3225c26eef5756b2ea42349)).
-   Older releases were signed with [Stepan's release
-   key](https://stepansnigirev.com/ss-specter-release.asc).
+1. Verify the PGP signature of `sha256.signed.txt`. The signing key varies
+   by release — check the release notes for which one applies:
+   - **v1.10.5**: Mike Tolkachev (@miketlk), fingerprint
+     `F2DB C4C6 14C1 13E2 B15F 879A DD5C 1264 EBD6 45BE`, key at
+     <https://github.com/miketlk.gpg> (also listed in
+     [SECURITY.md](https://github.com/cryptoadvance/specter-diy/blob/master/SECURITY.md)).
+   - **v1.10.3–v1.10.4**: the **"Specter Signer 2026"** key, controlled by
+     k9ert (fingerprint `9DC3 3CA8 3058 9DE3 B322 5C26 EEF5 756B 2EA4 2349`,
+     available from the
+     [Ubuntu keyserver](http://keyserver.ubuntu.com/pks/lookup?op=get&search=0x9dc33ca830589de3b3225c26eef5756b2ea42349)).
+   - **Older releases**: [Stepan's release
+     key](https://stepansnigirev.com/ss-specter-release.asc).
 2. Verify the hash of `initial_firmware_<version>.bin` against the signed
    hash file.
 3. Flash from a computer you trust.
@@ -162,14 +166,38 @@ enabling readout protection (see "Readout and write protection").
 Brute-force protection is enforced on the device:
 
 - At most **10 PIN attempts** are allowed; afterwards the device wipes
-  itself.
+  itself. Note: in the current implementation the attempt counter is
+  decremented and persisted *before* the PIN is checked, so the 10th
+  attempt already triggers the wipe without verifying the PIN first —
+  effectively 9 verification attempts instead of the intended 10 (fail-safe
+  direction; a correct PIN entered on the 10th attempt still wipes).
 - The PIN check is an HMAC keyed with the internal secret, so the PIN
   cannot be brute-forced offline from flash contents alone.
 - The PIN state file is authenticated; tampering with it triggers a wipe
   as well.
+- The wipe erases the internal flash of the MCU — it does **not** erase
+  the smartcard. The card relies on its own attempt counter and bricks
+  itself when exhausted. Note that if the card holds the secret in
+  encrypted form, wiping the device makes the card's data permanently
+  inaccessible anyway, because the card-encryption key is derived from
+  the device secret that was just destroyed.
 
-Choose a PIN that is not trivially guessable — 10 attempts are few, but
-"1234"-style PINs are still a bad idea.
+Two more properties of the PIN check are worth knowing:
+
+- **There is no key stretching.** Deriving keys from the PIN costs a
+  single SHA-256. On the device this is fine — the attempt limit stops
+  online guessing. But if an attacker reads out the internal flash (the
+  exact thing readout protection is meant to prevent), the attempt limit
+  no longer applies and PINs can be tried offline at full hardware speed:
+  a 4-digit PIN falls in milliseconds, a 6-digit PIN in seconds.
+- **There is no time-based delay** between attempts. The persistent,
+  fail-closed attempt counter is the only rate limit — it cannot be reset
+  by power-cycling the device.
+
+**Choose a long PIN.** Because offline brute-force is the realistic worst
+case (flash readout without RDP), do not rely on the 10-attempt limit
+alone: use 8 or more digits. "1234"-style PINs are unacceptable, and even
+6 digits offer little resistance against an offline attack.
 
 ## Secret storage modes
 
@@ -198,9 +226,11 @@ Specter-DIY supports three storage modes:
   on the card either encrypted (bound to this device) or as plaintext
   (portable to any Specter-DIY after PIN entry).
 - **Internal flash ("reckless" mode)** — **not recommended for real
-  funds.** The mnemonic is stored AEAD-encrypted in the flash of the
-  main MCU, with a key derived from your PIN and the internal device
-  secret, and it is protected by the PIN attempt limit described above.
+  funds.** The mnemonic is stored encrypted and authenticated in the
+  flash of the main MCU (AES-CBC + HMAC-SHA256, encrypt-then-MAC — the
+  same construction as for wallet files), with a key derived from your
+  PIN and the internal device secret, and it is protected by the PIN
+  attempt limit described above.
   But this is fundamentally a software-only barrier: the main MCU is not
   a secure element, and a sufficiently equipped attacker with physical
   access should be considered able to extract the flash contents (see
@@ -211,6 +241,25 @@ Specter-DIY supports three storage modes:
 Whatever mode you use: your recovery phrase backup is the ultimate
 fallback. The device can always be wiped, lost or destroyed — make sure
 your mnemonic is backed up safely and independently of the device.
+
+## BIP-39 passphrases
+
+Specter-DIY supports an optional BIP-39 passphrase (sometimes called the
+"25th word") that is combined with your recovery phrase to derive the
+wallet keys. Properties worth understanding before you use one:
+
+- The passphrase is **never stored** on the device or the smartcard —
+  only the mnemonic is saved. You enter the passphrase whenever the key
+  is loaded.
+- A passphrase-protected wallet is a completely different wallet: a
+  different fingerprint, different xpubs, different addresses. There is
+  no way to prove that a passphrase wallet does or does not exist, which
+  gives you plausible deniability and protects you if someone finds your
+  mnemonic backup.
+- The flip side: if you forget the passphrase, the funds are
+  irrecoverable — your mnemonic backup alone is not enough. And because
+  you type it on the touchscreen, it can be observed (shoulder-surfing,
+  smudges), so treat it like a password.
 
 ## Generation of the recovery phrase
 
@@ -243,17 +292,43 @@ codebase but is not actively maintained.
 
 The following rules apply to transactions that the wallet will sign:
 
-- If mixed inputs from different wallets are found, the user is warned
-  ([attack](https://blog.trezor.io/details-of-the-multisig-change-address-issue-and-its-mitigation-6370ad73ed2a)).
+- Before signing, the device lists every input together with the name of
+  the wallet it belongs to and its amount, so you can see exactly which
+  of your wallets is spending. Inputs that belong to a wallet the device
+  does **not** know are shown as "Unknown wallet" and trigger an explicit
+  warning, because the device cannot verify change for them. If a
+  transaction spends inputs from more than one wallet group, the device
+  shows an explicit mixed-inputs warning at the top of the transaction
+  confirmation, so it is visible without scrolling.
+  This also applies when known-wallet and unknown-wallet inputs are mixed:
+  the unknown-wallet warning is shown and the mixed-inputs warning is
+  included in the transaction confirmation. The warning is particularly
+  intended to mitigate the class of multisig/mixed-input change-address
+  [attack](https://blog.trezor.io/details-of-the-multisig-change-address-issue-and-its-mitigation-6370ad73ed2a).
 - Change outputs show the name of the wallet they are sent to.
 - To use a multisig or miniscript wallet you first need to import the
   wallet by adding the wallet descriptor (over QR, USB or SD card). The
   device only signs for wallets it knows.
 
-Change is verified for you automatically: the device identifies change
-outputs against the imported wallet descriptor and labels them with the
-wallet name. What the device cannot check is the *recipient* — so always
-verify the receive address and the transaction details (amounts, fees)
+Change is verified for you automatically only when there is one unambiguous
+spending wallet, its descriptor has exactly two branches, the output
+derivation resolves to branch-list position 1, and the device re-derives the
+exact output script from that branch and index. Every other output remains
+visible, including receive-branch self-payments and outputs from unusual
+descriptors. The branch position is not the raw child-number value in the
+descriptor.
+
+The Bitcoin transaction does not contain an `is_change` flag. A PSBT may carry
+host-supplied BIP32 or Taproot derivation metadata, but that metadata is
+untrusted and is checked against the locally stored descriptor and the actual
+output script. If a branch-1 wallet claim does not match, the output remains
+visible and the device displays: `Invalid change metadata! Host claimed this
+output as wallet change, but it does not match your wallet. Verify the
+destination.` This reports inconsistent host metadata; it does not claim that
+Bitcoin marked the output as change.
+
+What the device cannot check is the *recipient* of an unverified output — so
+always verify the receive address and the transaction details (amounts, fees)
 on the device screen. The screen is the trusted output channel, the host
 computer is not.
 
@@ -292,6 +367,14 @@ sign something you didn't confirm on the device screen.
 - Without the smartcard, a sufficiently equipped attacker with prolonged
   physical access to the device should be considered able to extract
   secrets from the main MCU (see "Threat model").
+- Transaction warnings are currently implemented in several different
+  places rather than in one central pipeline: the device warns about
+  unknown wallets in the inputs, about mixed-wallet inputs, about sighash
+  flags other than SIGHASH_ALL (offering to sign SIGHASH_ALL inputs only),
+  about transactions that were already signed, and about address indexes
+  beyond the wallet's gap limit. Brainstorming / open work: consolidate
+  these checks into a single warning pipeline and maintain a complete list
+  of everything the device verifies before signing.
 
 ## Reporting vulnerabilities
 
