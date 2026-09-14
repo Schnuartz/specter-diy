@@ -87,6 +87,8 @@ resolves the prefix against that PR's current full head SHA before checking out
 source. If the head changes to a different prefix before publication, the
 publisher ignores the stale run. Seven characters are convenient but are not
 globally unique; use a longer prefix when comparing closely spaced revisions.
+Whitespace around the inputs is ignored. If the SHA does not match the PR's
+current head, the target job reports the current prefix and stops the build.
 The CLI helper needs only the PR number and reads the SHA itself:
 
 ```sh
