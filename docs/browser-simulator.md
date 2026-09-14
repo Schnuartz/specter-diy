@@ -59,7 +59,9 @@ The existing `Build` workflow now runs native tests, builds Unix and STM32
 firmware, builds the browser simulator, and runs browser/QR/SD/Smartcard smoke
 tests. It checks out the exact PR head SHA. The browser and firmware artifacts
 carry separate `source.json` records. The build workflow has **read-only**
-repository permissions and no deployment secret.
+repository permissions and no deployment secret. PR builds use browser tooling
+from their trusted base commit while compiling the PR's actual Specter source;
+this also supports older PR heads that do not yet contain the `web/` tooling.
 
 A separate `Publish browser simulator` workflow runs from the trusted default
 branch after `Build` completes. It verifies that the browser manifest, its
@@ -67,7 +69,9 @@ artifact hashes, the firmware hashes, and both provenance records identify the
 same still-current PR head. It never executes the downloaded build. A passing
 default-branch build updates the stable Pages root; a passing PR build updates
 `/pr/<number>/` and a single PR comment with links to the simulator, firmware
-artifact, and build log. A failed current PR build removes its stale preview
+artifact, and build log. The publisher also puts the direct simulator link in
+its Actions run summary, above the artifact list. A failed current PR build
+removes its stale preview
 and replaces that one comment with a failure notice, even when it uploaded no
 artifacts. Missing or invalid artifacts from a nominally successful run also
 invalidate its current PR preview. The failure path identifies the PR from the
@@ -77,6 +81,14 @@ superseded by a newer PR commit cannot replace the current preview. The
 publisher keeps an
 `gh-pages` branch as static state and uses `actions/deploy-pages` to deploy the
 complete tree. PRs receive no write token or deployment credentials.
+
+The published simulator also offers a **Download matching test firmware** link
+beside its build label. The publisher writes only a small `firmware-link.json`
+that points to the firmware artifact from the *same Build run*. It does not
+compile firmware again or embed firmware binaries in the Pages deployment. The
+page shows the link only if its source repository and full commit match the
+browser manifest. GitHub may require a signed-in account to download an Actions
+artifact, and the link stops working when GitHub's artifact retention expires.
 
 ### Rebuild an older open PR without a commit
 

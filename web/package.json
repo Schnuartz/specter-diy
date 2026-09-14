@@ -1,7 +1,7 @@
 {
   "private": true,
   "scripts": {
-    "test:browser": "node tests/test-site.mjs && node tests/test-qr.mjs && node tests/test-camera.mjs && node tests/test-card.mjs",
+    "test:browser": "node tests/test-site.mjs && node tests/test-firmware-link.mjs && node tests/test-qr.mjs && node tests/test-camera.mjs && node tests/test-card.mjs",
     "test:compat": "node tests/test-compat.mjs"
   },
   "devDependencies": {

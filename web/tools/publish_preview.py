@@ -40,9 +40,17 @@ def api(method: str, path: str, body=None):
     return json.loads(content) if content else None
 
 
-def find_current_pr(run: dict) -> dict | None:
+def find_current_pr(run: dict, repository: str | None = None) -> dict | None:
     """Identify a current PR using GitHub metadata, never a build artifact."""
     associated = run.get("pull_requests") or []
+    if repository:
+        # A head commit can belong to PRs in both this fork and upstream.
+        # workflow_run.pull_requests carries both numbers; only URLs for this
+        # repository may be queried with this publisher's API base.
+        associated = [item for item in associated if
+                      isinstance(item.get("url"), str) and
+                      item["url"].lower() ==
+                      f"https://api.github.com/repos/{repository}/pulls/{item.get('number')}".lower()]
     event_heads = {}
     if associated:
         numbers = {item.get("number") for item in associated}
@@ -155,7 +163,9 @@ def validate_bundles(browser: Path, firmware: Path, sha: str, repo: str) -> dict
     return manifest
 
 
-def publish_files(web: Path, pages: Path, number: int | None, sha: str):
+def publish_files(web: Path, pages: Path, number: int | None, sha: str,
+                  firmware_url: str | None = None, source_repo: str | None = None,
+                  build_repo: str | None = None):
     pages = pages.resolve()
     target = pages / "pr" / str(number) if number else pages
     if not target.resolve().is_relative_to(pages) or pages == target and number:
@@ -173,6 +183,13 @@ def publish_files(web: Path, pages: Path, number: int | None, sha: str):
     index = target / "index.html"
     contents = index.read_text().replace('./browser/site.js"', f'./browser/site.js?v={sha[:12]}"')
     index.write_text(contents)
+    if firmware_url:
+        (target / "firmware-link.json").write_text(json.dumps({
+            "source_repository": source_repo,
+            "source_commit": sha,
+            "build_repository": build_repo,
+            "firmware_url": firmware_url,
+        }, indent=2) + "\n")
     (pages / ".nojekyll").touch()
 
 
@@ -184,6 +201,37 @@ def artifact_id(run_id: int, name: str) -> int:
     return found[0]
 
 
+def pages_url(number: int | None) -> str:
+    repo = os.environ["GITHUB_REPOSITORY"]
+    owner, name = repo.split("/", 1)
+    suffix = f"pr/{number}/" if number else ""
+    return f"https://{owner.lower()}.github.io/{name}/{suffix}"
+
+
+def write_summary(state: dict):
+    """Put the live URL on the Actions run, where users see the artifacts."""
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    if state.get("skip"):
+        body = "## Specter browser simulator\n\nThis run is stale; no preview was changed.\n"
+    elif state["published"]:
+        label = f"PR #{state['number']} simulator" if state["number"] else "stable simulator"
+        body = ("## Specter browser simulator\n\n"
+                f"▶ **[Open {label}]({pages_url(state['number'])})**\n\n")
+        if state.get("firmware_url"):
+            body += f"⬇️ [Download matching test firmware]({state['firmware_url']})\n\n"
+        body += (f"Source commit: `{state['sha'][:12]}` · "
+                 f"[Build logs]({state['run_url']})\n\n"
+                 "⚠️ Use test seeds only. Never enter a real seed phrase.\n")
+    else:
+        body = ("## Specter browser simulator\n\n"
+                "No preview was published for this build. "
+                f"[Inspect build logs]({state['run_url']}).\n")
+    with open(path, "a", encoding="utf-8") as summary:
+        summary.write(body)
+
+
 def comment(state: dict):
     number = state.get("number")
     if not number:
@@ -191,12 +239,10 @@ def comment(state: dict):
     run_url = state["run_url"]
     sha = state["sha"]
     if state["published"]:
-        repo = os.environ["GITHUB_REPOSITORY"]
-        pages_owner = repo.split("/")[0].lower()
-        pages_url = f"https://{pages_owner}.github.io/{repo.split('/')[1]}/pr/{number}/"
-        firmware_url = f"{run_url}/artifacts/{artifact_id(state['run_id'], 'firmware-binaries')}"
+        firmware_url = state.get("firmware_url") or \
+            f"{run_url}/artifacts/{artifact_id(state['run_id'], 'firmware-binaries')}"
         body = (f"{MARKER}\n🧪 **Specter PR Build** · `{sha[:12]}` ✅\n\n"
-                f"🖥️ [Open browser simulator]({pages_url})\n\n"
+                f"🖥️ [Open browser simulator]({pages_url(number)})\n\n"
                 f"⬇️ [Download firmware from the same commit]({firmware_url})\n\n"
                 f"🔧 [Build workflow and logs]({run_url})\n\n"
                 "⚠️ **Experimental development build.** Never use real funds or enter a real seed phrase. "
@@ -237,7 +283,7 @@ def prepare(args):
     browser = Path(args.browser)
     firmware = Path(args.firmware)
     if run["event"] in ("pull_request", "workflow_dispatch"):
-        pr = (find_current_pr(run) if run["event"] == "pull_request"
+        pr = (find_current_pr(run, repository) if run["event"] == "pull_request"
               else find_current_manual_pr(run, repository,
                                           event["repository"]["default_branch"]))
         if not pr:
@@ -267,13 +313,16 @@ def prepare(args):
             if run["event"] == "workflow_dispatch" and \
                     manifest.get("platform_commit") != run["head_sha"]:
                 raise ValueError("Browser tooling does not match dispatch commit")
+            state["firmware_url"] = (f"{run['html_url']}/artifacts/"
+                                     f"{artifact_id(run['id'], 'firmware-binaries')}")
         except Exception as error:
             # Artifact content is untrusted data. Any missing or malformed
             # artifact makes this current PR build unpublishable.
             state["reason"] = f"Build artifacts unavailable or invalid: {error}"
             print(state["reason"])
         else:
-            publish_files(browser / "web", pages, number, sha)
+            publish_files(browser / "web", pages, number, sha,
+                          state["firmware_url"], repo, repository)
             state["published"] = True
     if number and not state["published"]:
         target = pages.resolve() / "pr" / str(number)
@@ -297,6 +346,7 @@ def main():
         print(prepare(args))
     else:
         state = json.loads(Path(args.state).read_text())
+        write_summary(state)
         if not state.get("skip"):
             comment(state)
 

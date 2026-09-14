@@ -42,7 +42,7 @@ if len(sys.argv) > 4 and sys.argv[4] == "mockui":
     manifest["entrypoint"] = "mockui"
     manifest["capabilities"]["smartcard_type"] = "MockUI virtual card"
 elif len(sys.argv) > 4:
-    manifest["platform_repository"] = repository
+    manifest["platform_repository"] = sys.argv[5] if len(sys.argv) > 5 else repository
     manifest["platform_commit"] = sys.argv[4]
 (output / "build-info.json").write_text(json.dumps(manifest, indent=2) + "\n")
 pointer = {
