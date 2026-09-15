@@ -335,8 +335,13 @@ class WalletManager(BaseApp):
 
     async def verify_address_in_wallet(self, wallet, address, show_screen, batch_size=25):
         addr_to_check = address.strip()
-        if addr_to_check.lower().startswith(("bc1", "tb1", "bcrt1")):
-            target = addr_to_check.lower()
+        address_lower = addr_to_check.lower()
+        if (
+            address_lower.startswith("bc1")
+            or address_lower.startswith("tb1")
+            or address_lower.startswith("bcrt1")
+        ):
+            target = address_lower
             normalize = lambda a: a.lower()
         else:
             target = addr_to_check
