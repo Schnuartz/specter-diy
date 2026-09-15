@@ -7,6 +7,7 @@ import json
 import shutil
 import sys
 import unittest
+from urllib.parse import quote
 from unittest.mock import patch
 from types import SimpleNamespace
 
@@ -111,7 +112,8 @@ class PublisherTests(unittest.TestCase):
             return [pr]
         with patch.object(publish_preview, "api", side_effect=list_pulls):
             self.assertEqual(publish_preview.find_current_pr(run), pr)
-            self.assertIn("head=Schnuartz%3Afeature", calls[0])
+            owner = REPO.split("/", 1)[0]
+            self.assertIn(f"head={quote(f'{owner}:feature', safe='')}", calls[0])
             run["head_repository"] = {"full_name": "other-user/specter-diy"}
             self.assertIsNone(publish_preview.find_current_pr(run))
             run["head_repository"] = {"full_name": REPO}
