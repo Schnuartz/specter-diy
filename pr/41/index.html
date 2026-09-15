@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Specter DIY — Browser Simulator</title>
+  <meta name="description" content="Run the real Specter DIY firmware locally in your browser. Test seeds only; this simulator is not a hardware wallet.">
+  <style>
+    :root {
+      --specter-dark: #04070B;
+      --specter-dark-secondary: #1E2734;
+      --specter-dark-accent: #0C1A27;
+      --specter-light: #FCFCFC;
+      --specter-light-secondary: #D1D5DB;
+      --specter-primary: #1F99E5;
+      --specter-coral: #FF7A7A;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      background: var(--specter-dark);
+      color: var(--specter-light);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+    header {
+      background: var(--specter-dark-accent);
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--specter-dark-secondary);
+    }
+    .header-left { display: flex; align-items: center; gap: 10px; }
+    .header-left img { height: 24px; }
+    .header-left strong { font-size: 14px; letter-spacing: 0.02em; }
+    .header-right { display: flex; align-items: center; gap: 10px; }
+    .nav-link { color: var(--specter-light-secondary); text-decoration: none; font-size: 12px; }
+    .nav-link:hover { color: var(--specter-primary); }
+
+    /* Status dot */
+    .status { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--specter-light-secondary); }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: #f44; }
+    .dot.on { background: #4c5; }
+
+    /* Phone container */
+    .page {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 16px 12px 32px;
+      gap: 14px;
+    }
+
+    @media (max-width: 600px) {
+      .page {
+        padding: 8px 4px 32px;
+        gap: 10px;
+      }
+    }
+
+    .phone-wrapper {
+      position: relative;
+      width: 100%;
+      max-width: 380px;
+    }
+
+    /* On mobile: fill full viewport height so device is life-size.
+       Mockup is portrait (479x905 = 0.529 ratio), so width = height * 0.529 */
+    @media (max-width: 600px) {
+      .phone-wrapper {
+        height: calc(100svh - 54px);
+        width: calc((100svh - 54px) * 0.529);
+        max-width: 96vw;
+        /* If width exceeds viewport, constrain by width instead */
+      }
+      .phone-wrapper .phone-mockup {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+      }
+    }
+
+    /* CTA section */
+    .cta-section {
+      width: 100%;
+      max-width: 380px;
+      text-align: center;
+      padding: 8px 4px 0;
+    }
+    .cta-headline {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--specter-light);
+      margin-bottom: 6px;
+      line-height: 1.3;
+    }
+    .cta-sub {
+      font-size: 13px;
+      color: var(--specter-light-secondary);
+      margin-bottom: 16px;
+      line-height: 1.5;
+    }
+    .cta-benefits {
+      list-style: none;
+      padding: 0;
+      margin: 0 0 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .cta-benefits li {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      font-size: 13px;
+      color: var(--specter-light-secondary);
+      text-align: left;
+    }
+    .cta-benefits li .icon {
+      font-size: 18px;
+      line-height: 1;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+    .cta-benefits li strong {
+      color: var(--specter-light);
+      display: block;
+      font-size: 13px;
+      margin-bottom: 1px;
+    }
+    .cta-buy-btn {
+      display: block;
+      width: 100%;
+      padding: 14px;
+      border-radius: 9999px;
+      font-size: 15px;
+      font-weight: 700;
+      text-align: center;
+      background: var(--specter-primary);
+      color: #fff;
+      text-decoration: none;
+      transition: opacity 0.2s;
+      min-height: 48px;
+      line-height: 1.2;
+    }
+    .cta-buy-btn:hover { opacity: 0.88; }
+
+    /* The LVGL canvas sits UNDER the existing device mockup image. */
+    #screen-overlay {
+      position: absolute;
+      /* Screen cutout in mockup (479x905): x≈62..423, y≈164..758.
+         Overlay extends ~2px under the opaque bezel (z-index 1 < 2)
+         so there is no visible gap between bezel and screen. */
+      left: calc(12.5% + 2px);
+      top: calc(17.9% + 2px);
+      width: 76.0%;
+      height: 66.0%;
+      z-index: 1;
+      overflow: hidden;
+      background: #000;
+      border-radius: 4px;
+    }
+
+    /* Mockup image on top — pointer-events: none so clicks go through */
+    .phone-mockup {
+      position: relative;
+      width: 100%;
+      display: block;
+      z-index: 2;
+      pointer-events: none;
+      user-select: none;
+    }
+
+    /* Loading overlay inside the screen */
+    #loading {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: #000;
+      color: var(--specter-light-secondary);
+      font-size: 13px;
+      gap: 10px;
+      z-index: 10;
+    }
+    .spinner {
+      width: 28px; height: 28px;
+      border: 3px solid #333;
+      border-top-color: var(--specter-primary);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Restart button */
+    .restart-btn {
+      display: block;
+      width: 100%;
+      max-width: 380px;
+      padding: 14px;
+      border-radius: 9999px;
+      font-size: 15px;
+      font-weight: 600;
+      text-align: center;
+      background: transparent;
+      color: var(--specter-coral);
+      border: 2px solid var(--specter-coral);
+      cursor: pointer;
+      min-height: 48px;
+      transition: background 0.2s;
+    }
+    .restart-btn:hover, .restart-btn:active {
+      background: rgba(255,122,122,.1);
+    }
+    .restart-btn:disabled {
+      opacity: 0.5;
+    }
+
+    /* Status card */
+    .status-card {
+      width: 100%;
+      max-width: 380px;
+      background: var(--specter-dark-secondary);
+      border-radius: 10px;
+      padding: 12px 16px;
+      font-size: 12px;
+      color: var(--specter-light-secondary);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .status-card a { color: var(--specter-primary); text-decoration: none; font-size: 12px; }
+
+    .warning, .sim-panel {
+      width: 100%; max-width: 380px; border-radius: 10px; padding: 14px;
+      background: var(--specter-dark-secondary); color: var(--specter-light-secondary);
+      font-size: 13px; line-height: 1.45;
+    }
+    .warning { border: 1px solid var(--specter-coral); }
+    .warning strong { color: var(--specter-coral); display: block; margin-bottom: 4px; }
+    .sim-panel h2 { color: var(--specter-light); font-size: 15px; margin-bottom: 8px; }
+    .sim-panel h3 { color: var(--specter-light); font-size: 13px; margin: 12px 0 6px; }
+    .sim-panel p { margin: 5px 0; }
+    .sim-panel button, .sim-panel select {
+      background: var(--specter-dark-accent); color: var(--specter-light);
+      border: 1px solid #536174; border-radius: 6px; padding: 8px;
+      cursor: pointer; margin: 3px 3px 3px 0; min-height: 36px;
+    }
+    .sim-panel button:hover { border-color: var(--specter-primary); }
+    .sim-panel a { color: var(--specter-primary); }
+    .sim-panel details { margin-top: 10px; }
+    .sim-panel pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; max-height: 180px; overflow: auto; }
+    #sd-drop { border: 1px dashed #536174; border-radius: 8px; padding: 10px; margin-top: 7px; }
+    #sd-drop.dragging { border-color: var(--specter-primary); }
+    #sd-files { list-style: none; max-height: 180px; overflow: auto; }
+    #sd-files li { display: flex; align-items: center; gap: 3px; overflow-wrap: anywhere; margin-top: 4px; }
+    #sd-files li span { flex: 1; min-width: 0; }
+    #camera-preview { width: 100%; max-height: 180px; object-fit: contain; background: #000; margin-top: 5px; }
+    #camera-screen { position:absolute; inset:0; z-index:4; background:#070d12; color:#fff; }
+    #camera-screen[hidden], #camera-screen video[hidden], #camera-preview[hidden] { display:none; }
+    #camera-screen video { width:100%; height:100%; object-fit:cover; }
+    .camera-screen-chrome { position:absolute; inset:0; display:flex; flex-direction:column; justify-content:space-between; pointer-events:none; padding:18px 10px; background:linear-gradient(#050a10a8,transparent 25%,transparent 70%,#050a10b5); }
+    .camera-screen-chrome strong { font-size:14px; text-align:center; }
+    .camera-screen-chrome button { pointer-events:auto; align-self:center; background:#1f99e5; color:white; border:0; border-radius:999px; padding:11px 18px; font-weight:700; cursor:pointer; }
+    .camera-screen-chrome .camera-back { background:#18202c; font-size:11px; padding:8px 12px; }
+    .camera-reticle { position:absolute; width:66%; aspect-ratio:1; border:2px solid #ffffffb8; border-radius:17px; left:17%; top:40%; transform:translateY(-50%); box-shadow:0 0 0 200px #0002; pointer-events:none; }
+    #camera-screen:not(.active) .camera-reticle { display:none; }
+    #camera-screen.active #camera-screen-start { display:none; }
+    .peripheral-card { border:1px solid #3b4a5e; border-radius:12px; background:linear-gradient(135deg,#111c2b,#202d3e); padding:12px; margin:9px 0; }
+    .sd-stage { display:flex; align-items:center; gap:16px; min-height:100px; }
+    .sd-card-graphic { width:84px; height:84px; object-fit:contain; flex:none; filter:drop-shadow(5px 7px 7px #0008); transition:transform .25s ease,filter .25s ease; }
+    .sd-stage.inserted .sd-card-graphic { transform:translateY(-5px) rotate(-5deg); filter:drop-shadow(0 9px 10px #1f99e588); }
+    .sd-stage span { line-height:1.45; }
+    .card-tray { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin:12px 0; }
+    .card-tray > div { min-width:0; }
+    .smartcard-graphic { background:linear-gradient(145deg,#fff,#d9e1e7); color:#13263a; border-radius:9px; aspect-ratio:1.55; padding:8px; box-shadow:0 5px 14px #0005; display:flex; flex-direction:column; justify-content:space-between; transition:transform .25s ease,box-shadow .25s ease; }
+    .smartcard-graphic::before { content:'▦'; color:#b7a56a; font-size:18px; line-height:1; }
+    .smartcard-graphic strong { font-size:10px; }
+    .card-tray .inserted .smartcard-graphic { transform:translateY(-6px); box-shadow:0 8px 18px #1f99e578; outline:2px solid #1f99e5; }
+    .sim-panel .smartcard-graphic { cursor:pointer; border:0; width:100%; text-align:left; margin:0; background:linear-gradient(145deg,#fff,#d9e1e7); color:#13263a; }
+    .sim-panel .smartcard-graphic:hover { border:0; box-shadow:0 7px 18px #1f99e579; }
+    .card-tray .card-hint { color:#aab8c8; display:block; font-size:10px; margin-top:6px; text-align:center; }
+    @media (max-width:600px) { .card-tray { gap:5px; } .smartcard-graphic { padding:5px; } }
+
+    footer {
+      text-align: center;
+      padding: 16px;
+      color: var(--specter-light-secondary);
+      font-size: 11px;
+    }
+    footer a { color: var(--specter-primary); text-decoration: none; }
+    .embedded header, .embedded .cta-section, .embedded footer { display:none; }
+    .embedded, .embedded body { min-height:0; }
+    .embedded .page { padding:10px 12px 22px; }
+    .embedded .phone-wrapper { max-width:330px; }
+    .gallery .page { display:block; width:100%; padding:0; }
+    .gallery, .gallery body { background:transparent; }
+    .gallery .warning, .gallery .restart-btn, .gallery .sim-panel, .gallery .status-card { display:none; }
+    .gallery .phone-wrapper { max-width:100%; }
+    .gallery .phone-wrapper .phone-mockup { width:100%; height:auto; }
+    @media (min-width:900px) {
+      .page { display:grid; grid-template-columns:380px 380px; grid-template-areas:'warning warning' 'device peripherals' 'restart peripherals' 'cta cta'; gap:16px 22px; width:100%; max-width:822px; margin:auto; align-items:start; }
+      .warning { grid-area:warning; max-width:none; }
+      .phone-wrapper { grid-area:device; }
+      .restart-btn { grid-area:restart; }
+      .sim-panel { grid-area:peripherals; }
+      .cta-section { grid-area:cta; justify-self:center; }
+      .embedded .page { grid-template-columns:330px 380px; max-width:760px; }
+      .gallery .page { display:block; max-width:none; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="header-left">
+    <img src="./assets/specter-logo.png" alt="Specter">
+    <strong>Specter DIY</strong>
+  </div>
+  <div class="header-right">
+    <a href="https://github.com/Schnuartz/specter-diy" class="nav-link">Source on GitHub</a>
+    <div class="status">
+      <div class="dot" id="dot"></div>
+      <span id="st">Starting locally&hellip;</span>
+    </div>
+  </div>
+</header>
+
+<div class="page">
+
+  <div class="warning" role="note">
+    <strong>EXPERIMENTAL DEVELOPMENT BUILD — NEVER ENTER A REAL SEED PHRASE.</strong>
+    This browser simulator and any matching test firmware are unreleased development builds. Never use them with real funds. The simulator has none of the security or air-gap guarantees of physical hardware. Use test seeds and dedicated test devices only.
+  </div>
+
+  <!-- The real Specter LVGL display renders inside the existing device frame. -->
+  <div class="phone-wrapper">
+    <div id="screen-overlay">
+      <div id="camera-screen" hidden>
+        <video id="camera-screen-video" autoplay playsinline muted hidden></video>
+        <div class="camera-reticle"></div>
+        <div class="camera-screen-chrome">
+          <strong>Scan a QR code with Specter</strong>
+          <button id="camera-screen-start">Enable camera</button>
+          <button id="camera-screen-back" class="camera-back">Show Specter screen</button>
+        </div>
+      </div>
+      <div id="loading">
+        <div class="spinner"></div>
+        <span>Loading simulator&hellip;</span>
+      </div>
+    </div>
+    <!-- Device frame on top (pointer-events: none) -->
+    <img src="./assets/Specter-Shield-Metal-mockup.png" class="phone-mockup" alt="Specter Shield Metal device">
+  </div>
+
+  <button class="restart-btn" id="restart-btn">
+    &#x1F504; Restart Simulator
+  </button>
+
+  <section class="sim-panel" aria-label="Simulator and peripherals">
+    <h2>Simulator <span style="font-size:11px;color:#7c9">Running locally in your browser</span></h2>
+    <p id="build-label">Loading build information…</p>
+    <p id="isolation-warning" hidden></p>
+    <div class="peripheral-card">
+      <h3>Virtual SD card <span id="sd-state">Ejected</span></h3>
+      <div id="sd-stage" class="sd-stage"><img class="sd-card-graphic" src="./assets/sd-card-32gb.png" alt="DK 32 GB SD card"><span>Session-only · files stay in this tab</span></div>
+      <button id="sd-toggle">Insert SD card</button>
+      <button id="sd-add">Add files</button>
+      <button id="sd-clear">Clear card</button>
+      <input id="sd-picker" type="file" multiple hidden>
+      <div id="sd-drop">Drop files here, or use Add files.</div>
+      <ul id="sd-files"><li>No files on the virtual card</li></ul>
+    </div>
+    <h3>Camera / QR scanner</h3>
+    <p id="camera-state">Camera off</p>
+    <button id="camera-toggle">Show backup preview</button>
+    <select id="camera-select" aria-label="Select camera" hidden></select>
+    <video id="camera-preview" autoplay playsinline muted hidden></video>
+    <div id="card-panel" hidden>
+      <h3>Virtual Smartcards</h3>
+      <p>Click a card to insert or remove it. Right-click a card to reset its contents. Restart Specter after changing Smartcard storage.</p>
+      <div id="card-slots" class="card-tray"></div>
+    </div>
+    <details>
+      <summary>Technical details</summary>
+      <p>Source commit: <a id="build-link" href="#">Loading…</a></p>
+      <p>Restart keeps simulated flash, SD and Smartcard contents in this tab. Factory reset wipes flash and keeps peripherals. Clear, eject or reset them separately.</p>
+      <button id="factory-btn">Factory reset simulated flash</button>
+      <pre id="build-details"></pre>
+      <pre id="debug-log"></pre>
+    </details>
+  </section>
+
+</div>
+
+<footer>
+  <p>Experimental Specter DIY browser build &middot; <a href="https://github.com/Schnuartz/specter-diy">Source on GitHub</a></p>
+</footer>
+
+<script src="./assets/jsQR-1.4.0.js"></script>
+<script type="module" src="./browser/site.js?v=a5ac483cb991"></script>
+</body>
+</html>
