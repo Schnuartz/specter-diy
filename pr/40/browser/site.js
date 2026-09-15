@@ -22,6 +22,7 @@ const loadingSteps = [...loading.querySelectorAll('[data-loading-step]')];
 const debug = $('#debug-log');
 const fileList = $('#sd-files');
 const picker = $('#sd-picker');
+const sdCapacity = $('#sd-capacity');
 const video = $('#camera-preview');
 const screenVideo = $('#camera-screen-video');
 const screenCamera = $('#camera-screen');
@@ -34,6 +35,9 @@ let version;
 let program = 'wallet';
 let stateFiles = [];
 let inserted = false;
+const SD_CAPACITY_BYTES = 8_000_000_000;
+let sdUsedBytes = 0;
+let sdFileSizes = new Map();
 let activeCard = null;
 let cameraStream;
 let cameraLoop;
@@ -51,7 +55,7 @@ let forceCanvasBridge = false;
 let recoveryTimer;
 let startupPhase = 'manifest';
 let displayMode = 'unselected';
-const workerRevision = '2026-09-15.1';
+const workerRevision = '2026-09-15.2';
 let runGeneration = 0;
 let restartPromise;
 let startupStartedAt;
@@ -217,7 +221,16 @@ function drawFrame(pixels) {
   }
   softwareContext.putImageData(softwareFrame, 0, 0);
 }
-function renderFiles(files) {
+function formatBytes(bytes) {
+  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(bytes === SD_CAPACITY_BYTES ? 0 : 2)} GB`;
+  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
+  if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
+function renderFiles(files, capacityBytes = SD_CAPACITY_BYTES, usedBytes) {
+  sdFileSizes = new Map(files.map(file => [file.path, file.size]));
+  sdUsedBytes = Number.isFinite(usedBytes) ? usedBytes : files.reduce((total, file) => total + file.size, 0);
+  sdCapacity.textContent = `8 GB capacity · ${formatBytes(sdUsedBytes)} used · ${formatBytes(Math.max(0, capacityBytes - sdUsedBytes))} free`;
   fileList.replaceChildren();
   if (!files.length) {
     const empty = document.createElement('li');
@@ -322,7 +335,10 @@ function onWorkerMessage({ data }, generation = runGeneration) {
     crashRecover(`WebAssembly.Abort: ${data.message}\n${data.stack || ''}`, generation);
   } else if (data.type === 'operation-error') {
     log(`${data.operation}: ${data.message}`);
-    if (data.operation.startsWith('sd-')) $('#sd-state').textContent = `SD error: ${data.message}`;
+    if (data.operation.startsWith('sd-')) {
+      $('#sd-state').textContent = data.code === 'ENOSPC' ? 'SD full (8 GB)' : `SD error: ${data.message}`;
+      if (Number.isFinite(data.usedBytes)) renderFiles(data.files || [], data.capacityBytes, data.usedBytes);
+    }
   } else if (data.type === 'sd-state') {
     inserted = data.inserted;
     $('#sd-state').textContent = inserted ? 'Inserted' : 'Ejected';
@@ -333,7 +349,8 @@ function onWorkerMessage({ data }, generation = runGeneration) {
     $('#sd-stage').classList.toggle('inserted', inserted);
     notifyParent({ type: 'peripheral-state', variant, sdInserted: inserted, cardSlot: activeCard });
   } else if (data.type === 'sd-list') {
-    renderFiles(data.files);
+    renderFiles(data.files, data.capacityBytes, data.usedBytes);
+    if ($('#sd-state').textContent.startsWith('SD ')) $('#sd-state').textContent = inserted ? 'Inserted' : 'Ejected';
   } else if (data.type === 'sd-file') {
     const blob = new Blob([data.bytes]);
     const url = URL.createObjectURL(blob);
@@ -508,8 +525,16 @@ if (embedded) {
   new ResizeObserver(() => notifyParent({ type: 'child-height', height: document.body.scrollHeight })).observe(document.body);
 }
 async function importFiles(files) {
+  let projected = sdUsedBytes;
+  const projectedSizes = new Map(sdFileSizes);
   for (const file of files) {
     try {
+      const name = file.name;
+      projected = projected - (projectedSizes.get(name) || 0) + file.size;
+      if (projected > SD_CAPACITY_BYTES) {
+        throw new Error(`Virtual SD card is full: imported files would exceed its 8 GB capacity`);
+      }
+      projectedSizes.set(name, file.size);
       const bytes = await file.arrayBuffer();
       send({ type: 'sd-import', name: file.name, bytes }, [bytes]);
     } catch (error) {
