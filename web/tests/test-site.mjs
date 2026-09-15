@@ -145,6 +145,10 @@ const crashPage = await browser.newPage();
 await crashPage.route('**/browser/runtime-worker.js*', route => route.abort());
 await crashPage.goto(base);
 await crashPage.locator('#st').getByText('Simulator error').waitFor({ timeout: 15000 });
+if (!await crashPage.locator('[data-loading-actions]').isVisible()) throw new Error('Loading error actions are not visible');
+if (!/Elapsed \d+\.\d+ s/.test(await crashPage.locator('[data-loading-timer]').textContent())) throw new Error('Loading timer is missing');
+await crashPage.locator('[data-loading-details]').click();
+if (!await crashPage.locator('details').evaluate(details => details.open)) throw new Error('Technical details did not open from loading error');
 await crashPage.close();
 
 const mobile = await browser.newContext({ viewport: { width: 390, height: 844 },

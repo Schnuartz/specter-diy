@@ -13,6 +13,12 @@ const canvasBox = $('#screen-overlay');
 const status = $('#st');
 const dot = $('#dot');
 const loading = $('#loading');
+const loadingTitle = loading.querySelector('[data-loading-title]');
+const loadingLabel = loading.querySelector('[data-loading-label]');
+const loadingBar = loading.querySelector('[data-loading-bar]');
+const loadingTimer = loading.querySelector('[data-loading-timer]');
+const loadingActions = loading.querySelector('[data-loading-actions]');
+const loadingSteps = [...loading.querySelectorAll('[data-loading-step]')];
 const debug = $('#debug-log');
 const fileList = $('#sd-files');
 const picker = $('#sd-picker');
@@ -40,6 +46,8 @@ let lastQrAt = 0;
 let lastScanFrameAt = 0;
 let startupTimer;
 let startupStage = 'waiting for the browser worker';
+let startupStartedAt;
+let startupTicker;
 let requestId = 0;
 const snapshots = new Map();
 
@@ -60,6 +68,44 @@ function setStatus(message, running = false) {
   status.textContent = message;
   dot.classList.toggle('on', running);
 }
+function stopLoadingClock() {
+  if (startupTicker !== undefined) clearInterval(startupTicker);
+  startupTicker = undefined;
+}
+function updateLoadingClock() {
+  if (startupStartedAt === undefined) return;
+  loadingTimer.textContent = `Elapsed ${((performance.now() - startupStartedAt) / 1000).toFixed(1)} s`;
+}
+function startLoadingClock() {
+  stopLoadingClock();
+  startupStartedAt = performance.now();
+  updateLoadingClock();
+  startupTicker = setInterval(updateLoadingClock, 100);
+}
+function showLoading(stage = 'runtime', message = 'Preparing the browser runtime…', progress = 12) {
+  loading.classList.remove('error');
+  loadingTitle.textContent = 'Starting Specter Simulator';
+  loadingLabel.textContent = message;
+  loadingActions.hidden = true;
+  loadingBar.style.width = `${progress}%`;
+  loadingBar.parentElement.setAttribute('aria-valuenow', String(progress));
+  const order = { runtime: 0, firmware: 1, display: 2 };
+  const active = order[stage] ?? 0;
+  loadingSteps.forEach((step, index) => { step.classList.toggle('active', index === active); step.classList.toggle('done', index < active); });
+  loading.style.display = 'flex';
+  startLoadingClock();
+}
+function showLoadingError(message) {
+  stopLoadingClock();
+  loading.classList.add('error');
+  loadingTitle.textContent = 'Specter could not start';
+  loadingLabel.textContent = String(message).split('\n', 1)[0];
+  loadingBar.style.width = '100%';
+  loadingBar.parentElement.setAttribute('aria-valuenow', '100');
+  loadingActions.hidden = false;
+  loadingSteps.forEach(step => { step.classList.remove('active'); step.classList.add('done'); });
+  loading.style.display = 'flex';
+}
 function bootStage(stage) {
   startupStage = stage;
   clearTimeout(startupTimer);
@@ -76,11 +122,7 @@ function failure(message) {
   worker?.terminate();
   worker = undefined;
   setStatus('Simulator error');
-  loading.style.display = 'flex';
-  loading.replaceChildren();
-  const text = document.createElement('p');
-  text.textContent = message;
-  loading.append(text);
+  showLoadingError(message);
   log(message);
   notifyParent({ type: 'simulator-error', variant, message });
 }
@@ -183,6 +225,7 @@ function renderCards(slots) {
 function onWorkerMessage({ data }) {
   if (data.type === 'running') {
     clearTimeout(startupTimer);
+    stopLoadingClock();
     loading.style.display = 'none';
     setStatus('Running locally', true);
     send({ type: 'sd-list' });
@@ -190,9 +233,9 @@ function onWorkerMessage({ data }) {
     notifyParent({ type: 'simulator-running', variant });
   } else if (data.type === 'log') {
     log(data.message);
-    if (data.message === 'SPECTER_BROWSER_BOOT') bootStage('the firmware entry point');
-    else if (data.message === 'SPECTER_IMPORTS_DONE') bootStage('firmware imports');
-    else if (data.message === 'SPECTER_MAIN_IMPORTED') bootStage('loading Specter');
+    if (data.message === 'SPECTER_BROWSER_BOOT') { bootStage('the firmware entry point'); loadingLabel.textContent = 'Loading the Specter firmware…'; loadingBar.style.width = '62%'; loadingSteps.forEach((step, index) => { step.classList.toggle('active', index === 1); step.classList.toggle('done', index < 1); }); }
+    else if (data.message === 'SPECTER_IMPORTS_DONE') { bootStage('firmware imports'); loadingLabel.textContent = 'Preparing the display…'; loadingBar.style.width = '78%'; }
+    else if (data.message === 'SPECTER_MAIN_IMPORTED') { bootStage('loading Specter'); loadingLabel.textContent = 'Drawing the first Specter screen…'; loadingBar.style.width = '90%'; loadingSteps.forEach((step, index) => { step.classList.toggle('active', index === 2); step.classList.toggle('done', index < 2); }); }
   } else if (data.type === 'wasm-ready') {
     bootStage('initializing WebAssembly');
   } else if (data.type === 'debug') {
@@ -272,8 +315,7 @@ async function start() {
     failure('This browser cannot create a 2D display canvas.');
     return;
   }
-  loading.style.display = 'flex';
-  loading.innerHTML = '<div class="spinner"></div><span>Starting Specter on this device…</span>';
+  showLoading('runtime', 'Starting Specter on this device…', 12);
   setStatus('Starting locally');
   const workerUrl = new URL('runtime-worker.js', import.meta.url);
   workerUrl.searchParams.set('v', version);
@@ -430,6 +472,13 @@ function scanFrame() {
 
 $('#restart-btn').onclick = () => restart(false);
 $('#factory-btn').onclick = () => restart(true);
+loading.querySelector('[data-loading-retry]').onclick = () => restart(false);
+loading.querySelector('[data-loading-details]').onclick = event => {
+  event.preventDefault();
+  const details = document.querySelector('details');
+  details.open = true;
+  details.scrollIntoView({ behavior: 'smooth', block: 'center' });
+};
 $('#sd-toggle').onclick = () => send({ type: inserted ? 'sd-eject' : 'sd-insert' });
 $('#sd-clear').onclick = () => send({ type: 'sd-clear' });
 $('#sd-add').onclick = () => picker.click();

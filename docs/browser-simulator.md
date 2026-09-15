@@ -24,6 +24,12 @@ HTTPS or localhost and browser permission. Some browser versions need the
 local Unix simulator; physical-device camera, secure element, air-gap,
 STM32 timing, battery, and physical card properties are not simulated.
 
+During startup the device screen shows the active runtime phase, a progress
+bar, and an elapsed timer. If a worker, WASM asset, or display initialization
+fails, the same panel changes to an actionable error state with Retry,
+Technical details, and Legacy mode links. This keeps slow mobile loads visible
+and avoids leaving a user with an indistinguishable black screen.
+
 ## Build locally
 
 From a recursive checkout of this repository on Linux or WSL:
