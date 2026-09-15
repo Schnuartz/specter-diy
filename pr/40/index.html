@@ -191,6 +191,8 @@
       text-align: center;
     }
     .loading-shell { width: min(100%, 280px); display:flex; flex-direction:column; align-items:center; gap:10px; }
+    .loading-title, .loading-label { max-width:100%; overflow-wrap:anywhere; }
+    #loading.error { overflow:auto; justify-content:safe center; }
     .loading-title { color:#fff; font-size:15px; font-weight:700; letter-spacing:.01em; }
     .loading-label { min-height:32px; color:var(--specter-light-secondary); font-size:12px; line-height:1.4; }
     .loading-progress { width:100%; height:5px; overflow:hidden; border-radius:999px; background:#252525; }
@@ -202,6 +204,7 @@
     .loading-actions { display:flex; flex-wrap:wrap; justify-content:center; gap:7px; margin-top:3px; }
     .loading-actions button, .loading-actions a { border:1px solid #52677e; border-radius:6px; padding:7px 9px; color:#e8eef6; background:#182535; font:inherit; font-size:11px; text-decoration:none; cursor:pointer; }
     .loading-actions button:hover, .loading-actions a:hover { border-color:var(--specter-primary); }
+    #loading.error .spinner { display:none; }
     #loading.error .loading-title { color:var(--specter-coral); }
     #loading.error .loading-progress span { background:var(--specter-coral); }
     .spinner {
@@ -440,7 +443,7 @@
       <p>Click a card to insert or remove it. Right-click a card to reset its contents. Restart Specter after changing Smartcard storage.</p>
       <div id="card-slots" class="card-tray"></div>
     </div>
-    <details>
+    <details id="technical-details">
       <summary>Technical details</summary>
       <p>Source commit: <a id="build-link" href="#">Loading…</a></p>
       <p>Restart keeps simulated flash, SD and Smartcard contents in this tab. Factory reset wipes flash and keeps peripherals. Clear, eject or reset them separately.</p>
@@ -457,6 +460,6 @@
 </footer>
 
 <script src="./assets/jsQR-1.4.0.js"></script>
-<script type="module" src="./browser/site.js?v=de55d907350f"></script>
+<script type="module" src="./browser/site.js?v=087e352dffbe"></script>
 </body>
 </html>

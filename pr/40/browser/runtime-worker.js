@@ -6,6 +6,51 @@ let scannerActive = false;
 let program = 'wallet';
 self.screen = { width: 480, height: 800 };
 const send = (type, details = {}) => postMessage({ type, ...details });
+const workerRevision = '2026-09-15.1';
+let fatalReported = false;
+function reportError(error, source, details = {}) {
+  if (fatalReported) return;
+  fatalReported = true;
+  send('worker-error', { name: error?.name || 'WorkerError', message: error?.message || String(error),
+    stack: error?.stack, source, ...details });
+}
+send('diagnostic', { event: 'worker-created', workerRevision, userAgent: navigator.userAgent,
+  crossOriginIsolated: self.crossOriginIsolated, hardwareConcurrency: navigator.hardwareConcurrency,
+  deviceMemory: navigator.deviceMemory ?? 'unavailable', OffscreenCanvas: typeof OffscreenCanvas,
+  requestAnimationFrame: typeof self.requestAnimationFrame });
+// Observe the actual Emscripten requests without cloning the large WASM response.
+const nativeFetch = self.fetch.bind(self);
+self.fetch = async (input, options) => {
+  const url = String(input?.url || input);
+  const started = performance.now();
+  send('diagnostic', { event: 'asset-request', url, method: options?.method || 'GET' });
+  try {
+    const response = await nativeFetch(input, options);
+    const mime = response.headers.get('content-type');
+    send('diagnostic', { event: 'asset-response', url, status: response.status, mime,
+      cacheControl: response.headers.get('cache-control'), contentLength: response.headers.get('content-length'),
+      elapsedMs: Math.round(performance.now() - started) });
+    if (!response.ok) throw new Error(`HTTP ${response.status} loading ${url}`);
+    if (/\.wasm(?:\?|$)/.test(url) && !/^application\/wasm(?:;|$)/i.test(mime || '')) {
+      send('diagnostic', { event: 'mime-warning', message: `WASM MIME ${mime}; Emscripten will use ArrayBuffer compilation`, url });
+    }
+    return response;
+  } catch (error) {
+    reportError(error, 'asset-fetch', { url });
+    throw error;
+  }
+};
+self.addEventListener('error', event => {
+  reportError(event.error || new Error(event.message || 'Unhandled worker error'), 'worker.error', {
+    filename: event.filename,
+    lineno: event.lineno,
+    colno: event.colno,
+  });
+});
+self.addEventListener('unhandledrejection', event => {
+  reportError(event.reason, 'unhandledrejection');
+  event.preventDefault();
+});
 
 function relativePath(name) {
   if (typeof name !== 'string' || !name || name.startsWith('/') ||
@@ -161,64 +206,79 @@ function handle(data) {
     send('operation-error', { operation: data.type, message: String(error) });
   }
 }
-onmessage = ({ data }) => {
+onmessage = async ({ data }) => {
   if (data.type !== 'start') {
     if (runtimeReady) handle(data); else pending.push(data);
     return;
   }
-  const canvas = data.canvas;
-  program = data.program === 'mockui' ? 'mockui' : 'wallet';
-  const headlessDisplay = Boolean(data.headlessDisplay);
-  const assetSuffix = data.version ? `?v=${encodeURIComponent(data.version)}` : '';
-  if (canvas) {
-    canvas.style = {};
-    canvas.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0,
-      width: canvas.width, height: canvas.height });
+  try {
+    const canvas = data.canvas;
+    program = data.program === 'mockui' ? 'mockui' : 'wallet';
+    const headlessDisplay = Boolean(data.headlessDisplay);
+    const assetSuffix = data.version ? `?v=${encodeURIComponent(data.version)}` : '';
+    send('diagnostic', { event: 'start-received', workerRevision, build: data.build, version: data.version,
+      display: headlessDisplay ? 'Canvas-Pixelbridge' : 'OffscreenCanvas', canvasGetContext: typeof canvas?.getContext });
+    if (canvas) {
+      canvas.style = {};
+      canvas.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0,
+        width: canvas.width, height: canvas.height });
+    }
+    const noop = () => {};
+    self.document = {
+      addEventListener: noop, removeEventListener: noop,
+      getElementById: id => id === 'screen' || id === 'canvas' ? canvas : null,
+      querySelector: selector => selector === '#screen' || selector === '#canvas' ? canvas : null,
+      body: { addEventListener: noop, removeEventListener: noop, style: {} },
+      documentElement: { addEventListener: noop, removeEventListener: noop, style: {} },
+    };
+    self.window = self;
+    self.Module = {
+      canvas,
+      headlessDisplay,
+      arguments: ['-X', 'heapsize=64M', data.sdProbe ? '/browser/sd-probe.py' : data.qrProbe ? '/browser/qr-probe.py' : data.cardProbe ? '/browser/card-probe.py' : data.diag ? '/browser/diagnose.py' : data.program === 'mockui' ? '/browser/mockui-boot.py' : '/browser/boot.py', '/state'],
+      monitorRunDependencies: remaining => send('loading-progress', { remaining }),
+      locateFile: path => data.build + path + assetSuffix,
+      preRun: [() => {
+        const fs = Module.FS;
+        mkdirs(fs, '/state');
+        mkdirs(fs, '/state/sd');
+        mkdirs(fs, '/state/cards');
+        mkdirs(fs, '/bridge');
+        for (const file of data.stateFiles || []) {
+          if (!file.path || file.path.startsWith('ramdisk/')) continue;
+          const name = relativePath(file.path);
+          const path = program === 'mockui' && name.startsWith('flash/') ? `/${name}` : `/state/${name}`;
+          mkdirs(fs, path.substring(0, path.lastIndexOf('/')));
+          fs.writeFile(path, new Uint8Array(file.bytes));
+        }
+        if (data.sdInserted) fs.writeFile('/bridge/sd-inserted', new Uint8Array([1]));
+        if (data.cardSlot) fs.writeFile('/bridge/card-slot', new Uint8Array([cardSlot(data.cardSlot)]));
+      }],
+      print: message => {
+        send('log', { message });
+        if (message === 'SPECTER_MAIN_IMPORTED' || message === 'MOCKUI_READY' || message === 'DIAG_SPECTER_CREATED' || message === 'QR_PROBE_READY' || message === 'SD_PROBE_WRITTEN' || message === 'CARD_PROBE_READY') {
+          runtimeReady = true;
+          for (const item of pending.splice(0)) handle(item);
+          setInterval(flushQr, 50);
+          setInterval(pollScanner, 80);
+          pollScanner();
+          setTimeout(() => send('running'), 500);
+        }
+      },
+      printErr: message => send('debug', { message }),
+      onAbort: reason => {
+        if (!fatalReported) {
+          fatalReported = true;
+          send('abort', { message: String(reason), stack: new Error(String(reason)).stack });
+        }
+      },
+      onRuntimeInitialized: () => send('wasm-ready', { memoryBytes: Module.HEAPU8?.buffer.byteLength }),
+    };
+    // importScripts does not expose HTTP headers. HEAD checks the script without
+    // buffering another copy or altering classic-worker script execution.
+    await self.fetch(data.build + 'micropython.js' + assetSuffix, { method: 'HEAD' });
+    importScripts(data.build + 'micropython.js' + assetSuffix);
+  } catch (error) {
+    reportError(error, 'runtime-start');
   }
-  const noop = () => {};
-  self.document = {
-    addEventListener: noop, removeEventListener: noop,
-    getElementById: id => id === 'screen' || id === 'canvas' ? canvas : null,
-    querySelector: selector => selector === '#screen' || selector === '#canvas' ? canvas : null,
-    body: { addEventListener: noop, removeEventListener: noop, style: {} },
-    documentElement: { addEventListener: noop, removeEventListener: noop, style: {} },
-  };
-  self.window = self;
-  self.Module = {
-    canvas,
-    headlessDisplay,
-    arguments: ['-X', 'heapsize=64M', data.sdProbe ? '/browser/sd-probe.py' : data.qrProbe ? '/browser/qr-probe.py' : data.cardProbe ? '/browser/card-probe.py' : data.diag ? '/browser/diagnose.py' : data.program === 'mockui' ? '/browser/mockui-boot.py' : '/browser/boot.py', '/state'],
-    locateFile: path => data.build + path + assetSuffix,
-    preRun: [() => {
-      const fs = Module.FS;
-      mkdirs(fs, '/state');
-      mkdirs(fs, '/state/sd');
-      mkdirs(fs, '/state/cards');
-      mkdirs(fs, '/bridge');
-      for (const file of data.stateFiles || []) {
-        if (!file.path || file.path.startsWith('ramdisk/')) continue;
-        const name = relativePath(file.path);
-        const path = program === 'mockui' && name.startsWith('flash/') ? `/${name}` : `/state/${name}`;
-        mkdirs(fs, path.substring(0, path.lastIndexOf('/')));
-        fs.writeFile(path, new Uint8Array(file.bytes));
-      }
-      if (data.sdInserted) fs.writeFile('/bridge/sd-inserted', new Uint8Array([1]));
-      if (data.cardSlot) fs.writeFile('/bridge/card-slot', new Uint8Array([cardSlot(data.cardSlot)]));
-    }],
-    print: message => {
-      send('log', { message });
-      if (message === 'SPECTER_MAIN_IMPORTED' || message === 'MOCKUI_READY' || message === 'DIAG_SPECTER_CREATED' || message === 'QR_PROBE_READY' || message === 'SD_PROBE_WRITTEN' || message === 'CARD_PROBE_READY') {
-        runtimeReady = true;
-        for (const item of pending.splice(0)) handle(item);
-        setInterval(flushQr, 50);
-        setInterval(pollScanner, 80);
-        pollScanner();
-        setTimeout(() => send('running'), 500);
-      }
-    },
-    printErr: message => send('debug', { message }),
-    onAbort: reason => send('abort', { message: String(reason) }),
-    onRuntimeInitialized: () => send('wasm-ready'),
-  };
-  importScripts(data.build + 'micropython.js' + assetSuffix);
 };

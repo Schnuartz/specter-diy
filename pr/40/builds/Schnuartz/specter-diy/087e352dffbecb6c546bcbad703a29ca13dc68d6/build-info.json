@@ -1,7 +1,7 @@
 {
   "repository": "Schnuartz/specter-diy",
   "source_url": "https://github.com/Schnuartz/specter-diy",
-  "commit": "de55d907350fc767d997002814fffe333dee3b1f",
+  "commit": "087e352dffbecb6c546bcbad703a29ca13dc68d6",
   "branch": null,
   "build_type": "Browser / WebAssembly",
   "firmware_version": "v1.10.5",
@@ -12,7 +12,7 @@
   "experimental": true,
   "toolchain": "Emscripten 3.1.74",
   "artifact_set_sha256": "73c05ee08aa288644bf19e9cdcd6384059c9d3e0d1cae8ffd93c6cb072177d1d",
-  "built_at": "2026-09-15T12:22:05.356464+00:00",
+  "built_at": "2026-09-15T14:37:32.938535+00:00",
   "artifacts": {
     "micropython.js": {
       "bytes": 430891,
