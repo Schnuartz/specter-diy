@@ -33,7 +33,9 @@
     }
     .header-left { display: flex; align-items: center; gap: 10px; }
     .header-left img { height: 24px; }
-    .header-left strong { font-size: 14px; letter-spacing: 0.02em; }
+    .header-brand { display:flex; flex-direction:column; gap:2px; line-height:1; }
+    .header-brand strong { font-size: 14px; letter-spacing: 0.02em; }
+    .header-brand small { color:var(--specter-primary); font-size:9px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; }
     .header-right { display: flex; align-items: center; gap: 10px; }
     .nav-link { color: var(--specter-light-secondary); text-decoration: none; font-size: 12px; }
     .nav-link:hover { color: var(--specter-primary); }
@@ -340,7 +342,7 @@
 <header>
   <div class="header-left">
     <img src="./assets/specter-logo.png" alt="Specter">
-    <strong>Specter DIY</strong>
+    <div class="header-brand"><strong>Specter DIY</strong><small>Simulator</small></div>
   </div>
   <div class="header-right">
     <a href="https://github.com/Schnuartz/specter-diy" class="nav-link">Source on GitHub</a>
@@ -426,6 +428,6 @@
 </footer>
 
 <script src="./assets/jsQR-1.4.0.js"></script>
-<script type="module" src="./browser/site.js?v=a36f8a95384f"></script>
+<script type="module" src="./browser/site.js?v=8569bb5467fa"></script>
 </body>
 </html>
