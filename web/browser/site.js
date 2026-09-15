@@ -45,14 +45,20 @@ let lastQr = '';
 let lastQrAt = 0;
 let lastScanFrameAt = 0;
 let startupTimer;
-let startupStage = 'waiting for the browser worker';
+let requestId = 0;
+let workerDependencyCount = null;
+let forceCanvasBridge = false;
+let recoveryTimer;
+let startupPhase = 'manifest';
+let displayMode = 'unselected';
+const workerRevision = '2026-09-15.1';
+let runGeneration = 0;
+let restartPromise;
 let startupStartedAt;
 let startupTicker;
-let forceCanvasBridge = false;
-let crashRetriesLeft = 2;
-let requestId = 0;
 const snapshots = new Map();
-const mobileDevice = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+
+const startupTimeoutMs = 60000;
 
 function buildIdentity(manifest) {
   const parts = [];
@@ -65,11 +71,22 @@ function buildIdentity(manifest) {
 }
 
 function log(message) {
-  debug.textContent = `${String(message)}\n${debug.textContent}`.slice(0, 7000);
+  debug.textContent += `[${new Date().toISOString()}] ${String(message)}\n`;
 }
+log(JSON.stringify({ userAgent: navigator.userAgent, crossOriginIsolated,
+  hardwareConcurrency: navigator.hardwareConcurrency, deviceMemory: navigator.deviceMemory ?? 'unavailable',
+  devicePixelRatio, touch: navigator.maxTouchPoints, Worker: typeof Worker, WebAssembly: typeof WebAssembly,
+  OffscreenCanvas: typeof OffscreenCanvas, transferControlToOffscreen: typeof HTMLCanvasElement.prototype.transferControlToOffscreen,
+  canvas2D: Boolean(document.createElement('canvas').getContext('2d')), workerRevision }));
+addEventListener('error', event => log(`Page error: ${event.error?.stack || event.message}`));
+addEventListener('unhandledrejection', event => log(`Page unhandledrejection: ${event.reason?.stack || event.reason}`));
 function setStatus(message, running = false) {
   status.textContent = message;
   dot.classList.toggle('on', running);
+}
+function clearStartupTimer() {
+  if (startupTimer !== undefined) clearTimeout(startupTimer);
+  startupTimer = undefined;
 }
 function stopLoadingClock() {
   if (startupTicker !== undefined) clearInterval(startupTicker);
@@ -94,63 +111,69 @@ function showLoading(stage = 'runtime', message = 'Preparing the browser runtime
   loadingBar.parentElement.setAttribute('aria-valuenow', String(progress));
   const order = { runtime: 0, firmware: 1, display: 2 };
   const active = order[stage] ?? 0;
-  loadingSteps.forEach((step, index) => { step.classList.toggle('active', index === active); step.classList.toggle('done', index < active); });
+  loadingSteps.forEach((step, index) => {
+    step.classList.toggle('active', index === active);
+    step.classList.toggle('done', index < active);
+  });
   loading.style.display = 'flex';
   startLoadingClock();
 }
 function showLoadingError(message) {
   stopLoadingClock();
   loading.classList.add('error');
-  loadingTitle.textContent = 'Specter could not start';
-  loadingLabel.textContent = String(message).split('\n', 1)[0];
+  loadingTitle.textContent = String(message).split('\n', 1)[0]
+    .replace(/(?:https?:\/\/|\/builds\/)[^\s)]+/g, url => {
+      try { return new URL(url, location.href).pathname.split('/').pop(); } catch { return url; }
+    });
+  loadingLabel.textContent = `Phase: ${startupPhase} · Display: ${displayMode} · Worker: ${workerRevision} · Build: ${version || 'unknown'}`;
   loadingBar.style.width = '100%';
   loadingBar.parentElement.setAttribute('aria-valuenow', '100');
   loadingActions.hidden = false;
   loadingSteps.forEach(step => { step.classList.remove('active'); step.classList.add('done'); });
   loading.style.display = 'flex';
 }
-function recoverWorker(message) {
-  clearTimeout(startupTimer);
-  stopLoadingClock();
-  worker?.terminate();
-  worker = undefined;
-  if (mobileDevice && !forceCanvasBridge) {
-    forceCanvasBridge = true;
-    log(`${message} - retrying with the mobile Canvas bridge`);
-    setStatus('Switching display mode…');
-    showLoading('display', 'Switching to the mobile display bridge…', 20);
-    setTimeout(start, 500);
-    return;
-  }
-  if (crashRetriesLeft > 0) {
-    crashRetriesLeft--;
-    log(`${message} - recovering (${crashRetriesLeft} ${crashRetriesLeft === 1 ? 'retry' : 'retries'} left)`);
-    setStatus('Recovering…');
-    showLoading('runtime', 'Recovering from a worker crash…', 12);
-    setTimeout(start, 500);
-    return;
-  }
-  failure(message);
-}
-function bootStage(stage) {
-  startupStage = stage;
-  clearTimeout(startupTimer);
-  startupTimer = setTimeout(() => failure(
-    `Specter did not finish loading after ${startupStage}. Open Technical details for the runtime log or use Legacy mode.`
-  ), 45000);
-}
-function failure(message) {
-  clearTimeout(startupTimer);
+function failure(message, generation = runGeneration) {
+  if (generation !== runGeneration) return;
+  runGeneration++;
+  clearTimeout(recoveryTimer);
+  clearStartupTimer();
   stopCamera();
+  clearTimeout(scannerStopTimer);
   scannerActive = false;
-  backupEnabled = false;
   screenCamera.hidden = true;
-  worker?.terminate();
+  const failedWorker = worker;
   worker = undefined;
+  failedWorker?.terminate();
   setStatus('Simulator error');
   showLoadingError(message);
   log(message);
   notifyParent({ type: 'simulator-error', variant, message });
+}
+// A failed OffscreenCanvas run gets one fresh worker using the LVGL pixel bridge.
+function crashRecover(message, generation = runGeneration) {
+  if (generation !== runGeneration) return;
+  log(`${message}\nPhase: ${startupPhase}; display: ${displayMode}; generation: ${generation}`);
+  clearStartupTimer();
+  clearTimeout(recoveryTimer);
+  stopCamera();
+  clearTimeout(scannerStopTimer);
+  scannerActive = false;
+  screenCamera.hidden = true;
+  worker?.terminate();
+  worker = undefined;
+  // Invalidate callbacks immediately, including duplicate error/abort events.
+  const recoveryGeneration = ++runGeneration;
+  if (program === 'wallet' && displayMode === 'OffscreenCanvas' && !forceCanvasBridge) {
+    forceCanvasBridge = true;
+    log('Retry 2/2: Canvas-Pixelbridge');
+    setStatus('Switching display mode…');
+    showLoading('display', 'Switching to Canvas-Pixelbridge…', 20);
+    recoveryTimer = setTimeout(() => {
+      if (recoveryGeneration === runGeneration) start();
+    }, 250);
+    return;
+  }
+  failure(message);
 }
 function send(message, transfer = []) {
   if (worker) worker.postMessage(message, transfer);
@@ -248,26 +271,55 @@ function renderCards(slots) {
     tray.append(row);
   }
 }
-function onWorkerMessage({ data }) {
-  if (data.type === 'running') {
-    clearTimeout(startupTimer);
+function setLoadingMessage(message) { loadingLabel.textContent = message; }
+function onWorkerMessage({ data }, generation = runGeneration) {
+  if (generation !== runGeneration) return;
+  if (data.type === 'loading-progress') {
+    workerDependencyCount = data.remaining;
+    const steps = data.remaining === 1 ? 'startup step' : 'startup steps';
+    setLoadingMessage(data.remaining > 0
+      ? `Loading Specter runtime… (${data.remaining} ${steps} remaining)`
+      : 'Starting Specter firmware…');
+    loadingBar.style.width = data.remaining > 0 ? '28%' : '48%';
+    loadingBar.parentElement.setAttribute('aria-valuenow', data.remaining > 0 ? '28' : '48');
+    loadingSteps.forEach((step, index) => { step.classList.toggle('active', index === 0); step.classList.toggle('done', false); });
+    setStatus('Loading runtime');
+  } else if (data.type === 'wasm-ready') {
+    startupPhase = 'firmware';
+    log(`wasm-ready; memoryBytes: ${data.memoryBytes ?? 'unavailable'}`);
+    setLoadingMessage('Starting Specter firmware…');
+    loadingBar.style.width = '48%';
+    loadingSteps.forEach((step, index) => { step.classList.toggle('active', index === 1); step.classList.toggle('done', index < 1); });
+  } else if (data.type === 'running') {
+    clearStartupTimer();
     stopLoadingClock();
     loading.style.display = 'none';
     setStatus('Running locally', true);
+    startupPhase = 'running';
+    log('running');
     send({ type: 'sd-list' });
     send({ type: 'card-list' });
     notifyParent({ type: 'simulator-running', variant });
   } else if (data.type === 'log') {
+    if (/^(SPECTER_|MOCKUI_)/.test(data.message)) startupPhase = data.message;
+    if (data.message === 'SPECTER_IMPORTS_DONE' || data.message === 'SPECTER_MAIN_IMPORTED') {
+      loadingBar.style.width = '85%';
+      setLoadingMessage('Drawing the Specter display…');
+      loadingSteps.forEach((step, index) => { step.classList.toggle('active', index === 2); step.classList.toggle('done', index < 2); });
+    }
     log(data.message);
-    if (data.message === 'SPECTER_BROWSER_BOOT') { bootStage('the firmware entry point'); loadingLabel.textContent = 'Loading the Specter firmware…'; loadingBar.style.width = '62%'; loadingSteps.forEach((step, index) => { step.classList.toggle('active', index === 1); step.classList.toggle('done', index < 1); }); }
-    else if (data.message === 'SPECTER_IMPORTS_DONE') { bootStage('firmware imports'); loadingLabel.textContent = 'Preparing the display…'; loadingBar.style.width = '78%'; }
-    else if (data.message === 'SPECTER_MAIN_IMPORTED') { bootStage('loading Specter'); loadingLabel.textContent = 'Drawing the first Specter screen…'; loadingBar.style.width = '90%'; loadingSteps.forEach((step, index) => { step.classList.toggle('active', index === 2); step.classList.toggle('done', index < 2); }); }
-  } else if (data.type === 'wasm-ready') {
-    bootStage('initializing WebAssembly');
+  } else if (data.type === 'diagnostic') {
+    if (data.event === 'worker-created') startupPhase = 'worker-ready';
+    if (data.event === 'asset-request') startupPhase = `loading ${new URL(data.url, location.href).pathname.split('/').pop()}`;
+    log(JSON.stringify(data));
   } else if (data.type === 'debug') {
     if (!data.message.includes('registerOrRemoveHandler')) log(data.message);
+  } else if (data.type === 'worker-error') {
+    const location = data.filename ? ` (${data.filename}:${data.lineno || 0}:${data.colno || 0})` : '';
+    const detail = `${data.message}${location}${data.url ? ` (${data.url})` : ''}\nSource: ${data.source || data.type}\n${data.stack || ''}`;
+    crashRecover(`${data.name || 'WorkerError'}: ${detail}`, generation);
   } else if (data.type === 'abort') {
-    recoverWorker(`WebAssembly runtime stopped: ${data.message}`);
+    crashRecover(`WebAssembly.Abort: ${data.message}\n${data.stack || ''}`, generation);
   } else if (data.type === 'operation-error') {
     log(`${data.operation}: ${data.message}`);
     if (data.operation.startsWith('sd-')) $('#sd-state').textContent = `SD error: ${data.message}`;
@@ -325,54 +377,106 @@ function onWorkerMessage({ data }) {
   }
 }
 async function start() {
-  if (!('Worker' in window)) {
-    failure('This browser needs Web Workers to run Specter locally.');
-    return;
+  clearTimeout(recoveryTimer);
+  clearStartupTimer();
+  worker?.terminate();
+  worker = undefined;
+  const generation = ++runGeneration;
+  try {
+    if (!('Worker' in window)) {
+      failure('This browser needs Web Workers to run Specter locally.');
+      return;
+    }
+    const canvas = newCanvas();
+    const transferable = !forceCanvasBridge && Boolean(canvas.transferControlToOffscreen);
+    displayMode = transferable ? 'OffscreenCanvas' : 'Canvas-Pixelbridge';
+    startupPhase = 'worker-create';
+    if (program === 'mockui' && !transferable) {
+      failure('This browser cannot run the Playground LVGL 9 display without OffscreenCanvas. Open the legacy Playground at /simulators/legacy/.');
+      const fallback = document.createElement('a');
+      fallback.href = '/simulators/legacy/';
+      fallback.textContent = 'Open legacy Playground';
+      loading.append(fallback);
+      return;
+    }
+    softwareContext = transferable ? undefined : canvas.getContext('2d');
+    softwareFrame = undefined;
+    if (!transferable && !softwareContext) {
+      failure('This browser cannot create a 2D display canvas.');
+      return;
+    }
+    showLoading('runtime', 'Starting Specter on this device…', 12);
+    setStatus('Starting locally');
+    clearStartupTimer();
+    const startedAt = performance.now();
+    workerDependencyCount = null;
+    // Mobile browsers may retain a worker script independently of the page
+    // shell. Tie it to the verified artifact set so a new deployment cannot
+    // combine an old worker with the current firmware manifest.
+    const workerUrl = new URL('runtime-worker.js', import.meta.url);
+    if (version) workerUrl.searchParams.set('v', version);
+    workerUrl.searchParams.set('worker', workerRevision);
+    log(`Starting ${workerUrl.href}; display: ${displayMode}; generation: ${generation}`);
+    worker = new Worker(workerUrl, { name: 'Specter DIY' });
+    worker.onmessage = event => {
+      if (generation === runGeneration) onWorkerMessage(event, generation);
+    };
+    worker.onerror = event => {
+      event.preventDefault();
+      crashRecover(`WorkerError: ${event.message || 'Worker script failed to load or process terminated'} (${event.filename || workerUrl.href}:${event.lineno || 0}:${event.colno || 0})\n${event.error?.stack || ''}`, generation);
+    };
+    worker.onmessageerror = () => {
+      crashRecover('DataCloneError: worker.onmessageerror could not deserialize a worker message', generation);
+    };
+    startupTimer = setTimeout(() => {
+      if (generation !== runGeneration) return;
+      const elapsed = Math.round((performance.now() - startedAt) / 1000);
+      const detail = workerDependencyCount > 0
+        ? `The WebAssembly runtime is still loading (${workerDependencyCount} startup ${workerDependencyCount === 1 ? 'step' : 'steps'} pending).`
+        : `The WebAssembly runtime did not report ready after ${elapsed} seconds.`;
+      crashRecover(`StartupTimeout: ${detail} Last phase: ${startupPhase}.`, generation);
+    }, startupTimeoutMs);
+    startupPhase = 'canvas-transfer';
+    const offscreen = transferable ? canvas.transferControlToOffscreen() : undefined;
+    send({ type: 'start', build, version, program, canvas: offscreen, headlessDisplay: !transferable,
+      stateFiles, sdInserted: inserted, cardSlot: activeCard, qrProbe: diagnosticQrProbe }, offscreen ? [offscreen] : []);
+    startupPhase = 'runtime-assets';
+  } catch (error) {
+    crashRecover(`${error.name}: ${error.message}\n${error.stack || ''}`, generation);
   }
-  const canvas = newCanvas();
-  const transferable = !forceCanvasBridge && Boolean(canvas.transferControlToOffscreen);
-  if (program === 'mockui' && !transferable) {
-    failure('This browser needs OffscreenCanvas to render this simulator build.');
-    return;
-  }
-  softwareContext = transferable ? undefined : canvas.getContext('2d');
-  softwareFrame = undefined;
-  if (!transferable && !softwareContext) {
-    failure('This browser cannot create a 2D display canvas.');
-    return;
-  }
-  showLoading('runtime', 'Starting Specter on this device…', 12);
-  setStatus('Starting locally');
-  const workerUrl = new URL('runtime-worker.js', import.meta.url);
-  workerUrl.searchParams.set('v', version);
-  worker = new Worker(workerUrl, { name: 'Specter DIY' });
-  worker.onmessage = onWorkerMessage;
-  worker.onerror = event => recoverWorker(`Worker crashed: ${event.message || 'unknown error'}`);
-  worker.onmessageerror = () => recoverWorker('Worker communication failed');
-  bootStage('starting the browser worker');
-  const offscreen = transferable ? canvas.transferControlToOffscreen() : undefined;
-  send({ type: 'start', build, version, program, canvas: offscreen, headlessDisplay: !transferable,
-    stateFiles, sdInserted: inserted, cardSlot: activeCard, qrProbe: diagnosticQrProbe }, offscreen ? [offscreen] : []);
 }
-function snapshot() {
-  if (!worker) return Promise.resolve(stateFiles);
+function snapshot(generation = runGeneration) {
+  if (!worker || generation !== runGeneration) return Promise.resolve(stateFiles);
   return new Promise(resolve => {
     const id = ++requestId;
     const timeout = setTimeout(() => { snapshots.delete(id); resolve(stateFiles); }, 3000);
-    snapshots.set(id, files => { clearTimeout(timeout); resolve(files); });
+    snapshots.set(id, files => {
+      clearTimeout(timeout);
+      resolve(generation === runGeneration ? files : stateFiles);
+    });
     send({ type: 'snapshot', requestId: id });
   });
 }
 async function restart(factory = false) {
-  stateFiles = await snapshot();
-  if (factory) stateFiles = stateFiles.filter(file => file.path.startsWith('sd/') || file.path.startsWith('cards/'));
-  stopCamera();
-  scannerActive = false;
-  backupEnabled = false;
-  screenCamera.hidden = true;
-  worker?.terminate();
-  worker = undefined;
-  await start();
+  if (restartPromise) return restartPromise;
+  restartPromise = (async () => {
+    stopCamera();
+    clearTimeout(scannerStopTimer);
+    scannerActive = false;
+    screenCamera.hidden = true;
+    const generation = runGeneration;
+    const previousWorker = worker;
+    const files = await snapshot(generation);
+    if (generation !== runGeneration) return;
+    stateFiles = factory ? files.filter(file => file.path.startsWith('sd/') || file.path.startsWith('cards/')) : files;
+    clearStartupTimer();
+    runGeneration++;
+    worker = undefined;
+    previousWorker?.terminate();
+    forceCanvasBridge = false;
+    await start();
+  })().finally(() => { restartPromise = undefined; });
+  return restartPromise;
 }
 let restoreResolve;
 addEventListener('message', async event => {
@@ -531,7 +635,10 @@ $('#camera-toggle').onclick = () => {
 $('#camera-screen-start').onclick = () => startCamera();
 $('#camera-screen-back').onclick = () => { screenCamera.hidden = true; };
 cameraSelect.onchange = () => startCamera(cameraSelect.value);
-addEventListener('pagehide', () => { stopCamera(); worker?.terminate(); });
+addEventListener('pagehide', () => {
+  runGeneration++; clearTimeout(recoveryTimer); clearStartupTimer(); stopLoadingClock();
+  stopCamera(); worker?.terminate(); worker = undefined;
+});
 
 try {
   stateFiles = await awaitPeripherals();
@@ -552,6 +659,7 @@ try {
   }
   if (!/^[a-f0-9]{40}$/.test(manifest.commit)) throw new Error('Invalid source commit in build manifest');
   program = manifest.entrypoint === 'mockui' ? 'mockui' : 'wallet';
+  log(`Firmware: ${manifest.commit}; build: ${version}; worker: ${workerRevision}`);
   const identity = buildIdentity(manifest);
   $('#build-label').textContent = `${manifest.repository} · ${identity} · Browser / WASM`;
   const commitUrl = `https://github.com/${manifest.repository}/commit/${manifest.commit}`;
@@ -566,5 +674,5 @@ try {
   await start();
 } catch (error) {
   if (!$('#source-commit-link').hasAttribute('href')) $('#source-commit-link').textContent = 'GitHub · unavailable';
-  failure(`Browser build failed to load: ${error.message}`);
+  failure(`${error.name}: Browser build failed to load: ${error.message}\n${error.stack || ''}`);
 }
