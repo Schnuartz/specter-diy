@@ -13,12 +13,13 @@ try {
     await page.route('**/browser/current.json', route => route.fulfill({ json: { build, version } }));
     await page.route('**/build-info.json', route => route.fulfill({ json: {
       repository, commit, artifact_set_sha256: `${version}${'0'.repeat(48)}`,
+      firmware_version: 'v1.10.3', pr_number: 6,
       source_url: 'https://example.invalid/should-not-be-used',
     } }));
     await page.route('**/browser/runtime-worker.js', route => route.abort());
     await page.goto(base, { waitUntil: 'domcontentloaded' });
     const link = page.locator('#source-commit-link');
-    await link.filter({ hasText: `GitHub · ${commit.slice(0, 7)}` }).waitFor();
+    await link.filter({ hasText: `GitHub · v1.10.3 · PR #6 · Commit ${commit.slice(0, 7)}` }).waitFor();
     const expectedUrl = `https://github.com/${repository}/commit/${commit}`;
     if (await link.getAttribute('href') !== expectedUrl) {
       throw new Error('Preview source link does not target the exact build commit');

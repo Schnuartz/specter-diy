@@ -124,6 +124,7 @@ jobs:
       EXPECTED_SHA: ${{ needs.target.outputs.sha }}
       SPECTER_SOURCE_REPOSITORY: ${{ needs.target.outputs.repository }}
       BROWSER_PLATFORM_COMMIT: ${{ github.event_name == 'workflow_dispatch' && github.sha || '' }}
+      BROWSER_PR_NUMBER: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number || '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -162,6 +163,8 @@ jobs:
           python3 web/tests/test-publisher.py
           python3 web/tests/test-trigger-pr.py
           python3 web/tests/test-resolve-build-target.py
+          python3 web/tests/test-browser-manifest.py .
+          python3 web/tests/test-provenance-manifest.py
       - name: Browser smoke tests
         run: |
           npm ci --prefix web

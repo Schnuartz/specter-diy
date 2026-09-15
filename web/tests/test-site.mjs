@@ -16,7 +16,10 @@ const previewPointer = await (await page.request.get(new URL('browser/current.js
 const previewManifest = await (await page.request.get(new URL(`${previewPointer.build}build-info.json`, base).href)).json();
 const sourceLink = page.locator('#source-commit-link');
 const expectedCommitUrl = `https://github.com/${previewManifest.repository}/commit/${previewManifest.commit}`;
-if (await sourceLink.textContent() !== `GitHub · ${previewManifest.commit.slice(0, 7)}` ||
+const expectedIdentity = [previewManifest.firmware_version,
+  Number.isInteger(previewManifest.pr_number) ? `PR #${previewManifest.pr_number}` : null,
+  `Commit ${previewManifest.commit.slice(0, 7)}`].filter(Boolean).join(' · ');
+if (await sourceLink.textContent() !== `GitHub · ${expectedIdentity}` ||
     await sourceLink.getAttribute('href') !== expectedCommitUrl) {
   throw new Error('PR preview does not link to its exact firmware commit below Restart');
 }
