@@ -19,7 +19,7 @@ For secret storage we support agnostic mode (wallet forgets all secrets when tur
 
 Our main focus is multisignature setup with other hardware wallets, but wallet can also work as a single signer. We try to make it compatible with Bitcoin Core where we can - PSBT for unsigned transactions, wallet descriptors for importing/exporting multisig wallets. To communicate with Bitcoin Core easier we are also working on [Specter Desktop app](https://github.com/cryptoadvance/specter-desktop) - a small python flask server talking to your Bitcoin Core node.
 
-Most of the firmware is written in MicroPython which makes the code easy to audit and change. We use [secp256k1](https://github.com/bitcoin-core/secp256k1) library from Bitcoin Core for elliptic curve calculations and [LittlevGL](https://lvgl.io/) library for GUI.
+Most of the firmware is written in MicroPython which makes the code easy to audit and change. We use [secp256k1](https://github.com/bitcoin-core/secp256k1) library from Bitcoin Core for elliptic curve calculations and [LVGL](https://lvgl.io/) library for GUI.
 
 ## DISCLAIMER
 
@@ -36,9 +36,11 @@ All the docs are stored in the [`docs/`](./docs) folder:
 - [`quickstart.md`](./docs/quickstart.md) guides you through the initial steps how to get firmware on the board
 - [`reproducible-build.md`](./docs/reproducible-build.md) describes how to build the initial firmware and upgrade files with the same hash as in the release using Docker
 - [`build.md`](./docs/build.md) describes how to build the firmware and the simulator yourself
-- [`security.md`](./docs/security.md) explains possible attack vectors and security model of the project
+- [`security-model.md`](./docs/security-model.md) explains possible attack vectors and security model of the project
+- [`SECURITY.md`](./SECURITY.md) describes how to report vulnerabilities (disclosure policy)
 - [`development.md`](./docs/development.md) explains how to start developing on Specter
 - [`simulator.md`](./docs/simulator.md) shows how to run a simulator on unix/macOS
+- [`browser-simulator.md`](./docs/browser-simulator.md) explains the browser simulator, local build, and PR previews
 - [`communication.md`](./docs/communication.md) defines communication protocol with the host over QR codes and USB
 - [`roadmap.md`](./docs/roadmap.md) explains what we need to implement before we can consider the wallet be ready to use with real funds.
 
@@ -47,7 +49,25 @@ Specter-Shield documentation and all the files are available in the [`shield/`](
 - [What it looks like](./shield/README.md)
 - [How to print a 3d case](./shield/3dprinting.md)
 
+Specter Shield-Lite documentation is available in the [`shield-lite/`](./shield-lite) folder:
+
+- [Specter Shield-Lite overview](./shield-lite/readme.md)
+
 Supported networks: Mainnet, Testnet, Regtest, Signet.
+
+## Running tests
+
+The unit test suite runs on the Unix simulator build. Install the required
+system packages and then run the `make` target:
+
+```
+sudo apt-get update
+sudo apt-get install libsdl2-dev libffi-dev pkg-config libreadline-dev libgmp-dev build-essential python3
+make test
+```
+
+The build system will fetch the necessary submodules and compile the simulator
+before executing the tests.
 
 ## USB communication on Linux
 

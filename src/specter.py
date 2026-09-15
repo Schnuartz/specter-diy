@@ -10,7 +10,12 @@ from platform import (
     maybe_mkdir,
     wipe,
     get_version,
+    get_git_info,
     get_battery_status,
+    get_build_type,
+    get_firmware_boot_mode,
+    get_flash_read_protection_status,
+    get_flash_write_protection_status,
 )
 from hosts import Host, HostError
 from app import BaseApp
@@ -53,6 +58,60 @@ class Specter:
         self.dev = False
         self.apps = apps
 
+    def _firmware_note(self, include_details=False):
+        primary_note = "Firmware version %s" % get_version()
+
+        if not include_details:
+            return primary_note
+
+        sections = [primary_note]
+
+        repo, branch, commit = get_git_info()
+        repo_details = []
+        if repo != "unknown":
+            repo_details.append("Repo: %s" % repo)
+        if branch != "unknown":
+            repo_details.append("Branch: %s" % branch)
+        if commit != "unknown":
+            repo_details.append("Commit: %s" % commit)
+        if repo_details:
+            sections.append("\n".join(repo_details))
+
+        def _format_status(value):
+            if isinstance(value, str) and value:
+                return value[0].upper() + value[1:]
+            return value
+
+        boot_mode = get_firmware_boot_mode()
+        if boot_mode != "unknown":
+            boot_mode_note = "Firmware mode: %s" % _format_status(boot_mode)
+        else:
+            boot_mode_note = "Firmware mode: Unknown"
+        sections.append(boot_mode_note)
+
+        read_protect = get_flash_read_protection_status()
+        if read_protect != "unknown":
+            read_note = "Read protection: %s" % _format_status(read_protect)
+        else:
+            read_note = "Read protection: Unknown"
+        sections.append(read_note)
+
+        write_protect = get_flash_write_protection_status()
+        if write_protect != "unknown":
+            write_note = "Write protection: %s" % _format_status(write_protect)
+        else:
+            write_note = "Write protection: Unknown"
+        sections.append(write_note)
+
+        build_type = get_build_type()
+        if build_type == "unknown":
+            build_note = "Build type: Unknown"
+        else:
+            build_note = "Build type: %s" % _format_status(build_type)
+        sections.append(build_note)
+
+        return "\n\n".join(sections)
+
     def start(self):
         # register battery monitor (runs every 3 seconds)
         self.gui.set_battery_callback(get_battery_status, 3000)
@@ -73,14 +132,29 @@ class Specter:
             raise exception
         except CriticalErrorWipeImmediately as e:
             # show error
-            await self.gui.error("Critical error, the device will be wiped.\n\n%s" % e)
+            await self.gui.error(
+                "Critical error, the device will be wiped.\n\n%s" % e,
+                button_text="Wipe Specter Device",
+            )
             self.gui.show_loader(title="Wiping the device...")
             # wipe everything and reboot
             self.wipe()
         # catch an expected error
         except BaseError as e:
             # show error
-            await self.gui.alert(e.NAME, "%s" % e)
+            requires_card_removal = getattr(e, "requires_card_removal", False)
+            button_text = "Remove card" if requires_card_removal else "OK"
+            await self.gui.alert(e.NAME, "%s" % e, button_text=button_text)
+            if requires_card_removal:
+                wait_for_removal = getattr(self.keystore, "wait_for_card_removal", None)
+                if wait_for_removal is not None:
+                    self.gui.show_loader(
+                        title="Remove the locked card",
+                        text="Waiting for the smartcard to be removed...",
+                    )
+                    await wait_for_removal()
+                    self.gui.hide_loader()
+                    self.keystore = None
             # restart
             return next_fn
         # show trace for unexpected errors
@@ -239,7 +313,7 @@ class Specter:
 
     async def import_mnemonic(self):
         host = await self.gui.menu(title="What to use for import?", note="\n",
-            buttons=[(host, host.button) for host in self.hosts if host.button],
+            buttons=[(host, host.button) for host in self.hosts if host.is_enabled],
             last=(255, None))
         if host == 255:
             return
@@ -340,12 +414,13 @@ class Specter:
         ]
         if self.keystore.storage_button is not None:
             buttons.append((1, self.keystore.storage_button))
-        buttons.append((2, "Enter BIP-39 password"))
+        buttons.append((2, "Enter passphrase"))
         if hasattr(self.keystore, "show_mnemonic"):
             buttons.append((3, "Show recovery phrase"))
         buttons.extend([(None, "Security"), (4, "Device settings")])  # delimiter
+        buttons.extend([(None, "About"), (6, "About this device")])
         # wait for menu selection
-        menuitem = await self.gui.menu(buttons, last=(255, None), note="Firmware version %s" % get_version())
+        menuitem = await self.gui.menu(buttons, last=(255, None), note=self._firmware_note())
 
         # process the menu button:
         # back button
@@ -368,6 +443,8 @@ class Specter:
             await self.update_devsettings()
         elif menuitem == 5:
             await self.select_network()
+        elif menuitem == 6:
+            await self.show_about()
         else:
             print(menuitem)
             raise SpecterError("Not implemented")
@@ -410,6 +487,13 @@ class Specter:
             pass
         self.set_network(network)
 
+    async def show_about(self):
+        await self.gui.alert(
+            "About this device",
+            self._firmware_note(include_details=True),
+            button_text="Close",
+        )
+
     async def communication_settings(self):
         buttons = [
             (None, "Communication channels")
@@ -421,7 +505,7 @@ class Specter:
         while True:
             menuitem = await self.gui.menu(buttons,
                                       title="Communication settings",
-                                      note="Firmware version %s" % get_version(),
+                                      note=self._firmware_note(),
                                       last=(255, None)
             )
             if menuitem == 255:
@@ -501,6 +585,7 @@ class Specter:
             # (3, "Experimental"),
         ] + [
             (None, "Global settings"),
+            (42, "About this device"),
         ]
         if hasattr(self.keystore, "lock"):
             buttons.extend([(777, "Change PIN code")])
@@ -511,7 +596,7 @@ class Specter:
         while True:
             menuitem = await self.gui.menu(buttons,
                                       title="Device settings",
-                                      note="Firmware version %s" % get_version(),
+                                      note=self._firmware_note(),
                                       last=(255, None)
             )
             if menuitem == 255:
@@ -537,6 +622,9 @@ class Specter:
                 return
             elif menuitem == 777:
                 await self.keystore.change_pin()
+                return
+            elif menuitem == 42:
+                await self.show_about()
                 return
             elif menuitem == 1:
                 await self.communication_settings()

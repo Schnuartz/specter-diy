@@ -7,6 +7,7 @@ import rng
 import platform
 from binascii import b2a_base64, a2b_base64
 from embit.liquid.networks import NETWORKS
+import utime
 
 AES_BLOCK = 16
 IV_SIZE = 16
@@ -33,6 +34,34 @@ def tagged_hash(tag: str, data: bytes) -> bytes:
     """BIP-Schnorr tag-specific key derivation"""
     hashtag = hashlib.sha256(tag.encode()).digest()
     return hashlib.sha256(hashtag + hashtag + data).digest()
+
+
+def consteq(a: bytes, b: bytes) -> bool:
+    """
+    Fixed-work comparison for MACs, HMACs and other fixed-length
+    authentication values. Plain `==`/`!=` on bytes can stop as soon as
+    a differing byte is found, so its timing can leak how many leading
+    bytes matched; for equal-length inputs this instead compares every
+    byte without an early exit that depends on where they differ. The
+    length check below is NOT constant-time and input length is not
+    treated as secret, so this is only appropriate where both inputs
+    have a fixed, public length (e.g. a 32-byte HMAC-SHA256 digest) -
+    do not use it to compare secret-dependent variable-length data.
+    Used because the MicroPython build on this device (custom C `hmac`
+    usermod) has no `hmac.compare_digest()`.
+
+    SECURITY: do not "simplify" the loop below back to `a == b` / `!=`,
+    and do not add an early `return False` inside the loop - either
+    change reintroduces the timing side channel this function exists
+    to remove. A test asserting equal() == equal() cannot catch that
+    regression, since both implementations return the same booleans.
+    """
+    if len(a) != len(b):
+        return False
+    result = 0
+    for x, y in zip(a, b):
+        result |= x ^ y
+    return result == 0
 
 
 def encrypt(plain: bytes, key: bytes) -> bytes:
@@ -92,7 +121,8 @@ def aead_decrypt(ciphertext: bytes, key: bytes) -> tuple:
 
     aes_key = tagged_hash("aes", key)
     hmac_key = tagged_hash("hmac", key)
-    if mac != hmac.new(hmac_key, ct, digestmod="sha256").digest():
+    # constant-time compare (L6) - do not replace with == / !=
+    if not consteq(mac, hmac.new(hmac_key, ct, digestmod="sha256").digest()):
         raise Exception("Invalid HMAC")
     b = BytesIO(ct)
     l = compact.read_from(b)
@@ -175,3 +205,42 @@ def read_write(fin, fout, chunk_size=32):
         total += fout.write(chunk)
     return total
 
+# The conv_time() function converts a timestamp measured in seconds from 1970-01-01 00:00:00 UTC to
+# humand-readable parameters (year, month, day, hour, minute, second, second, weekday, yeardate) in UTC.
+# "Time Epoch: Unix port uses standard for POSIX systems epoch of 1970-01-01 00:00:00 UTC.
+# However, embedded ports use epoch of 2000-01-01 00:00:00 UTC."
+# (Source: https://micropython.readthedocs.io/en/latest/library/utime.html)
+# Simulator MicroPython case:
+#   utime.mktime() does not exist. utime.localtime() gives result with both timezone offset and DST offset.
+#   To remove the timezone offset, we calculate the offset of EPOCH ZERO timestamp (1970-01-01 00:00:00 UTC),
+#   substract it from the timestamp, and recall utime.localtime() again.
+#   To remove the DST offset, we usually only need to check the dst_offset in the result (in hours), subtract it
+#   and call utime.localtime() again. However, in one case (DST start on March) when the local clocks jump forward,
+#   there is an hour when we don't need to apply the shift - and we correct it manually.
+# Embedded MicroPython case:
+#   utime.gmtime() and utime.localtime() are the same function (in some implementation only utime.localtime()
+#   exists, but does not add timezone/dst offsets). However, timestamp zero is not 1970-01-01 00:00:00 UTC,
+#   but 2000-01-01 00:00:00 UTC. Therefore we reduce the fixed difference from the timestamp before execution.
+if platform.simulator:
+    def conv_time(t):
+        y, m, d, hh, mm, ss, *_ = utime.localtime(0)
+        tz_offset = hh * 3600 + mm * 60 + ss
+        if (y, m) == (1970, 1):
+            tz_offset += 86400 * (d - 1)
+        elif (y, m) == (1969, 12):
+            tz_offset -= 86400 * (32 - d)
+        else:
+            raise ValueError("Failed to calculate simulator timezone offset")
+        adjusted_t = t - tz_offset
+        dst_offset = utime.localtime(adjusted_t)[8]
+        adjusted_t -= dst_offset * 3600
+        new_localtime = utime.localtime(adjusted_t)
+        if new_localtime[8] == 0 and dst_offset == 1 and new_localtime[3] == 1:
+            return (new_localtime[:3] + (2,) + new_localtime[4:])[:8]
+        return new_localtime[:8]
+    conv_time(0) # Check that the function is working
+else:
+    _UNIX_EPOCH_OFFSET = 946684800
+    _conv_time = utime.gmtime if hasattr(utime, "gmtime") else utime.localtime
+    def conv_time(t):
+        return _conv_time(t - _UNIX_EPOCH_OFFSET)
