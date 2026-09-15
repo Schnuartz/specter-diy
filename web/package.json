@@ -1,0 +1,15 @@
+{
+  "private": true,
+  "scripts": {
+    "test:browser": "node tests/test-site.mjs && node tests/test-qr.mjs && node tests/test-camera.mjs && node tests/test-card.mjs",
+    "test:compat": "node tests/test-compat.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0",
+    "pngjs": "7.0.0",
+    "qrcode": "1.5.4"
+  },
+  "dependencies": {
+    "jsqr": "1.4.0"
+  }
+}

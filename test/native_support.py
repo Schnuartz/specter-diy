@@ -64,6 +64,27 @@ def setup_native_stubs():
         pyb.UART = lambda *args, **kwargs: None
         pyb.USB_VCP = lambda *args, **kwargs: None
 
+        class _DummyPinNamespace:
+            """Stands in for pyb.Pin.cpu.<NAME> (e.g. Pin.cpu.A2)"""
+            def __getattr__(self, name):
+                return name
+
+        class _DummyPin:
+            cpu = _DummyPinNamespace()
+
+        pyb.Pin = _DummyPin
+
+    uscard = _ensure_module("uscard")
+    if not hasattr(uscard, "Reader"):
+        class _DummyReader:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def createConnection(self):
+                return None
+
+        uscard.Reader = _DummyReader
+
     lvgl = _ensure_module("lvgl")
     if not hasattr(lvgl, "SYMBOL"):
         class _Symbol:
@@ -209,8 +230,8 @@ def setup_native_stubs():
     except ModuleNotFoundError as exc:
         if exc.name.startswith("embit"):
             raise ModuleNotFoundError(
-                "Native test suite requires the 'embit' package. "
-                "Install it with 'pip install -r test/integration/requirements.txt'."
+                "Native test suite requires the embit git submodule. "
+                "Run 'git submodule update --init --recursive'."
             ) from exc
         raise
 
