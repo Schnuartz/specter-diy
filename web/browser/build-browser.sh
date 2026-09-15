@@ -65,6 +65,13 @@ make -C "$SPECTER_SRC/f469-disco/micropython/ports/unix" -j4 \
   LDFLAGS_ARCH= \
   LDFLAGS_EXTRA="-sUSE_SDL=2 ${BROWSER_ASYNCIFY_FLAGS:--sASYNCIFY=1 -sASYNCIFY_STACK_SIZE=65536} -sALLOW_MEMORY_GROWTH=1 -sFORCE_FILESYSTEM=1 -sEXIT_RUNTIME=0 -sSTACK_SIZE=${BROWSER_STACK_SIZE:-8388608} -sEXPORTED_RUNTIME_METHODS=FS,ccall --preload-file $ROOT/browser/runtime@/browser -Wl,--allow-multiple-definition ${BROWSER_NLR_FLAGS:-} ${BROWSER_LINK_DEBUG:-}"
 
+# Asyncify can leave thousands of non-overlapping locals in each function.
+# Coalesce them before publishing: Android workers have a much smaller native
+# call stack than desktop workers. Increasing -sSTACK_SIZE does not fix that.
+WASM_OPT="${WASM_OPT:-$(dirname "$(command -v emcc)")/../bin/wasm-opt}"
+python3 "$ROOT/browser/optimize-wasm.py" \
+  "$SPECTER_SRC/f469-disco/micropython/ports/unix/micropython.wasm" "$WASM_OPT"
+
 python3 "$ROOT/browser/normalize-glue.py" "$SPECTER_SRC/f469-disco/micropython/ports/unix/micropython.js"
 mkdir -p "$OUT"
 cp "$SPECTER_SRC/f469-disco/micropython/ports/unix/micropython.js" "$OUT/"
@@ -74,5 +81,5 @@ manifest_extra=()
 if [[ -n "${BROWSER_PLATFORM_COMMIT:-}" ]]; then
   manifest_extra+=("$BROWSER_PLATFORM_COMMIT")
 fi
-python3 "$ROOT/browser/write-manifest.py" "$SPECTER_SRC" "$OUT" "$SOURCE_REPOSITORY" "${manifest_extra[@]}"
+BROWSER_WASM_OPTIMIZED=1 python3 "$ROOT/browser/write-manifest.py" "$SPECTER_SRC" "$OUT" "$SOURCE_REPOSITORY" "${manifest_extra[@]}"
 echo "Browser artifacts: $OUT"

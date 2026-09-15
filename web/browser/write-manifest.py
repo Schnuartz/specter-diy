@@ -67,6 +67,8 @@ if len(sys.argv) > 4 and sys.argv[4] == "mockui":
 elif len(sys.argv) > 4:
     manifest["platform_repository"] = repository
     manifest["platform_commit"] = sys.argv[4]
+if os.environ.get("BROWSER_WASM_OPTIMIZED") == "1":
+    manifest["wasm_optimization"] = {"passes": ["coalesce-locals", "vacuum"]}
 (output / "build-info.json").write_text(json.dumps(manifest, indent=2) + "\n")
 pointer = {
     "build": str(output.relative_to(Path(__file__).resolve().parent.parent)).replace('\\', '/') + "/",
