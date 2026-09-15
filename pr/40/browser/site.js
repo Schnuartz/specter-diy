@@ -43,6 +43,16 @@ let startupStage = 'waiting for the browser worker';
 let requestId = 0;
 const snapshots = new Map();
 
+function buildIdentity(manifest) {
+  const parts = [];
+  if (manifest.firmware_version) parts.push(manifest.firmware_version);
+  if (Number.isInteger(manifest.pr_number) && manifest.pr_number > 0) {
+    parts.push(`PR #${manifest.pr_number}`);
+  }
+  parts.push(`Commit ${manifest.commit.slice(0, 7)}`);
+  return parts.join(' · ');
+}
+
 function log(message) {
   debug.textContent = `${String(message)}\n${debug.textContent}`.slice(0, 7000);
 }
@@ -467,10 +477,11 @@ try {
   }
   if (!/^[a-f0-9]{40}$/.test(manifest.commit)) throw new Error('Invalid source commit in build manifest');
   program = manifest.entrypoint === 'mockui' ? 'mockui' : 'wallet';
-  $('#build-label').textContent = `${manifest.repository} · ${manifest.commit.slice(0, 7)} · Browser / WASM`;
+  const identity = buildIdentity(manifest);
+  $('#build-label').textContent = `${manifest.repository} · ${identity} · Browser / WASM`;
   const commitUrl = `https://github.com/${manifest.repository}/commit/${manifest.commit}`;
   $('#source-commit-link').href = commitUrl;
-  $('#source-commit-link').textContent = `GitHub · ${manifest.commit.slice(0, 7)}`;
+  $('#source-commit-link').textContent = `GitHub · ${identity}`;
   $('#build-link').href = commitUrl;
   $('#build-link').textContent = manifest.commit.slice(0, 12);
   $('#build-details').textContent = JSON.stringify(manifest, null, 2);
