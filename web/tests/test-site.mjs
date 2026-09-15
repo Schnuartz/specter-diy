@@ -165,7 +165,9 @@ await mobile.close();
 
 if (await page.locator('img[alt="ClavaStack"]').count() ||
     (await page.title()).includes('ClavaStack') ||
-    !await page.locator('a[href="https://github.com/Schnuartz/specter-diy"]').count()) {
+    !await page.locator('a[href="https://github.com/Schnuartz/specter-diy"]').count() ||
+    await page.locator('.header-brand strong').textContent() !== 'Specter DIY' ||
+    await page.locator('.header-brand small').textContent() !== 'Simulator') {
   throw new Error('Fork page branding or source link is incorrect');
 }
 console.log(JSON.stringify({ result: 'pass', canvasColors: colors.size,
