@@ -47,6 +47,12 @@ each artifact. `web/browser/current.json` points to the build. Both generated
 directories are ignored by Git. `SPECTER_SOURCE_REPOSITORY=owner/repo` can
 override the origin URL when building a fork or a PR checkout.
 
+The manifest also records `firmware_version`, decoded from Specter's own
+`boot/main/boot.py` version marker. PR and manually dispatched builds include
+`pr_number` from the trusted workflow event. The browser displays these fields
+with the short source revision, for example `v1.10.5 · PR #40 · Commit 9940d41`,
+and the link opens the exact full commit URL.
+
 The build script applies only browser compatibility changes to the checked-out
 MicroPython/LVGL C submodules. It freezes the wallet's `src/` tree without
 changing wallet screens or logic. Browser-specific Python, JS, and source
