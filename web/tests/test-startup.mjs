@@ -59,7 +59,7 @@ const fault = type => async page => {
   let count = 0;
   await page.route('**/browser/runtime-worker.js*', async route => {
     if (++count > 1) return route.continue();
-    await route.fulfill({ contentType: 'text/javascript', body: `onmessage = () => postMessage(${JSON.stringify({ type, name: 'RangeError', message: 'injected failure', stack: 'RangeError: injected failure\n at injected-runtime:42' })});` });
+    await route.fulfill({ headers: { 'Cross-Origin-Embedder-Policy': 'require-corp', 'Cross-Origin-Resource-Policy': 'same-origin' }, contentType: 'text/javascript', body: `onmessage = () => postMessage(${JSON.stringify({ type, name: 'RangeError', message: 'injected failure', stack: 'RangeError: injected failure\n at injected-runtime:42' })});` });
   });
 };
 try {
@@ -122,7 +122,7 @@ try {
     await page.locator('[data-loading-retry]').click();
     await page.locator('#st').getByText('Running locally').waitFor({ timeout: 45000 });
   });
-  await scenario('low memory RangeError bounded failure', page => page.route('**/browser/runtime-worker.js*', route => route.fulfill({ contentType: 'text/javascript', body: 'onmessage = () => { throw new RangeError("WebAssembly.Memory: simulated allocation failure"); };' })), 'WorkerError');
+  await scenario('low memory RangeError bounded failure', page => page.route('**/browser/runtime-worker.js*', route => route.fulfill({ headers: { 'Cross-Origin-Embedder-Policy': 'require-corp', 'Cross-Origin-Resource-Policy': 'same-origin' }, contentType: 'text/javascript', body: 'onmessage = () => { throw new RangeError("WebAssembly.Memory: simulated allocation failure"); };' })), 'WorkerError');
   await scenario('slow network and CPU', async (page, context) => {
     const cdp = await context.newCDPSession(page);
     await cdp.send('Network.enable');
