@@ -290,6 +290,17 @@ class WalletManager(BaseApp):
             addr_part = addr_part.strip()
             if not addr_part:
                 raise WalletError("Can't verify address with unknown value")
+            network_hint = self.address_network_hint(addr_part)
+            if network_hint is not None:
+                expected_networks, expected_name = network_hint
+                if isinstance(expected_networks, str):
+                    expected_networks = (expected_networks,)
+                if self.network not in expected_networks:
+                    raise WalletError(
+                        "This is a %s address.\n\n"
+                        "Switch the device network to %s and scan again."
+                        % (expected_name, expected_name)
+                    )
             idx = None
             if query:
                 for arg in query.split("&"):
@@ -406,6 +417,24 @@ class WalletManager(BaseApp):
     def addresses_match(self, candidate, target):
         """Allow network-specific managers to compare address variants."""
         return candidate == target
+
+    @staticmethod
+    def address_network_hint(address):
+        """Return the expected Specter network for recognizable address prefixes."""
+        addr = address.lower()
+        # Liquid uses ex1/lq1 on mainnet and tex1/tlq1 on testnet.
+        if addr.startswith("ex1") or addr.startswith("lq1"):
+            return "liquidv1", "Liquid Mainnet"
+        if addr.startswith("tex1") or addr.startswith("tlq1"):
+            return "liquidtestnet", "Liquid Testnet"
+        # Bitcoin Testnet and Signet deliberately share the tb1/m/n/2
+        # address prefixes, so an address alone cannot distinguish them.
+        if (addr.startswith("tb1") or addr.startswith("m") or
+                addr.startswith("n") or addr.startswith("2")):
+            return ("test", "signet"), "Bitcoin Testnet or Signet"
+        if addr.startswith("bcrt1"):
+            return "regtest", "Bitcoin Regtest"
+        return None
 
     async def sign_psbt(self, stream, show_screen, encoding=BASE64_STREAM):
         if encoding == BASE64_STREAM:
