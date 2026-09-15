@@ -12,6 +12,20 @@ page.on('request', request => requests.push(request.url()));
 page.on('pageerror', error => errors.push(error.message));
 await page.goto(base, { waitUntil: 'domcontentloaded' });
 await page.locator('#st').getByText('Running locally').waitFor({ timeout: 45000 });
+if (!(await page.locator('#sd-capacity').textContent()).includes('8 GB capacity')) {
+  throw new Error('Simulator does not expose the 8 GB SD capacity');
+}
+const previewPointer = await (await page.request.get(new URL('browser/current.json', base).href)).json();
+const previewManifest = await (await page.request.get(new URL(`${previewPointer.build}build-info.json`, base).href)).json();
+const sourceLink = page.locator('#source-commit-link');
+const expectedCommitUrl = `https://github.com/${previewManifest.repository}/commit/${previewManifest.commit}`;
+const expectedIdentity = [previewManifest.firmware_version,
+  Number.isInteger(previewManifest.pr_number) ? `PR #${previewManifest.pr_number}` : null,
+  `Commit ${previewManifest.commit.slice(0, 7)}`].filter(Boolean).join(' · ');
+if (await sourceLink.textContent() !== `GitHub · ${expectedIdentity}` ||
+    await sourceLink.getAttribute('href') !== expectedCommitUrl) {
+  throw new Error('PR preview does not link to its exact firmware commit below Restart');
+}
 if (!await page.locator('.phone-mockup').evaluate(img => img.complete && img.naturalWidth > 0)) {
   throw new Error('Specter Shield Metal device image did not load');
 }
@@ -33,20 +47,41 @@ if (before.equals(after)) throw new Error('Pointer input did not change the Spec
 
 await page.locator('#sd-toggle').click();
 await page.locator('#sd-state').getByText('Inserted').waitFor();
+if (await page.locator('#sd-hint').textContent() !== 'Click to remove' ||
+    await page.locator('#sd-toggle').getAttribute('aria-pressed') !== 'true') {
+  throw new Error('SD card image did not switch to the inserted state');
+}
 await page.locator('#sd-picker').setInputFiles({
   name: 'probe.bin', mimeType: 'application/octet-stream', buffer: Buffer.from([0, 1, 2, 255]),
 });
 await page.locator('#sd-files').getByText('probe.bin', { exact: false }).waitFor();
+if (!(await page.locator('#sd-capacity').textContent()).includes('4 B used')) {
+  throw new Error('Simulator did not update SD usage');
+}
 const downloadPromise = page.waitForEvent('download');
 await page.locator('#sd-files button').first().click();
 const download = await downloadPromise;
 if (!(await readFile(await download.path())).equals(Buffer.from([0, 1, 2, 255]))) {
   throw new Error('Virtual SD export bytes differ from imported bytes');
 }
+await page.locator('#sd-toggle').click();
+await page.locator('#sd-state').getByText('Ejected').waitFor();
+if (await page.locator('#sd-hint').textContent() !== 'Click to insert' ||
+    await page.locator('#sd-toggle').getAttribute('aria-pressed') !== 'false') {
+  throw new Error('SD card image did not switch to the ejected state');
+}
+await page.locator('#sd-toggle').click();
+await page.locator('#sd-state').getByText('Inserted').waitFor();
 
+const previousCanvas = await canvas.elementHandle();
 await page.locator('#restart-btn').click();
-await page.locator('#st').getByText('Starting locally').waitFor({ timeout: 10000 });
+await page.waitForFunction(previous => document.querySelector('#screen') !== previous,
+  previousCanvas, { timeout: 10000 });
 await page.locator('#st').getByText('Running locally').waitFor({ timeout: 45000 });
+await previousCanvas.dispose();
+if (await sourceLink.getAttribute('href') !== expectedCommitUrl) {
+  throw new Error('Source commit link changed after local restart');
+}
 await page.locator('#sd-state').getByText('Inserted').waitFor();
 await page.locator('#sd-files').getByText('probe.bin', { exact: false }).waitFor();
 await canvas.screenshot({ path: 'test-results/specter-after-restart.png' });
@@ -116,6 +151,10 @@ const crashPage = await browser.newPage();
 await crashPage.route('**/browser/runtime-worker.js*', route => route.abort());
 await crashPage.goto(base);
 await crashPage.locator('#st').getByText('Simulator error').waitFor({ timeout: 15000 });
+if (!await crashPage.locator('[data-loading-actions]').isVisible()) throw new Error('Loading error actions are not visible');
+if (!/Elapsed \d+\.\d+ s/.test(await crashPage.locator('[data-loading-timer]').textContent())) throw new Error('Loading timer is missing');
+await crashPage.locator('[data-loading-details]').click();
+if (!await crashPage.locator('details').evaluate(details => details.open)) throw new Error('Technical details did not open from loading error');
 await crashPage.close();
 
 const mobile = await browser.newContext({ viewport: { width: 390, height: 844 },
@@ -134,9 +173,21 @@ if (mobileBefore.equals(await mobileCanvas.screenshot())) {
 }
 await mobile.close();
 
+const canvasBridgeMobile = await browser.newContext({ viewport: { width: 390, height: 844 },
+  deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+const canvasBridgePage = await canvasBridgeMobile.newPage();
+await canvasBridgePage.addInitScript(() => {
+  Object.defineProperty(HTMLCanvasElement.prototype, 'transferControlToOffscreen', { value: undefined, configurable: true });
+});
+await canvasBridgePage.goto(base);
+await canvasBridgePage.locator('#st').getByText('Running locally').waitFor({ timeout: 45000 });
+await canvasBridgeMobile.close();
+
 if (await page.locator('img[alt="ClavaStack"]').count() ||
     (await page.title()).includes('ClavaStack') ||
-    !await page.locator('a[href="https://github.com/Schnuartz/specter-diy"]').count()) {
+    !await page.locator('a[href="https://github.com/Schnuartz/specter-diy"]').count() ||
+    await page.locator('.header-brand strong').textContent() !== 'Specter DIY' ||
+    await page.locator('.header-brand small').textContent() !== 'Simulator') {
   throw new Error('Fork page branding or source link is incorrect');
 }
 console.log(JSON.stringify({ result: 'pass', canvasColors: colors.size,

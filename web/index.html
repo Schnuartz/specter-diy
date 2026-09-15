@@ -33,7 +33,9 @@
     }
     .header-left { display: flex; align-items: center; gap: 10px; }
     .header-left img { height: 24px; }
-    .header-left strong { font-size: 14px; letter-spacing: 0.02em; }
+    .header-brand { display:flex; flex-direction:column; gap:2px; line-height:1; }
+    .header-brand strong { font-size: 14px; letter-spacing: 0.02em; }
+    .header-brand small { color:var(--specter-primary); font-size:9px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; }
     .header-right { display: flex; align-items: center; gap: 10px; }
     .nav-link { color: var(--specter-light-secondary); text-decoration: none; font-size: 12px; }
     .nav-link:hover { color: var(--specter-primary); }
@@ -185,7 +187,26 @@
       font-size: 13px;
       gap: 10px;
       z-index: 10;
+      padding: 22px;
+      text-align: center;
     }
+    .loading-shell { width: min(100%, 280px); display:flex; flex-direction:column; align-items:center; gap:10px; }
+    .loading-title, .loading-label { max-width:100%; overflow-wrap:anywhere; }
+    #loading.error { overflow:auto; justify-content:safe center; }
+    .loading-title { color:#fff; font-size:15px; font-weight:700; letter-spacing:.01em; }
+    .loading-label { min-height:32px; color:var(--specter-light-secondary); font-size:12px; line-height:1.4; }
+    .loading-progress { width:100%; height:5px; overflow:hidden; border-radius:999px; background:#252525; }
+    .loading-progress span { display:block; width:12%; height:100%; border-radius:inherit; background:var(--specter-primary); transition:width .35s ease; }
+    .loading-timer { color:#9da7b3; font-size:11px; font-variant-numeric:tabular-nums; }
+    .loading-steps { display:flex; justify-content:space-between; width:100%; margin:2px 0 0; padding:0; color:#68717c; font-size:9px; list-style:none; }
+    .loading-steps li.active { color:var(--specter-primary); }
+    .loading-steps li.done { color:#d8e2ee; }
+    .loading-actions { display:flex; flex-wrap:wrap; justify-content:center; gap:7px; margin-top:3px; }
+    .loading-actions button, .loading-actions a { border:1px solid #52677e; border-radius:6px; padding:7px 9px; color:#e8eef6; background:#182535; font:inherit; font-size:11px; text-decoration:none; cursor:pointer; }
+    .loading-actions button:hover, .loading-actions a:hover { border-color:var(--specter-primary); }
+    #loading.error .spinner { display:none; }
+    #loading.error .loading-title { color:var(--specter-coral); }
+    #loading.error .loading-progress span { background:var(--specter-coral); }
     .spinner {
       width: 28px; height: 28px;
       border: 3px solid #333;
@@ -218,6 +239,22 @@
     .restart-btn:disabled {
       opacity: 0.5;
     }
+    .device-actions {
+      width: 100%;
+      max-width: 380px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 7px;
+    }
+    .source-commit-link {
+      color: var(--specter-primary);
+      font-size: 12px;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+    .source-commit-link:hover { text-decoration: underline; }
+    .source-commit-link:not([href]) { opacity: .65; }
 
     /* Status card */
     .status-card {
@@ -271,6 +308,12 @@
     #camera-screen.active #camera-screen-start { display:none; }
     .peripheral-card { border:1px solid #3b4a5e; border-radius:12px; background:linear-gradient(135deg,#111c2b,#202d3e); padding:12px; margin:9px 0; }
     .sd-stage { display:flex; align-items:center; gap:16px; min-height:100px; }
+    .sd-card-control { display:flex; flex-direction:column; align-items:center; flex:none; gap:4px; }
+    .sim-panel #sd-toggle { display:block; width:84px; min-height:84px; padding:0; margin:0; border:0; background:transparent; }
+    .sim-panel #sd-toggle:hover { border:0; }
+    #sd-toggle:hover .sd-card-graphic { filter:drop-shadow(0 7px 10px #1f99e588); }
+    #sd-toggle:focus-visible { outline:2px solid var(--specter-primary); outline-offset:3px; }
+    #sd-hint { color:#aab8c8; font-size:11px; white-space:nowrap; }
     .sd-card-graphic { width:84px; height:84px; object-fit:contain; flex:none; filter:drop-shadow(5px 7px 7px #0008); transition:transform .25s ease,filter .25s ease; }
     .sd-stage.inserted .sd-card-graphic { transform:translateY(-5px) rotate(-5deg); filter:drop-shadow(0 9px 10px #1f99e588); }
     .sd-stage span { line-height:1.45; }
@@ -298,14 +341,14 @@
     .embedded .phone-wrapper { max-width:330px; }
     .gallery .page { display:block; width:100%; padding:0; }
     .gallery, .gallery body { background:transparent; }
-    .gallery .warning, .gallery .restart-btn, .gallery .sim-panel, .gallery .status-card { display:none; }
+    .gallery .warning, .gallery .device-actions, .gallery .sim-panel, .gallery .status-card { display:none; }
     .gallery .phone-wrapper { max-width:100%; }
     .gallery .phone-wrapper .phone-mockup { width:100%; height:auto; }
     @media (min-width:900px) {
       .page { display:grid; grid-template-columns:380px 380px; grid-template-areas:'warning warning' 'device peripherals' 'restart peripherals' 'cta cta'; gap:16px 22px; width:100%; max-width:822px; margin:auto; align-items:start; }
       .warning { grid-area:warning; max-width:none; }
       .phone-wrapper { grid-area:device; }
-      .restart-btn { grid-area:restart; }
+      .device-actions { grid-area:restart; }
       .sim-panel { grid-area:peripherals; }
       .cta-section { grid-area:cta; justify-self:center; }
       .embedded .page { grid-template-columns:330px 380px; max-width:760px; }
@@ -318,7 +361,7 @@
 <header>
   <div class="header-left">
     <img src="./assets/specter-logo.png" alt="Specter">
-    <strong>Specter DIY</strong>
+    <div class="header-brand"><strong>Specter DIY</strong><small>Simulator</small></div>
   </div>
   <div class="header-right">
     <a href="https://github.com/Schnuartz/specter-diy" class="nav-link">Source on GitHub</a>
@@ -349,17 +392,33 @@
         </div>
       </div>
       <div id="loading">
-        <div class="spinner"></div>
-        <span>Loading simulator&hellip;</span>
+        <div class="loading-shell">
+          <div class="spinner" aria-hidden="true"></div>
+          <strong class="loading-title" data-loading-title>Starting Specter Simulator</strong>
+          <span class="loading-label" data-loading-label>Preparing the browser runtime&hellip;</span>
+          <div class="loading-progress" role="progressbar" aria-label="Simulator loading" aria-valuemin="0" aria-valuemax="100" aria-valuenow="12"><span data-loading-bar></span></div>
+          <small class="loading-timer" data-loading-timer>Elapsed 0.0 s</small>
+          <ol class="loading-steps" aria-label="Startup steps">
+            <li data-loading-step="runtime" class="active">Runtime</li><li data-loading-step="firmware">Firmware</li><li data-loading-step="display">Display</li>
+          </ol>
+          <div class="loading-actions" data-loading-actions hidden>
+            <button type="button" data-loading-retry>Retry</button>
+            <a href="#technical-details" data-loading-details>Technical details</a>
+            <a href="./legacy/" data-loading-legacy>Legacy mode</a>
+          </div>
+        </div>
       </div>
     </div>
     <!-- Device frame on top (pointer-events: none) -->
     <img src="./assets/Specter-Shield-Metal-mockup.png" class="phone-mockup" alt="Specter Shield Metal device">
   </div>
 
-  <button class="restart-btn" id="restart-btn">
-    &#x1F504; Restart Simulator
-  </button>
+  <div class="device-actions">
+    <button class="restart-btn" id="restart-btn">
+      &#x1F504; Restart Simulator
+    </button>
+    <a id="source-commit-link" class="source-commit-link" target="_blank" rel="noopener noreferrer">GitHub · loading…</a>
+  </div>
 
   <section class="sim-panel" aria-label="Simulator and peripherals">
     <h2>Simulator <span style="font-size:11px;color:#7c9">Running locally in your browser</span></h2>
@@ -367,8 +426,7 @@
     <p id="isolation-warning" hidden></p>
     <div class="peripheral-card">
       <h3>Virtual SD card <span id="sd-state">Ejected</span></h3>
-      <div id="sd-stage" class="sd-stage"><img class="sd-card-graphic" src="./assets/sd-card-32gb.png" alt="DK 32 GB SD card"><span>Session-only · files stay in this tab</span></div>
-      <button id="sd-toggle">Insert SD card</button>
+      <div id="sd-stage" class="sd-stage"><div class="sd-card-control"><button id="sd-toggle" type="button" aria-label="Insert 8 GB SD card" aria-pressed="false" title="Click to insert SD card"><img class="sd-card-graphic" src="./assets/sd-card-8gb.png" alt="8 GB microSD card"></button><small id="sd-hint">Click to insert</small></div><span><strong id="sd-capacity">8 GB capacity · 0 B used · 8 GB free</strong><br>Session-only · files stay in this tab</span></div>
       <button id="sd-add">Add files</button>
       <button id="sd-clear">Clear card</button>
       <input id="sd-picker" type="file" multiple hidden>
@@ -385,7 +443,7 @@
       <p>Click a card to insert or remove it. Right-click a card to reset its contents. Restart Specter after changing Smartcard storage.</p>
       <div id="card-slots" class="card-tray"></div>
     </div>
-    <details>
+    <details id="technical-details">
       <summary>Technical details</summary>
       <p>Source commit: <a id="build-link" href="#">Loading…</a></p>
       <p>Restart keeps simulated flash, SD and Smartcard contents in this tab. Factory reset wipes flash and keeps peripherals. Clear, eject or reset them separately.</p>

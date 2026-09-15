@@ -24,6 +24,12 @@ HTTPS or localhost and browser permission. Some browser versions need the
 local Unix simulator; physical-device camera, secure element, air-gap,
 STM32 timing, battery, and physical card properties are not simulated.
 
+During startup the device screen shows the active runtime phase, a progress
+bar, and an elapsed timer. If a worker, WASM asset, or display initialization
+fails, the same panel changes to an actionable error state with Retry,
+Technical details, and Legacy mode links. This keeps slow mobile loads visible
+and avoids leaving a user with an indistinguishable black screen.
+
 ## Build locally
 
 From a recursive checkout of this repository on Linux or WSL:
@@ -46,6 +52,12 @@ the source repository/commit, Emscripten version, build time, and SHA256 of
 each artifact. `web/browser/current.json` points to the build. Both generated
 directories are ignored by Git. `SPECTER_SOURCE_REPOSITORY=owner/repo` can
 override the origin URL when building a fork or a PR checkout.
+
+The manifest also records `firmware_version`, decoded from Specter's own
+`boot/main/boot.py` version marker. PR and manually dispatched builds include
+`pr_number` from the trusted workflow event. The browser displays these fields
+with the short source revision, for example `v1.10.5 · PR #40 · Commit 9940d41`,
+and the link opens the exact full commit URL.
 
 The build script applies only browser compatibility changes to the checked-out
 MicroPython/LVGL C submodules. It freezes the wallet's `src/` tree without

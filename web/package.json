@@ -1,8 +1,9 @@
 {
   "private": true,
   "scripts": {
-    "test:browser": "node tests/test-site.mjs && node tests/test-qr.mjs && node tests/test-camera.mjs && node tests/test-card.mjs",
-    "test:compat": "node tests/test-compat.mjs"
+    "test:browser": "node tests/test-sd-capacity.mjs && node tests/test-site.mjs && node tests/test-source-link.mjs && node tests/test-qr.mjs && node tests/test-camera.mjs && node tests/test-card.mjs",
+    "test:compat": "node tests/test-compat.mjs",
+    "test:native-stack": "node tests/test-native-stack.mjs"
   },
   "devDependencies": {
     "playwright": "1.63.0",
