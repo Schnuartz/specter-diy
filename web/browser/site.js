@@ -48,8 +48,11 @@ let startupTimer;
 let startupStage = 'waiting for the browser worker';
 let startupStartedAt;
 let startupTicker;
+let forceCanvasBridge = false;
+let crashRetriesLeft = 2;
 let requestId = 0;
 const snapshots = new Map();
+const mobileDevice = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
 
 function buildIdentity(manifest) {
   const parts = [];
@@ -105,6 +108,29 @@ function showLoadingError(message) {
   loadingActions.hidden = false;
   loadingSteps.forEach(step => { step.classList.remove('active'); step.classList.add('done'); });
   loading.style.display = 'flex';
+}
+function recoverWorker(message) {
+  clearTimeout(startupTimer);
+  stopLoadingClock();
+  worker?.terminate();
+  worker = undefined;
+  if (mobileDevice && !forceCanvasBridge) {
+    forceCanvasBridge = true;
+    log(`${message} - retrying with the mobile Canvas bridge`);
+    setStatus('Switching display mode…');
+    showLoading('display', 'Switching to the mobile display bridge…', 20);
+    setTimeout(start, 500);
+    return;
+  }
+  if (crashRetriesLeft > 0) {
+    crashRetriesLeft--;
+    log(`${message} - recovering (${crashRetriesLeft} ${crashRetriesLeft === 1 ? 'retry' : 'retries'} left)`);
+    setStatus('Recovering…');
+    showLoading('runtime', 'Recovering from a worker crash…', 12);
+    setTimeout(start, 500);
+    return;
+  }
+  failure(message);
 }
 function bootStage(stage) {
   startupStage = stage;
@@ -241,7 +267,7 @@ function onWorkerMessage({ data }) {
   } else if (data.type === 'debug') {
     if (!data.message.includes('registerOrRemoveHandler')) log(data.message);
   } else if (data.type === 'abort') {
-    failure(data.message);
+    recoverWorker(`WebAssembly runtime stopped: ${data.message}`);
   } else if (data.type === 'operation-error') {
     log(`${data.operation}: ${data.message}`);
     if (data.operation.startsWith('sd-')) $('#sd-state').textContent = `SD error: ${data.message}`;
@@ -304,7 +330,7 @@ async function start() {
     return;
   }
   const canvas = newCanvas();
-  const transferable = Boolean(canvas.transferControlToOffscreen);
+  const transferable = !forceCanvasBridge && Boolean(canvas.transferControlToOffscreen);
   if (program === 'mockui' && !transferable) {
     failure('This browser needs OffscreenCanvas to render this simulator build.');
     return;
@@ -321,8 +347,8 @@ async function start() {
   workerUrl.searchParams.set('v', version);
   worker = new Worker(workerUrl, { name: 'Specter DIY' });
   worker.onmessage = onWorkerMessage;
-  worker.onerror = event => failure(`Worker crashed: ${event.message || 'unknown error'}`);
-  worker.onmessageerror = () => failure('Worker communication failed');
+  worker.onerror = event => recoverWorker(`Worker crashed: ${event.message || 'unknown error'}`);
+  worker.onmessageerror = () => recoverWorker('Worker communication failed');
   bootStage('starting the browser worker');
   const offscreen = transferable ? canvas.transferControlToOffscreen() : undefined;
   send({ type: 'start', build, version, program, canvas: offscreen, headlessDisplay: !transferable,

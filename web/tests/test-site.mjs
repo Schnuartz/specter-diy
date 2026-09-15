@@ -167,6 +167,16 @@ if (mobileBefore.equals(await mobileCanvas.screenshot())) {
 }
 await mobile.close();
 
+const canvasBridgeMobile = await browser.newContext({ viewport: { width: 390, height: 844 },
+  deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+const canvasBridgePage = await canvasBridgeMobile.newPage();
+await canvasBridgePage.addInitScript(() => {
+  Object.defineProperty(HTMLCanvasElement.prototype, 'transferControlToOffscreen', { value: undefined, configurable: true });
+});
+await canvasBridgePage.goto(base);
+await canvasBridgePage.locator('#st').getByText('Running locally').waitFor({ timeout: 45000 });
+await canvasBridgeMobile.close();
+
 if (await page.locator('img[alt="ClavaStack"]').count() ||
     (await page.title()).includes('ClavaStack') ||
     !await page.locator('a[href="https://github.com/Schnuartz/specter-diy"]').count() ||
