@@ -187,7 +187,23 @@
       font-size: 13px;
       gap: 10px;
       z-index: 10;
+      padding: 22px;
+      text-align: center;
     }
+    .loading-shell { width: min(100%, 280px); display:flex; flex-direction:column; align-items:center; gap:10px; }
+    .loading-title { color:#fff; font-size:15px; font-weight:700; letter-spacing:.01em; }
+    .loading-label { min-height:32px; color:var(--specter-light-secondary); font-size:12px; line-height:1.4; }
+    .loading-progress { width:100%; height:5px; overflow:hidden; border-radius:999px; background:#252525; }
+    .loading-progress span { display:block; width:12%; height:100%; border-radius:inherit; background:var(--specter-primary); transition:width .35s ease; }
+    .loading-timer { color:#9da7b3; font-size:11px; font-variant-numeric:tabular-nums; }
+    .loading-steps { display:flex; justify-content:space-between; width:100%; margin:2px 0 0; padding:0; color:#68717c; font-size:9px; list-style:none; }
+    .loading-steps li.active { color:var(--specter-primary); }
+    .loading-steps li.done { color:#d8e2ee; }
+    .loading-actions { display:flex; flex-wrap:wrap; justify-content:center; gap:7px; margin-top:3px; }
+    .loading-actions button, .loading-actions a { border:1px solid #52677e; border-radius:6px; padding:7px 9px; color:#e8eef6; background:#182535; font:inherit; font-size:11px; text-decoration:none; cursor:pointer; }
+    .loading-actions button:hover, .loading-actions a:hover { border-color:var(--specter-primary); }
+    #loading.error .loading-title { color:var(--specter-coral); }
+    #loading.error .loading-progress span { background:var(--specter-coral); }
     .spinner {
       width: 28px; height: 28px;
       border: 3px solid #333;
@@ -373,8 +389,21 @@
         </div>
       </div>
       <div id="loading">
-        <div class="spinner"></div>
-        <span>Loading simulator&hellip;</span>
+        <div class="loading-shell">
+          <div class="spinner" aria-hidden="true"></div>
+          <strong class="loading-title" data-loading-title>Starting Specter Simulator</strong>
+          <span class="loading-label" data-loading-label>Preparing the browser runtime&hellip;</span>
+          <div class="loading-progress" role="progressbar" aria-label="Simulator loading" aria-valuemin="0" aria-valuemax="100" aria-valuenow="12"><span data-loading-bar></span></div>
+          <small class="loading-timer" data-loading-timer>Elapsed 0.0 s</small>
+          <ol class="loading-steps" aria-label="Startup steps">
+            <li data-loading-step="runtime" class="active">Runtime</li><li data-loading-step="firmware">Firmware</li><li data-loading-step="display">Display</li>
+          </ol>
+          <div class="loading-actions" data-loading-actions hidden>
+            <button type="button" data-loading-retry>Retry</button>
+            <a href="#technical-details" data-loading-details>Technical details</a>
+            <a href="./legacy/" data-loading-legacy>Legacy mode</a>
+          </div>
+        </div>
       </div>
     </div>
     <!-- Device frame on top (pointer-events: none) -->
@@ -428,6 +457,6 @@
 </footer>
 
 <script src="./assets/jsQR-1.4.0.js"></script>
-<script type="module" src="./browser/site.js?v=8569bb5467fa"></script>
+<script type="module" src="./browser/site.js?v=de55d907350f"></script>
 </body>
 </html>
