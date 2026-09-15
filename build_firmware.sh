@@ -25,7 +25,7 @@ ${ENDCOLOR}"
   # frozen modules and different firmware hashes. See tools/embed_git_info.py.
   export SPECTER_REPRODUCIBLE_BUILD=1
   make clean
-  make disco USE_DBOOT=1
+  make disco USE_DBOOT=1 F469_DISABLE_QSPI=1
 }
 
 run_bootloader() {
@@ -104,7 +104,7 @@ ${ENDCOLOR}"
   export SPECTER_REPRODUCIBLE_BUILD=1
   mkdir -p release
   make clean
-  make disco
+  make disco F469_DISABLE_QSPI=1
   cp ./bin/specter-diy.bin ./release/disco-nobootloader.bin
   cp ./bin/specter-diy.hex ./release/disco-nobootloader.hex
   echo -e "Standard firmware without bootloader saved to release/disco-nobootloader.{bin,hex}"

@@ -94,6 +94,8 @@ class RAMKeyStore(KeyStore):
         if key is None:
             raise KeyStoreError("Pass the key please")
         d = aead_encrypt(key, adata, plaintext)
+        if platform.is_qspi_path(path):
+            platform.ensure_qspi_space(len(d))
         with open(path, "wb") as f:
             f.write(d)
         platform.sync()

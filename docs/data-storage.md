@@ -11,7 +11,9 @@ The device uses three persistent storage areas, plus one volatile one:
 
 - **Internal Flash** (`/flash`) — keystore secrets, PIN state, saved
   mnemonics, network selection
-- **QSPI Flash** (`/qspi`) — wallet data, host settings, global settings
+- **QSPI replacement** (`/qspi`, stored as `/flash/qspi` on F469) — wallet
+  data, host settings, global settings; limited by a reserved internal-flash
+  safety margin when the defective QSPI device is unavailable
 - **SD Card** (`/sd`) — optional mnemonic backups, exported files
 - **SDRAM ramdisk** (`/sdram`, volatile) — temporary storage for untrusted
   host data (e.g. PSBTs being processed); gone at power-off, never
@@ -59,6 +61,14 @@ from both the device secret and your PIN — so changing your PIN only
 requires re-encrypting this one key.
 
 ## QSPI Flash (`/qspi`)
+
+On the STM32F469 configuration used here, the defective QSPI device is
+disabled. The logical `/qspi` namespace is persistently stored in
+`/flash/qspi`, with a reserved internal-flash margin protecting keystore and
+PIN-state writes. This fallback has much less capacity than QSPI; once the
+application quota is exhausted, additional wallet/settings writes fail rather
+than consuming the keystore reserve. The SDRAM ramdisk is never used for this
+namespace and remains volatile temporary storage only.
 
 ### Wallet Data
 
