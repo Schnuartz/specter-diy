@@ -194,9 +194,13 @@ class WalletManager(BaseApp):
             stream.seek(0)
             return ADD_WALLET, stream
         # probably verifying address
-        if data.startswith(b"bitcoin:") or data.startswith(b"BITCOIN:") or b"index=" in data:
+        if (data.startswith(b"bitcoin:") or data.startswith(b"BITCOIN:") or
+                data.startswith(b"liquid:") or data.startswith(b"LIQUID:") or
+                b"index=" in data):
             if data.startswith(b"bitcoin:") or data.startswith(b"BITCOIN:"):
                 stream.seek(8)
+            elif data.startswith(b"liquid:") or data.startswith(b"LIQUID:"):
+                stream.seek(7)
             else:
                 stream.seek(0)
             return VERIFY_ADDRESS, stream
@@ -275,7 +279,9 @@ class WalletManager(BaseApp):
             return bool(confirm)
         elif cmd == VERIFY_ADDRESS:
             raw = stream.read().decode().strip()
-            if raw.lower().startswith("bitcoin:"):
+            # Liquid wallets use the same URI shape but with a liquid: scheme.
+            if (raw.lower().startswith("bitcoin:") or
+                    raw.lower().startswith("liquid:")):
                 raw = raw.split(":", 1)[1]
             addr_part = raw
             query = ""
@@ -362,7 +368,7 @@ class WalletManager(BaseApp):
                         candidate, _ = wallet.get_address(
                             idx, self.network, branch_idx
                         )
-                        if normalize(candidate) == target:
+                        if self.addresses_match(normalize(candidate), target):
                             found = (idx, branch_idx)
                             break
                     if found is not None:
@@ -396,6 +402,10 @@ class WalletManager(BaseApp):
             if not cont:
                 return False
             start_idx += batch_size
+
+    def addresses_match(self, candidate, target):
+        """Allow network-specific managers to compare address variants."""
+        return candidate == target
 
     async def sign_psbt(self, stream, show_screen, encoding=BASE64_STREAM):
         if encoding == BASE64_STREAM:
