@@ -165,6 +165,7 @@ jobs:
           python3 web/tests/test-resolve-build-target.py
           python3 web/tests/test-browser-manifest.py .
           python3 web/tests/test-provenance-manifest.py
+          node web/tests/test-sd-capacity.mjs
       - name: Check Android-sized native worker stacks
         run: node web/tests/test-native-stack.mjs
       - name: Browser smoke tests

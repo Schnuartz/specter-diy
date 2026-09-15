@@ -12,6 +12,9 @@ page.on('request', request => requests.push(request.url()));
 page.on('pageerror', error => errors.push(error.message));
 await page.goto(base, { waitUntil: 'domcontentloaded' });
 await page.locator('#st').getByText('Running locally').waitFor({ timeout: 45000 });
+if (!(await page.locator('#sd-capacity').textContent()).includes('8 GB capacity')) {
+  throw new Error('Simulator does not expose the 8 GB SD capacity');
+}
 const previewPointer = await (await page.request.get(new URL('browser/current.json', base).href)).json();
 const previewManifest = await (await page.request.get(new URL(`${previewPointer.build}build-info.json`, base).href)).json();
 const sourceLink = page.locator('#source-commit-link');
@@ -52,6 +55,9 @@ await page.locator('#sd-picker').setInputFiles({
   name: 'probe.bin', mimeType: 'application/octet-stream', buffer: Buffer.from([0, 1, 2, 255]),
 });
 await page.locator('#sd-files').getByText('probe.bin', { exact: false }).waitFor();
+if (!(await page.locator('#sd-capacity').textContent()).includes('4 B used')) {
+  throw new Error('Simulator did not update SD usage');
+}
 const downloadPromise = page.waitForEvent('download');
 await page.locator('#sd-files button').first().click();
 const download = await downloadPromise;

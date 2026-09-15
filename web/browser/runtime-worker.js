@@ -6,7 +6,9 @@ let scannerActive = false;
 let program = 'wallet';
 self.screen = { width: 480, height: 800 };
 const send = (type, details = {}) => postMessage({ type, ...details });
-const workerRevision = '2026-09-15.1';
+const workerRevision = '2026-09-15.2';
+const SD_CAPACITY_BYTES = 8_000_000_000;
+const SD_ENOSPC = 51;
 let fatalReported = false;
 function reportError(error, source, details = {}) {
   if (fatalReported) return;
@@ -77,6 +79,94 @@ function walk(fs, root, prefix = '') {
   }
   return files;
 }
+function sdStorage(fs) {
+  const files = walk(fs, '/state/sd');
+  const usedBytes = files.reduce((total, file) => total + file.size, 0);
+  return { files, usedBytes, freeBytes: SD_CAPACITY_BYTES - usedBytes,
+    capacityBytes: SD_CAPACITY_BYTES };
+}
+function sendSdList(fs) {
+  send('sd-list', sdStorage(fs));
+}
+function isSdPath(path) {
+  return path === '/state/sd' || path.startsWith('/state/sd/');
+}
+function sdFullError(fs, usedBytes, requestedBytes) {
+  const error = new fs.ErrnoError(SD_ENOSPC);
+  error.message = `Virtual SD card is full: ${usedBytes + requestedBytes} bytes would exceed its 8 GB (${SD_CAPACITY_BYTES} byte) capacity`;
+  error.code = 'ENOSPC';
+  error.capacityBytes = SD_CAPACITY_BYTES;
+  error.usedBytes = usedBytes;
+  error.requestedBytes = requestedBytes;
+  return error;
+}
+function assertSdProjectedSize(fs, node, nextSize) {
+  const currentSize = node.usedBytes ?? fs.stat(fs.getPath(node)).size;
+  const usedBytes = sdStorage(fs).usedBytes;
+  const projected = usedBytes - currentSize + nextSize;
+  if (projected > SD_CAPACITY_BYTES) {
+    throw sdFullError(fs, usedBytes, Math.max(0, nextSize - currentSize));
+  }
+}
+function installSdQuota(fs) {
+  if (fs.__specterSdQuotaInstalled) return;
+  fs.__specterSdQuotaInstalled = true;
+  const originalWrite = fs.write.bind(fs);
+  fs.write = (stream, buffer, offset, length, position, canOwn) => {
+    const path = fs.getPath(stream.node);
+    if (isSdPath(path)) {
+      const currentSize = stream.node.usedBytes ?? fs.stat(path).size;
+      const writeAt = stream.seekable && (stream.flags & 1024)
+        ? currentSize : (typeof position === 'undefined' ? stream.position : position);
+      assertSdProjectedSize(fs, stream.node, Math.max(currentSize, writeAt + length));
+    }
+    return originalWrite(stream, buffer, offset, length, position, canOwn);
+  };
+  const originalWriteFile = fs.writeFile.bind(fs);
+  fs.writeFile = (path, data, options) => {
+    if (typeof path === 'string' && isSdPath(path)) {
+      const result = fs.analyzePath(path);
+      const node = result.exists ? result.object : { usedBytes: 0 };
+      const byteLength = typeof data === 'string' ? new TextEncoder().encode(data).byteLength : data.byteLength;
+      assertSdProjectedSize(fs, node, byteLength);
+    }
+    return originalWriteFile(path, data, options);
+  };
+  const originalTruncate = fs.truncate.bind(fs);
+  fs.truncate = (path, length) => {
+    const node = typeof path === 'string' ? fs.lookupPath(path, { follow: true }).node : path;
+    if (isSdPath(fs.getPath(node))) assertSdProjectedSize(fs, node, length);
+    return originalTruncate(path, length);
+  };
+  const originalAllocate = fs.allocate.bind(fs);
+  fs.allocate = (stream, offset, length) => {
+    if (isSdPath(fs.getPath(stream.node))) {
+      const currentSize = stream.node.usedBytes ?? 0;
+      assertSdProjectedSize(fs, stream.node, Math.max(currentSize, offset + length));
+    }
+    return originalAllocate(stream, offset, length);
+  };
+  const originalMsync = fs.msync.bind(fs);
+  fs.msync = (stream, buffer, offset, length, flags) => {
+    if (isSdPath(fs.getPath(stream.node))) {
+      const currentSize = stream.node.usedBytes ?? 0;
+      assertSdProjectedSize(fs, stream.node, Math.max(currentSize, offset + length));
+    }
+    return originalMsync(stream, buffer, offset, length, flags);
+  };
+  const originalStatfs = fs.statfs.bind(fs);
+  fs.statfs = path => {
+    const stats = originalStatfs(path);
+    const node = typeof path === 'string' ? fs.lookupPath(path, { follow: true }).node : path;
+    if (!isSdPath(fs.getPath(node))) return stats;
+    const storage = sdStorage(fs);
+    const blockSize = 4096;
+    return { ...stats, bsize: blockSize, frsize: blockSize,
+      blocks: Math.floor(SD_CAPACITY_BYTES / blockSize),
+      bfree: Math.floor(storage.freeBytes / blockSize),
+      bavail: Math.floor(storage.freeBytes / blockSize) };
+  };
+}
 function flushQr() {
   if (!runtimeReady || !qrQueue.length) return;
   const fs = Module.FS;
@@ -135,15 +225,15 @@ function handle(data) {
       const path = `/state/sd/${name}`;
       mkdirs(fs, path.substring(0, path.lastIndexOf('/')));
       fs.writeFile(path, new Uint8Array(data.bytes));
-      send('sd-list', { files: walk(fs, '/state/sd') });
+      sendSdList(fs);
     } else if (data.type === 'sd-delete') {
       fs.unlink(`/state/sd/${relativePath(data.name)}`);
-      send('sd-list', { files: walk(fs, '/state/sd') });
+      sendSdList(fs);
     } else if (data.type === 'sd-clear') {
       for (const { path } of walk(fs, '/state/sd')) fs.unlink(`/state/sd/${path}`);
-      send('sd-list', { files: [] });
+      sendSdList(fs);
     } else if (data.type === 'sd-list') {
-      send('sd-list', { files: walk(fs, '/state/sd') });
+      sendSdList(fs);
     } else if (data.type === 'state-import') {
       for (const file of data.files || []) {
         const name = relativePath(file.path);
@@ -152,7 +242,7 @@ function handle(data) {
         mkdirs(fs, path.substring(0, path.lastIndexOf('/')));
         fs.writeFile(path, new Uint8Array(file.bytes));
       }
-      send('sd-list', { files: walk(fs, '/state/sd') });
+      sendSdList(fs);
       cardInfo(fs);
     } else if (data.type === 'state-remove-prefix') {
       const prefix = data.prefix;
@@ -160,7 +250,7 @@ function handle(data) {
       for (const { path } of walk(fs, '/state')) {
         if (path.startsWith(prefix)) fs.unlink(`/state/${path}`);
       }
-      send('sd-list', { files: walk(fs, '/state/sd') });
+      sendSdList(fs);
       cardInfo(fs);
     } else if (data.type === 'sd-export') {
       const name = relativePath(data.name);
@@ -203,7 +293,9 @@ function handle(data) {
       send('snapshot', { requestId: data.requestId, files });
     }
   } catch (error) {
-    send('operation-error', { operation: data.type, message: String(error) });
+    const storage = error?.code === 'ENOSPC' ? sdStorage(fs) : {};
+    send('operation-error', { operation: data.type, name: error?.name, code: error?.code,
+      message: error?.message || String(error), ...storage });
   }
 }
 onmessage = async ({ data }) => {
@@ -244,6 +336,7 @@ onmessage = async ({ data }) => {
         mkdirs(fs, '/state/sd');
         mkdirs(fs, '/state/cards');
         mkdirs(fs, '/bridge');
+        installSdQuota(fs);
         for (const file of data.stateFiles || []) {
           if (!file.path || file.path.startsWith('ramdisk/')) continue;
           const name = relativePath(file.path);
