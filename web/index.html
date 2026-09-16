@@ -183,6 +183,10 @@
     .sim-panel h2 { color: var(--specter-light); font-size: 14px; margin-bottom: 7px; }
     .sim-panel h3 { color: var(--specter-light); font-size: 13px; margin: 12px 0 6px; }
     .sim-panel p { margin: 5px 0; }
+    .sim-panel > #build-label { display:none; }
+    .sim-panel > h3, .sim-panel > #camera-state,
+    .sim-panel > #camera-toggle, .sim-panel > #camera-select,
+    .sim-panel > #camera-preview { display:none; }
     .sim-panel button, .sim-panel select {
       background: var(--specter-dark-accent); color: var(--specter-light);
       border: 1px solid #536174; border-radius: 6px; padding: 7px;
@@ -210,6 +214,8 @@
     #camera-screen.active #camera-screen-start { display:none; }
     .peripheral-card { border:1px solid #3b4a5e; border-radius:10px; background:linear-gradient(135deg,#111c2b,#202d3e); padding:10px; margin:8px 0; }
     .sd-stage { display:flex; align-items:center; gap:16px; min-height:100px; }
+    .sim-panel #sd-toggle { display:block; width:84px; min-height:84px; padding:0; margin:0; border:0; background:transparent; }
+    .sim-panel #sd-toggle:hover { border:0; }
     .sd-card-graphic { width:84px; height:84px; object-fit:contain; flex:none; filter:drop-shadow(5px 7px 7px #0008); transition:transform .25s ease,filter .25s ease; }
     .sd-stage.inserted .sd-card-graphic { transform:translateY(-5px) rotate(-5deg); filter:drop-shadow(0 9px 10px #1f99e588); }
     .sd-stage span { line-height:1.45; }
@@ -222,6 +228,18 @@
     .sim-panel .smartcard-graphic { cursor:pointer; border:0; width:100%; text-align:left; margin:0; background:linear-gradient(145deg,#fff,#d9e1e7); color:#13263a; }
     .sim-panel .smartcard-graphic:hover { border:0; box-shadow:0 7px 18px #1f99e579; }
     .card-tray .card-hint { color:#aab8c8; display:block; font-size:10px; margin-top:6px; text-align:center; }
+    #card-panel > p { display:none; }
+    .hardware-link { width:100%; max-width:580px; text-align:center; color:var(--specter-light-secondary); font-size:12px; line-height:1.45; }
+    .hardware-link a { color:var(--specter-primary); font-weight:700; text-underline-offset:3px; }
+    .demo-import { width:100%; max-width:305px; border:1px solid #3b4a5e; border-radius:9px; background:var(--specter-dark-secondary); color:var(--specter-light-secondary); padding:11px; font-size:12px; line-height:1.4; }
+    .demo-import button { background:var(--specter-dark-accent); color:var(--specter-light); border:1px solid #536174; border-radius:6px; padding:7px; cursor:pointer; min-height:34px; font:inherit; font-weight:600; }
+    .demo-import button:hover { border-color:var(--specter-primary); }
+    .demo-import details { margin-top:7px; }
+    .technical-details { width:100%; max-width:380px; color:var(--specter-light-secondary); font-size:12px; line-height:1.45; }
+    .technical-details summary { cursor:pointer; }
+    .technical-details p { margin:7px 0; }
+    .technical-details a { color:var(--specter-primary); }
+    .technical-details pre { white-space:pre-wrap; overflow-wrap:anywhere; font-size:11px; max-height:180px; overflow:auto; }
     @media (max-width:600px) { .card-tray { gap:5px; } .smartcard-graphic { padding:5px; } }
 
     footer {
@@ -241,11 +259,14 @@
     .gallery .phone-wrapper { max-width:100%; }
     .gallery .phone-wrapper .phone-mockup { width:100%; height:auto; }
     @media (min-width:900px) {
-      .page { display:grid; grid-template-columns:380px 380px; grid-template-areas:'warning warning' 'device peripherals' 'restart peripherals'; gap:12px 22px; width:100%; max-width:822px; margin:auto; align-items:start; }
+      .page { display:grid; grid-template-columns:380px 380px; grid-template-areas:'warning warning' 'device peripherals' 'restart peripherals' 'hardware hardware' 'demo demo' 'technical technical'; gap:12px 22px; width:100%; max-width:822px; margin:auto; align-items:start; }
       .warning { grid-area:warning; max-width:280px; justify-self:center; }
       .phone-wrapper { grid-area:device; }
       .restart-btn { grid-area:restart; }
       .sim-panel { grid-area:peripherals; }
+      .hardware-link { grid-area:hardware; justify-self:center; margin-top:2px; }
+      .demo-import { grid-area:demo; justify-self:center; }
+      .technical-details { grid-area:technical; justify-self:center; }
       .embedded .page { grid-template-columns:330px 380px; max-width:760px; }
       .gallery .page { display:block; max-width:none; }
     }
@@ -299,13 +320,12 @@
   </button>
 
   <section class="sim-panel" aria-label="Simulator and peripherals">
-    <h2>Simulator <span style="font-size:11px;color:#7c9">Running locally in your browser</span></h2>
+    <h2>Simulator</h2>
     <p id="build-label">Loading build information…</p>
     <p id="isolation-warning" hidden></p>
     <div class="peripheral-card">
       <h3>Virtual SD card <span id="sd-state">Ejected</span></h3>
-      <div id="sd-stage" class="sd-stage"><img class="sd-card-graphic" src="./assets/sd-card-32gb.png" alt="DK 32 GB SD card"><span>Session-only · files stay in this tab</span></div>
-      <button id="sd-toggle">Insert SD card</button>
+      <div id="sd-stage" class="sd-stage"><button id="sd-toggle" type="button" aria-label="Insert SD card"><img class="sd-card-graphic" src="./assets/sd-card-32gb.png" alt="DK 32 GB SD card"></button><span>Session-only · files stay in this tab</span></div>
       <button id="sd-add">Add files</button>
       <button id="sd-clear">Clear card</button>
       <input id="sd-picker" type="file" multiple hidden>
@@ -331,6 +351,18 @@
       <pre id="debug-log"></pre>
     </details>
   </section>
+
+  <p class="hardware-link">Everything above is a simulation of <a href="https://clavastack.com" target="_blank" rel="noopener noreferrer">hardware you can buy</a>.</p>
+
+  <section class="demo-import" aria-label="Public demo data">
+    <button id="demo-load" type="button">Import Demo Data</button>
+    <details><summary>What gets imported?</summary><p>Unsafe public test data only. Never use a real seed phrase in this simulator.</p></details>
+  </section>
+
+  <details class="technical-details">
+    <summary>Technical details</summary>
+    <p>Source commit and runtime diagnostics are available in the simulator panel.</p>
+  </details>
 
 </div>
 
