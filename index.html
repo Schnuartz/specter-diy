@@ -48,14 +48,14 @@
       display: flex;
       flex-direction: column;
       align-items: center;
-      padding: 16px 12px 32px;
-      gap: 14px;
+      padding: 14px 12px 30px;
+      gap: 12px;
     }
 
     @media (max-width: 600px) {
       .page {
-        padding: 8px 4px 32px;
-        gap: 10px;
+        padding: 8px 4px 28px;
+        gap: 9px;
       }
     }
 
@@ -82,70 +82,6 @@
     }
 
     /* CTA section */
-    .cta-section {
-      width: 100%;
-      max-width: 380px;
-      text-align: center;
-      padding: 8px 4px 0;
-    }
-    .cta-headline {
-      font-size: 16px;
-      font-weight: 700;
-      color: var(--specter-light);
-      margin-bottom: 6px;
-      line-height: 1.3;
-    }
-    .cta-sub {
-      font-size: 13px;
-      color: var(--specter-light-secondary);
-      margin-bottom: 16px;
-      line-height: 1.5;
-    }
-    .cta-benefits {
-      list-style: none;
-      padding: 0;
-      margin: 0 0 16px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-    .cta-benefits li {
-      display: flex;
-      align-items: flex-start;
-      gap: 10px;
-      font-size: 13px;
-      color: var(--specter-light-secondary);
-      text-align: left;
-    }
-    .cta-benefits li .icon {
-      font-size: 18px;
-      line-height: 1;
-      flex-shrink: 0;
-      margin-top: 1px;
-    }
-    .cta-benefits li strong {
-      color: var(--specter-light);
-      display: block;
-      font-size: 13px;
-      margin-bottom: 1px;
-    }
-    .cta-buy-btn {
-      display: block;
-      width: 100%;
-      padding: 14px;
-      border-radius: 9999px;
-      font-size: 15px;
-      font-weight: 700;
-      text-align: center;
-      background: var(--specter-primary);
-      color: #fff;
-      text-decoration: none;
-      transition: opacity 0.2s;
-      min-height: 48px;
-      line-height: 1.2;
-    }
-    .cta-buy-btn:hover { opacity: 0.88; }
-
     /* The LVGL canvas sits UNDER the existing device mockup image. */
     #screen-overlay {
       position: absolute;
@@ -197,19 +133,22 @@
 
     /* Restart button */
     .restart-btn {
-      display: block;
-      width: 100%;
-      max-width: 380px;
-      padding: 14px;
-      border-radius: 9999px;
-      font-size: 15px;
+      display: inline-flex;
+      width: auto;
+      max-width: none;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 7px 11px;
+      border-radius: 6px;
+      font-size: 12px;
       font-weight: 600;
       text-align: center;
       background: transparent;
       color: var(--specter-coral);
-      border: 2px solid var(--specter-coral);
+      border: 1px solid var(--specter-coral);
       cursor: pointer;
-      min-height: 48px;
+      min-height: 36px;
       transition: background 0.2s;
     }
     .restart-btn:hover, .restart-btn:active {
@@ -235,19 +174,19 @@
     .status-card a { color: var(--specter-primary); text-decoration: none; font-size: 12px; }
 
     .warning, .sim-panel {
-      width: 100%; max-width: 380px; border-radius: 10px; padding: 14px;
+      width: 100%; max-width: 380px; border-radius: 9px; padding: 12px;
       background: var(--specter-dark-secondary); color: var(--specter-light-secondary);
-      font-size: 13px; line-height: 1.45;
+      font-size: 12px; line-height: 1.4;
     }
-    .warning { border: 1px solid var(--specter-coral); }
+    .warning { max-width: 280px; border: 1px solid var(--specter-coral); }
     .warning strong { color: var(--specter-coral); display: block; margin-bottom: 4px; }
-    .sim-panel h2 { color: var(--specter-light); font-size: 15px; margin-bottom: 8px; }
+    .sim-panel h2 { color: var(--specter-light); font-size: 14px; margin-bottom: 7px; }
     .sim-panel h3 { color: var(--specter-light); font-size: 13px; margin: 12px 0 6px; }
     .sim-panel p { margin: 5px 0; }
     .sim-panel button, .sim-panel select {
       background: var(--specter-dark-accent); color: var(--specter-light);
-      border: 1px solid #536174; border-radius: 6px; padding: 8px;
-      cursor: pointer; margin: 3px 3px 3px 0; min-height: 36px;
+      border: 1px solid #536174; border-radius: 6px; padding: 7px;
+      cursor: pointer; margin: 2px 2px 2px 0; min-height: 34px;
     }
     .sim-panel button:hover { border-color: var(--specter-primary); }
     .sim-panel a { color: var(--specter-primary); }
@@ -269,7 +208,7 @@
     .camera-reticle { position:absolute; width:66%; aspect-ratio:1; border:2px solid #ffffffb8; border-radius:17px; left:17%; top:40%; transform:translateY(-50%); box-shadow:0 0 0 200px #0002; pointer-events:none; }
     #camera-screen:not(.active) .camera-reticle { display:none; }
     #camera-screen.active #camera-screen-start { display:none; }
-    .peripheral-card { border:1px solid #3b4a5e; border-radius:12px; background:linear-gradient(135deg,#111c2b,#202d3e); padding:12px; margin:9px 0; }
+    .peripheral-card { border:1px solid #3b4a5e; border-radius:10px; background:linear-gradient(135deg,#111c2b,#202d3e); padding:10px; margin:8px 0; }
     .sd-stage { display:flex; align-items:center; gap:16px; min-height:100px; }
     .sd-card-graphic { width:84px; height:84px; object-fit:contain; flex:none; filter:drop-shadow(5px 7px 7px #0008); transition:transform .25s ease,filter .25s ease; }
     .sd-stage.inserted .sd-card-graphic { transform:translateY(-5px) rotate(-5deg); filter:drop-shadow(0 9px 10px #1f99e588); }
@@ -302,12 +241,11 @@
     .gallery .phone-wrapper { max-width:100%; }
     .gallery .phone-wrapper .phone-mockup { width:100%; height:auto; }
     @media (min-width:900px) {
-      .page { display:grid; grid-template-columns:380px 380px; grid-template-areas:'warning warning' 'device peripherals' 'restart peripherals' 'cta cta'; gap:16px 22px; width:100%; max-width:822px; margin:auto; align-items:start; }
-      .warning { grid-area:warning; max-width:none; }
+      .page { display:grid; grid-template-columns:380px 380px; grid-template-areas:'warning warning' 'device peripherals' 'restart peripherals'; gap:12px 22px; width:100%; max-width:822px; margin:auto; align-items:start; }
+      .warning { grid-area:warning; max-width:280px; justify-self:center; }
       .phone-wrapper { grid-area:device; }
       .restart-btn { grid-area:restart; }
       .sim-panel { grid-area:peripherals; }
-      .cta-section { grid-area:cta; justify-self:center; }
       .embedded .page { grid-template-columns:330px 380px; max-width:760px; }
       .gallery .page { display:block; max-width:none; }
     }
@@ -332,8 +270,7 @@
 <div class="page">
 
   <div class="warning" role="note">
-    <strong>EXPERIMENTAL DEVELOPMENT BUILD — NEVER ENTER A REAL SEED PHRASE.</strong>
-    This browser simulator and any matching test firmware are unreleased development builds. Never use them with real funds. The simulator has none of the security or air-gap guarantees of physical hardware. Use test seeds and dedicated test devices only.
+    <strong>NEVER ENTER A REAL SEED PHRASE.</strong>
   </div>
 
   <!-- The real Specter LVGL display renders inside the existing device frame. -->
@@ -402,6 +339,6 @@
 </footer>
 
 <script src="./assets/jsQR-1.4.0.js"></script>
-<script type="module" src="./browser/site.js?v=bffe31ffb1e3"></script>
+<script type="module" src="./browser/site.js?v=ed5bdfe6851a"></script>
 </body>
 </html>
