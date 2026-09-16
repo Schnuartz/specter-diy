@@ -16,7 +16,8 @@ from publish_preview import publish_files, validate_bundles
 
 ROOT = Path(__file__).resolve().parents[1]
 POINTER = json.loads((ROOT / "browser/current.json").read_text())
-MANIFEST = json.loads((ROOT / POINTER["build"] / "build-info.json").read_text())
+BUILD_PATH = POINTER["build"].lstrip("/")
+MANIFEST = json.loads((ROOT / BUILD_PATH / "build-info.json").read_text())
 SHA = MANIFEST["commit"]
 REPO = MANIFEST["repository"]
 
@@ -30,7 +31,7 @@ class PublisherTests(unittest.TestCase):
         self.firmware = self.root / "firmware"
         web = self.browser / "web"
         for name in ("index.html", "assets", "browser/runtime", "browser/site.js",
-                     "browser/runtime-worker.js", "browser/current.json", POINTER["build"].rstrip("/")):
+                     "browser/runtime-worker.js", "browser/current.json", BUILD_PATH.rstrip("/")):
             source, target = ROOT / name, web / name
             target.parent.mkdir(parents=True, exist_ok=True)
             if source.is_dir():
@@ -71,7 +72,7 @@ class PublisherTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Firmware hash mismatch"):
             validate_bundles(self.browser, self.firmware, SHA, REPO)
         firmware.write_bytes(b"bin/specter-diy.bin")
-        wasm = self.browser / "web" / POINTER["build"] / "micropython.wasm"
+        wasm = self.browser / "web" / BUILD_PATH / "micropython.wasm"
         with wasm.open("ab") as file:
             file.write(b"tampered")
         with self.assertRaisesRegex(ValueError, "Missing or invalid|Hash mismatch"):

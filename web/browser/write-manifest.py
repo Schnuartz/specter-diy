@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 import json
+import re
 import subprocess
 import sys
 
@@ -13,6 +14,20 @@ repository = sys.argv[3]
 
 def git(*args):
     return subprocess.check_output(["git", "-C", str(source), *args], text=True).strip()
+
+
+def specter_firmware_version():
+    """Decode the firmware version using the layout from src/platform.py."""
+    boot = source / "boot" / "main" / "boot.py"
+    match = re.search(r"<version:tag10>(\d{10})</version:tag10>", boot.read_text())
+    if not match:
+        raise RuntimeError(f"Missing Specter firmware version tag in {boot}")
+    encoded = match.group(1)
+    version = f"{int(encoded[:2])}.{int(encoded[2:5])}.{int(encoded[5:8])}"
+    release_candidate = int(encoded[8:])
+    if release_candidate != 99:
+        version += f"-rc{release_candidate}"
+    return version
 
 
 artifacts = {}
@@ -37,6 +52,8 @@ manifest = {
     "built_at": datetime.now(timezone.utc).isoformat(),
     "artifacts": artifacts,
 }
+if repository.lower() in ("cryptoadvance/specter-diy", "schnuartz/specter-diy", "schnuartz-ai/specter-diy"):
+    manifest["firmware_version"] = specter_firmware_version()
 if len(sys.argv) > 4 and sys.argv[4] == "mockui":
     manifest["application"] = "MockUI"
     manifest["entrypoint"] = "mockui"

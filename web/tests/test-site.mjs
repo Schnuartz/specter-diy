@@ -50,6 +50,17 @@ await page.locator('#st').getByText('Running locally').waitFor({ timeout: 45000 
 await page.locator('#sd-state').getByText('Inserted').waitFor();
 await page.locator('#sd-files').getByText('probe.bin', { exact: false }).waitFor();
 await canvas.screenshot({ path: 'test-results/specter-after-restart.png' });
+await page.locator('#demo-load').click();
+await page.locator('#demo-load').getByText('Import Demo Data Again', { exact: true }).waitFor({ timeout: 30000 });
+await page.locator('#sd-files').getByText('testnet-multisig-unsigned.psbt', { exact: false }).waitFor();
+await page.locator('#card-slots > div').first().getByText('Inserted', { exact: true }).waitFor();
+await page.locator('#card-slots > div').first().getByText('ghost-seed', { exact: false }).waitFor();
+if (await page.locator('.smartcard-photo').count() !== 3 ||
+    !await page.locator('.smartcard-photo').first().evaluate(img => img.complete && img.naturalWidth > 0)) {
+  throw new Error('Smartcard artwork did not load');
+}
+if (await page.locator('.hardware-link').count()) throw new Error('Removed hardware purchase note is still present');
+if (await page.locator('#camera-toggle').isVisible()) throw new Error('Backup camera control should stay hidden');
 if (requests.some(url => /\/api\/(allocate|heartbeat)|\/novnc\//.test(url))) {
   throw new Error('Browser mode requested legacy VNC/session infrastructure');
 }
@@ -86,32 +97,6 @@ if (!probe.logs.includes('SD_PROBE_PRESENT True') ||
   throw new Error(`Specter SD platform read/write failed: ${probe.logs.join('; ')}`);
 }
 
-const deniedPage = await browser.newPage();
-await deniedPage.addInitScript(() => Object.defineProperty(navigator, 'mediaDevices', {
-  configurable: true,
-  value: {
-    getUserMedia: () => Promise.reject(new DOMException('Denied for test', 'NotAllowedError')),
-    enumerateDevices: () => Promise.resolve([]),
-  },
-}));
-await deniedPage.goto(base);
-await deniedPage.locator('#camera-toggle').click();
-await deniedPage.locator('#camera-state').getByText('Camera permission denied').waitFor();
-await deniedPage.close();
-
-const missingCameraPage = await browser.newPage();
-await missingCameraPage.addInitScript(() => Object.defineProperty(navigator, 'mediaDevices', {
-  configurable: true,
-  value: {
-    getUserMedia: () => Promise.reject(new DOMException('No camera found', 'NotFoundError')),
-    enumerateDevices: () => Promise.resolve([]),
-  },
-}));
-await missingCameraPage.goto(base);
-await missingCameraPage.locator('#camera-toggle').click();
-await missingCameraPage.locator('#camera-state').getByText('Camera unavailable: No camera found').waitFor();
-await missingCameraPage.close();
-
 const crashPage = await browser.newPage();
 await crashPage.route('**/browser/runtime-worker.js*', route => route.abort());
 await crashPage.goto(base);
@@ -142,7 +127,7 @@ if (await page.locator('img[alt="ClavaStack"]').count() ||
 console.log(JSON.stringify({ result: 'pass', canvasColors: colors.size,
   crossOriginIsolated: isolated,
   pointer: 'changed Specter screen', sd: 'import/export/restart/Specter platform read+write',
-  mobileTouch: 'changed Specter screen', cameraDenied: 'handled', noCamera: 'handled',
+  mobileTouch: 'changed Specter screen', demo: 'files and Smartcards imported',
   workerCrash: 'handled', branding: 'Specter DIY',
   legacyRequestsInBrowserMode: 0 }, null, 2));
 await browser.close();
