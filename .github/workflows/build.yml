@@ -106,7 +106,9 @@ jobs:
           else
             python3 web/tools/source_info.py firmware
           fi
-      - uses: actions/upload-artifact@v4
+      - name: Upload firmware binaries
+        id: firmware-upload
+        uses: actions/upload-artifact@v4
         with:
           name: firmware-binaries
           if-no-files-found: error
@@ -114,6 +116,14 @@ jobs:
             bin/specter-diy.bin
             bin/specter-diy.hex
             source.json
+      - name: Add firmware download to workflow summary
+        env:
+          ARTIFACT_URL: ${{ steps.firmware-upload.outputs.artifact-url }}
+        run: |
+          echo "## Specter firmware" >> "$GITHUB_STEP_SUMMARY"
+          echo "[Download the tested firmware artifact]($ARTIFACT_URL)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "For the normal STM32 flashing workflow use bin/specter-diy.bin at address 0x08000000, or use bin/specter-diy.hex with a compatible flasher." >> "$GITHUB_STEP_SUMMARY"
 
   browser:
     name: Build and smoke-test browser simulator
@@ -170,7 +180,9 @@ jobs:
           CI=true npm run test:browser --prefix web
       - name: Record browser provenance
         run: python3 web/tools/source_info.py browser
-      - uses: actions/upload-artifact@v4
+      - name: Upload browser simulator
+        id: browser-upload
+        uses: actions/upload-artifact@v4
         with:
           name: browser-simulator
           if-no-files-found: error
@@ -183,3 +195,19 @@ jobs:
             web/browser/current.json
             web/builds/**
             source.json
+      - name: Add simulator links to workflow summary
+        env:
+          ARTIFACT_URL: ${{ steps.browser-upload.outputs.artifact-url }}
+          PREVIEW_NUMBER: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number || '0' }}
+        run: |
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          REPOSITORY="${GITHUB_REPOSITORY#*/}"
+          echo "## Specter browser simulator" >> "$GITHUB_STEP_SUMMARY"
+          if test "$PREVIEW_NUMBER" != "0"; then
+            echo "[Open this PR in the browser simulator](https://${OWNER}.github.io/${REPOSITORY}/pr/${PREVIEW_NUMBER}/)" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The preview becomes available after the trusted Publish workflow has accepted this build." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "[Download the tested browser build]($ARTIFACT_URL)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "[Open the live reference simulator](https://try.clavastack.com/?variant=diy) (reference deployment, not this commit)" >> "$GITHUB_STEP_SUMMARY"

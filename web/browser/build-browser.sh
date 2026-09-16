@@ -28,10 +28,17 @@ test "$(emcc --version | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
 
 python3 "$ROOT/browser/patch-source.py" "$SPECTER_SRC"
 cat > "$SPECTER_SRC/browser.manifest.py" <<'EOF'
+import os
 freeze('f469-disco/usermods/udisplay_f469/display_unixport')
-freeze('f469-disco/libs/common')
+# Newer boards curate embit's src/ layout and omit CPython-only examples/tests.
+# Older board revisions had flat common libraries and no curated manifest.
+if os.path.isfile('f469-disco/manifests/common.py'):
+    include('f469-disco/manifests/common.py')
+else:
+    freeze('f469-disco/libs/common')
 freeze('src')
 EOF
+python3 "$ROOT/tests/test-browser-manifest.py" "$SPECTER_SRC"
 make -C "$SPECTER_SRC/f469-disco/micropython/mpy-cross" -j4 \
   CFLAGS_EXTRA="-Wno-dangling-pointer -Wno-enum-int-mismatch"
 

@@ -53,6 +53,12 @@ changing wallet screens or logic. Browser-specific Python, JS, and source
 patching stay under `web/browser/`. The existing Unix simulator and hardware
 firmware build remain separate.
 
+For newer board revisions, the browser freeze uses the board's curated
+`f469-disco/manifests/common.py`, including embit from its `src/` package path.
+Older revisions without that manifest retain the original flat-library freeze.
+The build checks the resulting module list before compiling WebAssembly, so
+CPython-only embit examples and tests cannot enter a current browser build.
+
 ## CI and Pages
 
 The existing `Build` workflow now runs native tests, builds Unix and STM32
@@ -87,6 +93,8 @@ resolves the prefix against that PR's current full head SHA before checking out
 source. If the head changes to a different prefix before publication, the
 publisher ignores the stale run. Seven characters are convenient but are not
 globally unique; use a longer prefix when comparing closely spaced revisions.
+Whitespace around the inputs is ignored. If the SHA does not match the PR's
+current head, the target job reports the current prefix and stops the build.
 The CLI helper needs only the PR number and reads the SHA itself:
 
 ```sh

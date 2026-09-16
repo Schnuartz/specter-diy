@@ -147,7 +147,7 @@ class PublisherTests(unittest.TestCase):
         event = self.root / "event.json"
         state = self.root / "state.json"
         event.write_text(json.dumps({"workflow_run": {
-            "name": "Build", "event": "pull_request", "conclusion": "failure",
+            "name": "PR 17", "path": ".github/workflows/build.yml", "event": "pull_request", "conclusion": "failure",
             "head_sha": SHA, "pull_requests": [{"number": 17}],
         }}))
         pr = {"number": 17, "state": "open", "merge_commit_sha": "1" * 40,
@@ -166,7 +166,7 @@ class PublisherTests(unittest.TestCase):
         target = self.root / "target.json"
         event.write_text(json.dumps({"workflow_run": {
             "id": 22, "html_url": "https://github.com/example/actions/runs/22",
-            "name": "Build", "event": "pull_request", "conclusion": "success",
+            "name": "PR 17", "path": ".github/workflows/build.yml", "event": "pull_request", "conclusion": "success",
             "head_sha": SHA, "pull_requests": [{"number": 17}],
         }}))
         target.write_text(json.dumps({"event": "pull_request", "number": 17,
@@ -192,7 +192,7 @@ class PublisherTests(unittest.TestCase):
         state = self.root / "state.json"
         event.write_text(json.dumps({"workflow_run": {
             "id": 22, "html_url": "https://github.com/example/actions/runs/22",
-            "name": "Build", "event": "pull_request", "conclusion": "failure",
+            "name": "PR 17", "path": ".github/workflows/build.yml", "event": "pull_request", "conclusion": "failure",
             "head_sha": SHA, "head_branch": "feature",
             "head_repository": {"full_name": REPO}, "pull_requests": [],
         }}))
@@ -232,7 +232,7 @@ class PublisherTests(unittest.TestCase):
         event = self.root / "event.json"
         event.write_text(json.dumps({"workflow_run": {
             "id": 22, "html_url": "https://github.com/example/actions/runs/22",
-            "name": "Build", "event": "pull_request", "conclusion": "success",
+            "name": "PR 17", "path": ".github/workflows/build.yml", "event": "pull_request", "conclusion": "success",
             "head_sha": SHA, "pull_requests": [{"number": 17}],
         }}))
         pr = {"number": 17, "state": "open", "merge_commit_sha": "1" * 40,
@@ -256,7 +256,7 @@ class PublisherTests(unittest.TestCase):
         target = self.root / "target.json"
         event.write_text(json.dumps({"workflow_run": {
             "id": 22, "html_url": "https://github.com/example/actions/runs/22",
-            "name": "Build", "event": "pull_request", "conclusion": "success",
+            "name": "PR 17", "path": ".github/workflows/build.yml", "event": "pull_request", "conclusion": "success",
             "head_sha": SHA, "pull_requests": [{"number": 17}],
         }}))
         target.write_text(json.dumps({"event": "pull_request", "number": 18,
@@ -281,8 +281,10 @@ class PublisherTests(unittest.TestCase):
         event = self.root / "event.json"
         event.write_text(json.dumps({"repository": {"default_branch": "master"}, "workflow_run": {
             "id": 22, "html_url": "https://github.com/example/actions/runs/22",
-            "name": "Build", "event": "workflow_dispatch", "conclusion": "failure",
-            "display_title": f"Manual PR 17 {SHA[:7]}", "head_sha": platform_sha,
+            "name": f"Manual PR 17  {SHA[:7]}",
+            "path": ".github/workflows/build.yml", "event": "workflow_dispatch",
+            "conclusion": "failure", "display_title": f"Manual PR 17  {SHA[:7]} ",
+            "head_sha": platform_sha,
             "head_branch": "master", "head_repository": {"full_name": REPO},
         }}))
         pr = {"number": 17, "state": "open", "head": {
@@ -298,7 +300,7 @@ class PublisherTests(unittest.TestCase):
         self.assertFalse(result["published"])
         self.assertFalse(preview.exists())
         event_data = json.loads(event.read_text())
-        event_data["workflow_run"]["display_title"] = "Manual PR 17 fffffff"
+        event_data["workflow_run"]["display_title"] = "Manual PR 17  4c2a3f2"
         event.write_text(json.dumps(event_data))
         preview.mkdir(parents=True)
         (preview / "index.html").write_text("newer preview")
@@ -307,6 +309,12 @@ class PublisherTests(unittest.TestCase):
             result = publish_preview.prepare(args)
         self.assertTrue(result["skip"])
         self.assertEqual((preview / "index.html").read_text(), "newer preview")
+        event_data["workflow_run"]["display_title"] = f"Manual PR 17 {SHA[:7]}"
+        event_data["workflow_run"]["path"] = ".github/workflows/other.yml"
+        event.write_text(json.dumps(event_data))
+        with patch.dict("os.environ", {"GITHUB_REPOSITORY": REPO}):
+            with self.assertRaisesRegex(ValueError, "Unrecognized workflow run"):
+                publish_preview.prepare(args)
 
     def test_manual_success_checks_platform_commit(self):
         platform_sha = "b" * 40
@@ -314,7 +322,8 @@ class PublisherTests(unittest.TestCase):
         target = self.root / "target.json"
         event.write_text(json.dumps({"repository": {"default_branch": "master"}, "workflow_run": {
             "id": 22, "html_url": "https://github.com/example/actions/runs/22",
-            "name": "Build", "event": "workflow_dispatch", "conclusion": "success",
+            "name": f"Manual PR 17 {SHA}", "path": ".github/workflows/build.yml",
+            "event": "workflow_dispatch", "conclusion": "success",
             "display_title": f"Manual PR 17 {SHA}", "head_sha": platform_sha,
             "head_branch": "master", "head_repository": {"full_name": REPO},
         }}))
@@ -341,6 +350,23 @@ class PublisherTests(unittest.TestCase):
             result = publish_preview.prepare(args)
         self.assertFalse(result["published"])
         self.assertFalse((self.root / "pages/pr/17").exists())
+
+    def test_default_branch_run_uses_workflow_path_not_dynamic_name(self):
+        event = self.root / "event.json"
+        event.write_text(json.dumps({"workflow_run": {
+            "id": 23, "html_url": "https://github.com/example/actions/runs/23",
+            "name": SHA, "path": ".github/workflows/build.yml@master",
+            "event": "push", "conclusion": "failure", "head_sha": SHA,
+            "head_branch": "master",
+        }}))
+        args = SimpleNamespace(event=event, target=self.root / "missing-target.json",
+                               state=self.root / "state.json", browser=self.root / "missing-browser",
+                               firmware=self.root / "missing-firmware", pages=self.root / "pages")
+        with patch.dict("os.environ", {"GITHUB_REPOSITORY": REPO}):
+            result = publish_preview.prepare(args)
+        self.assertFalse(result["skip"])
+        self.assertFalse(result["published"])
+        self.assertIsNone(result["number"])
 
 
 if __name__ == "__main__":
