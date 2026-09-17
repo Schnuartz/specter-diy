@@ -56,9 +56,12 @@ if (!(await readFile(await download.path())).equals(Buffer.from([0, 1, 2, 255]))
   throw new Error('Virtual SD export bytes differ from imported bytes');
 }
 
+const previousCanvas = await canvas.elementHandle();
 await page.locator('#restart-btn').click();
-await page.locator('#st').getByText('Starting locally').waitFor({ timeout: 10000 });
+await page.waitForFunction(previous => document.querySelector('#screen') !== previous,
+  previousCanvas, { timeout: 10000 });
 await page.locator('#st').getByText('Running locally').waitFor({ timeout: 45000 });
+await previousCanvas.dispose();
 await page.locator('#sd-state').getByText('Inserted').waitFor();
 await page.locator('#sd-files').getByText('probe.bin', { exact: false }).waitFor();
 await canvas.screenshot({ path: 'test-results/specter-after-restart.png' });
