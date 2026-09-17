@@ -14,17 +14,23 @@ await rows.nth(1).locator('.smartcard-graphic').click();
 await rows.nth(1).getByText('Inserted').waitFor();
 page.once('dialog', dialog => dialog.accept());
 await rows.nth(1).locator('.smartcard-graphic').click({ button: 'right' });
-await rows.nth(1).locator('.smartcard-graphic small').getByText('MemoryCard', { exact: true }).waitFor();
+await rows.nth(1).locator('.smartcard-graphic small').getByText('MemoryCard 2', { exact: true }).waitFor();
 await rows.nth(0).locator('.smartcard-graphic').click();
 await rows.nth(0).getByText('Inserted').waitFor();
+let previousCanvas = await page.locator('#screen').elementHandle();
 await page.locator('#restart-btn').click();
-await page.locator('#st').getByText('Starting locally').waitFor();
+await page.waitForFunction(previous => document.querySelector('#screen') !== previous,
+  previousCanvas, { timeout: 10000 });
 await page.locator('#st').getByText('Running locally').waitFor({ timeout: 45000 });
+await previousCanvas.dispose();
 await rows.nth(0).getByText('Inserted').waitFor();
 await page.locator('.sim-panel details summary').click();
+previousCanvas = await page.locator('#screen').elementHandle();
 await page.locator('#factory-btn').click();
-await page.locator('#st').getByText('Starting locally').waitFor();
+await page.waitForFunction(previous => document.querySelector('#screen') !== previous,
+  previousCanvas, { timeout: 10000 });
 await page.locator('#st').getByText('Running locally').waitFor({ timeout: 45000 });
+await previousCanvas.dispose();
 await rows.nth(0).getByText('Inserted').waitFor();
 const logs = await page.evaluate(async () => {
   const { build: relativeBuild, version } = await (await fetch(new URL('browser/current.json', location.href))).json();
