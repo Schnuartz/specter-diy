@@ -619,22 +619,26 @@ if (embedded) {
   new ResizeObserver(() => notifyParent({ type: 'child-height', height: document.body.scrollHeight })).observe(document.body);
 }
 async function importFiles(files) {
+  const selectedFiles = Array.from(files || []);
+  if (!selectedFiles.length) return;
   let projected = sdUsedBytes;
   const projectedSizes = new Map(sdFileSizes);
-  for (const file of files) {
-    try {
-      const name = file.name;
-      projected = projected - (projectedSizes.get(name) || 0) + file.size;
-      if (projected > SD_CAPACITY_BYTES) {
-        throw new Error(`Virtual SD card is full: imported files would exceed its 8 GB capacity`);
-      }
-      projectedSizes.set(name, file.size);
-      const bytes = await file.arrayBuffer();
-      send({ type: 'sd-import', name: file.name, bytes }, [bytes]);
-    } catch (error) {
-      $('#sd-state').textContent = `SD import error: ${error}`;
-      log(`SD import error: ${error}`);
+  try {
+    for (const file of selectedFiles) {
+      projected = projected - (projectedSizes.get(file.name) || 0) + file.size;
+      projectedSizes.set(file.name, file.size);
     }
+    if (projected > SD_CAPACITY_BYTES) {
+      throw new Error('Virtual SD card is full: imported files would exceed its 8 GB capacity');
+    }
+    const importedFiles = await Promise.all(selectedFiles.map(async file => ({
+      path: `sd/${file.name}`,
+      bytes: await file.arrayBuffer(),
+    })));
+    send({ type: 'state-import', files: importedFiles }, importedFiles.map(file => file.bytes));
+  } catch (error) {
+    $('#sd-state').textContent = `SD import error: ${error}`;
+    log(`SD import error: ${error}`);
   }
 }
 function stopCamera() {
@@ -747,6 +751,12 @@ $('#sd-drop').ondrop = event => {
   $('#sd-drop').classList.remove('dragging');
   importFiles(event.dataTransfer.files);
 };
+addEventListener('paste', event => {
+  const files = event.clipboardData?.files;
+  if (!files?.length) return;
+  event.preventDefault();
+  importFiles(files);
+});
 $('#camera-toggle').onclick = () => {
   backupEnabled = !backupEnabled;
   if (backupEnabled) {
