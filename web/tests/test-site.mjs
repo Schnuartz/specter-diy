@@ -11,7 +11,18 @@ const errors = [];
 page.on('request', request => requests.push(request.url()));
 page.on('pageerror', error => errors.push(error.message));
 await page.goto(base, { waitUntil: 'domcontentloaded' });
-await page.locator('#st').getByText('Running locally').waitFor({ timeout: 75000 });
+try {
+  await page.locator('#st').getByText('Running locally').waitFor({ timeout: 75000 });
+} catch (error) {
+  console.error(JSON.stringify({
+    status: await page.locator('#st').textContent(),
+    loadingTitle: await page.locator('[data-loading-title]').textContent().catch(() => null),
+    loadingLabel: await page.locator('[data-loading-label]').textContent().catch(() => null),
+    diagnostics: await page.locator('#debug-log').textContent().catch(() => null),
+    pageErrors: errors,
+  }, null, 2));
+  throw error;
+}
 if (!await page.locator('.phone-mockup').evaluate(img => img.complete && img.naturalWidth > 0)) {
   throw new Error('Specter Shield Metal device image did not load');
 }
