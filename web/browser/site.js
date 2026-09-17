@@ -1,4 +1,5 @@
 const $ = selector => document.querySelector(selector);
+const siteRoot = new URL('./', document.baseURI);
 const params = new URLSearchParams(location.search);
 const embedded = params.get('embedded') === '1' && window.parent !== window;
 const gallery = embedded && params.get('gallery') === '1';
@@ -269,7 +270,7 @@ function renderCards(slots) {
     card.className = 'smartcard-graphic';
     const cardImage = document.createElement('img');
     cardImage.className = 'smartcard-photo';
-    cardImage.src = '/assets/specter-smartcard-blank.png';
+    cardImage.src = new URL('assets/specter-smartcard-blank.png', siteRoot).href;
     cardImage.alt = '';
     const label = document.createElement('strong');
     label.textContent = `MemoryCard ${slot}`;
@@ -510,7 +511,7 @@ async function start() {
     // Mobile browsers may retain a worker script independently of the page
     // shell. Tie it to the verified artifact set so a new deployment cannot
     // combine an old worker with the current firmware manifest.
-    const workerUrl = new URL('/browser/runtime-worker.js', location.href);
+    const workerUrl = new URL('browser/runtime-worker.js', siteRoot);
     if (version) workerUrl.searchParams.set('v', version);
     workerUrl.searchParams.set('worker', workerRevision);
     log(`Starting ${workerUrl.href}; display: ${displayMode}; generation: ${generation}`);
@@ -837,13 +838,14 @@ function updateBuildMetadata(manifest) {
 
 try {
   stateFiles = await awaitPeripherals();
-  const pointerPath = variant === 'diy' ? '/browser/current.json' :
-    variant === 'play' ? '/browser/variants/specter-playground.json' :
-    '/browser/variants/specter-playground-schnuartz.json';
-  const pointer = await (await fetch(pointerPath, { cache: 'no-store' })).json();
-  build = pointer.build;
+  const pointerPath = variant === 'diy' ? 'browser/current.json' :
+    variant === 'play' ? 'browser/variants/specter-playground.json' :
+    'browser/variants/specter-playground-schnuartz.json';
+  const pointer = await (await fetch(new URL(pointerPath, siteRoot), { cache: 'no-store' })).json();
+  const buildPath = String(pointer.build || '').replace(/^\/+/, '');
   version = pointer.version;
-  if (!/^\/builds\/[A-Za-z0-9-]+\/[A-Za-z0-9-]+\/[a-f0-9]{40}\/$/.test(build)) throw new Error('Invalid build pointer');
+  if (!/^builds\/[A-Za-z0-9-]+\/[A-Za-z0-9-]+\/[a-f0-9]{40}\/$/.test(buildPath)) throw new Error('Invalid build pointer');
+  build = new URL(buildPath, siteRoot).href;
   if (!/^[a-f0-9]{16}$/.test(version)) throw new Error('Invalid artifact version');
   const manifest = await (await fetch(`${build}build-info.json`, { cache: 'no-store' })).json();
   if (!build.includes(manifest.commit) || manifest.artifact_set_sha256?.slice(0, 16) !== version) {
@@ -870,4 +872,3 @@ try {
 } catch (error) {
   failure(`${error.name}: Browser build failed to load: ${error.message}\n${error.stack || ''}`);
 }
-

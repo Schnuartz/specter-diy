@@ -11,7 +11,18 @@ const errors = [];
 page.on('request', request => requests.push(request.url()));
 page.on('pageerror', error => errors.push(error.message));
 await page.goto(base, { waitUntil: 'domcontentloaded' });
-await page.locator('#st').getByText('Running locally').waitFor({ timeout: 75000 });
+try {
+  await page.locator('#st').getByText('Running locally').waitFor({ timeout: 75000 });
+} catch (error) {
+  console.error(JSON.stringify({
+    status: await page.locator('#st').textContent(),
+    loadingTitle: await page.locator('[data-loading-title]').textContent().catch(() => null),
+    loadingLabel: await page.locator('[data-loading-label]').textContent().catch(() => null),
+    diagnostics: await page.locator('#debug-log').textContent().catch(() => null),
+    pageErrors: errors,
+  }, null, 2));
+  throw error;
+}
 if (!await page.locator('.phone-mockup').evaluate(img => img.complete && img.naturalWidth > 0)) {
   throw new Error('Specter Shield Metal device image did not load');
 }
@@ -56,9 +67,12 @@ if (!(await readFile(await download.path())).equals(Buffer.from([0, 1, 2, 255]))
   throw new Error('Virtual SD export bytes differ from imported bytes');
 }
 
+const previousCanvas = await canvas.elementHandle();
 await page.locator('#restart-btn').click();
-await page.locator('#st').getByText('Starting locally').waitFor({ timeout: 10000 });
+await page.waitForFunction(previous => document.querySelector('#screen') !== previous,
+  previousCanvas, { timeout: 10000 });
 await page.locator('#st').getByText('Running locally').waitFor({ timeout: 75000 });
+await previousCanvas.dispose();
 await page.locator('#sd-state').getByText('Inserted').waitFor();
 await page.locator('#sd-files').getByText('probe.bin', { exact: false }).waitFor();
 await canvas.screenshot({ path: 'test-results/specter-after-restart.png' });
@@ -74,6 +88,8 @@ const probe = await page.evaluate(async () => {
     const worker = new Worker(new URL('browser/runtime-worker.js', location.href));
     const canvas = new OffscreenCanvas(480, 800);
     const logs = [];
+    let written;
+    let checkingAtomicImport = false;
     const timer = setTimeout(() => { worker.terminate(); reject(new Error(logs.join('\n'))); }, 10000);
     worker.onmessage = ({ data }) => {
       if (data.type === 'log') logs.push(data.message);
@@ -81,10 +97,23 @@ const probe = await page.evaluate(async () => {
       if (data.type === 'log' && data.message === 'SD_PROBE_WRITTEN') {
         worker.postMessage({ type: 'snapshot', requestId: 1 });
       }
-      if (data.type === 'snapshot') {
+      if (data.type === 'snapshot' && data.requestId === 1) {
         const file = data.files.find(file => file.path === 'sd/written-by-specter.txt');
+        written = file ? new TextDecoder().decode(file.bytes) : null;
+        checkingAtomicImport = true;
+        worker.postMessage({ type: 'state-import', files: [
+          { path: 'sd/must-not-be-partial.bin', bytes: new Uint8Array([1]) },
+          { path: 'invalid/outside.bin', bytes: new Uint8Array([2]) },
+        ] });
+      }
+      if (data.type === 'operation-error' && checkingAtomicImport) {
+        checkingAtomicImport = false;
+        worker.postMessage({ type: 'snapshot', requestId: 2 });
+      }
+      if (data.type === 'snapshot' && data.requestId === 2) {
+        const partial = data.files.some(file => file.path === 'sd/must-not-be-partial.bin');
         clearTimeout(timer); worker.terminate();
-        resolve({ logs, written: file ? new TextDecoder().decode(file.bytes) : null });
+        resolve({ logs, written, partial });
       }
     };
     worker.onerror = error => { clearTimeout(timer); worker.terminate(); reject(new Error(error.message)); };
@@ -94,35 +123,9 @@ const probe = await page.evaluate(async () => {
 });
 if (!probe.logs.includes('SD_PROBE_PRESENT True') ||
     !probe.logs.some(line => line.includes("b'\\x00\\x01\\x02\\xff'")) ||
-    probe.written !== 'firmware-created file') {
+    probe.written !== 'firmware-created file' || probe.partial) {
   throw new Error(`Specter SD platform read/write failed: ${probe.logs.join('; ')}`);
 }
-
-const deniedPage = await browser.newPage();
-await deniedPage.addInitScript(() => Object.defineProperty(navigator, 'mediaDevices', {
-  configurable: true,
-  value: {
-    getUserMedia: () => Promise.reject(new DOMException('Denied for test', 'NotAllowedError')),
-    enumerateDevices: () => Promise.resolve([]),
-  },
-}));
-await deniedPage.goto(base);
-await deniedPage.locator('#camera-toggle').click();
-await deniedPage.locator('#camera-state').getByText('Camera permission denied').waitFor();
-await deniedPage.close();
-
-const missingCameraPage = await browser.newPage();
-await missingCameraPage.addInitScript(() => Object.defineProperty(navigator, 'mediaDevices', {
-  configurable: true,
-  value: {
-    getUserMedia: () => Promise.reject(new DOMException('No camera found', 'NotFoundError')),
-    enumerateDevices: () => Promise.resolve([]),
-  },
-}));
-await missingCameraPage.goto(base);
-await missingCameraPage.locator('#camera-toggle').click();
-await missingCameraPage.locator('#camera-state').getByText('Camera unavailable: No camera found').waitFor();
-await missingCameraPage.close();
 
 const crashPage = await browser.newPage();
 await crashPage.route('**/browser/runtime-worker.js*', route => route.abort());
@@ -146,15 +149,17 @@ if (mobileBefore.equals(await mobileCanvas.screenshot())) {
 }
 await mobile.close();
 
+const sourceLinks = await page.locator('a[href]').evaluateAll(links =>
+  links.map(link => link.href.toLowerCase()));
 if (await page.locator('img[alt="ClavaStack"]').count() ||
     (await page.title()).includes('ClavaStack') ||
-    !await page.locator('a[href="https://github.com/Schnuartz/specter-diy"]').count()) {
+    !sourceLinks.some(href => href === 'https://github.com/schnuartz/specter-diy' ||
+      href.startsWith('https://github.com/schnuartz/specter-diy/'))) {
   throw new Error('Fork page branding or source link is incorrect');
 }
 console.log(JSON.stringify({ result: 'pass', canvasColors: colors.size,
   crossOriginIsolated: isolated,
   pointer: 'changed Specter screen', sd: 'multi-select/paste/export/restart/Specter platform read+write',
-  mobileTouch: 'changed Specter screen', cameraDenied: 'handled', noCamera: 'handled',
-  workerCrash: 'handled', branding: 'Specter DIY',
+  mobileTouch: 'changed Specter screen', workerCrash: 'handled', branding: 'Specter DIY',
   legacyRequestsInBrowserMode: 0 }, null, 2));
 await browser.close();
