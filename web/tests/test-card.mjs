@@ -24,7 +24,7 @@ await page.waitForFunction(previous => document.querySelector('#screen') !== pre
 await page.locator('#st').getByText('Running locally').waitFor({ timeout: 45000 });
 await previousCanvas.dispose();
 await rows.nth(0).getByText('Inserted').waitFor();
-await page.locator('.sim-panel details summary').click();
+await page.locator('#technical-details > summary').click();
 previousCanvas = await page.locator('#screen').elementHandle();
 await page.locator('#factory-btn').click();
 await page.waitForFunction(previous => document.querySelector('#screen') !== previous,
