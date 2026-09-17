@@ -74,6 +74,8 @@ const probe = await page.evaluate(async () => {
     const worker = new Worker(new URL('browser/runtime-worker.js', location.href));
     const canvas = new OffscreenCanvas(480, 800);
     const logs = [];
+    let written;
+    let checkingAtomicImport = false;
     const timer = setTimeout(() => { worker.terminate(); reject(new Error(logs.join('\n'))); }, 10000);
     worker.onmessage = ({ data }) => {
       if (data.type === 'log') logs.push(data.message);
@@ -81,10 +83,23 @@ const probe = await page.evaluate(async () => {
       if (data.type === 'log' && data.message === 'SD_PROBE_WRITTEN') {
         worker.postMessage({ type: 'snapshot', requestId: 1 });
       }
-      if (data.type === 'snapshot') {
+      if (data.type === 'snapshot' && data.requestId === 1) {
         const file = data.files.find(file => file.path === 'sd/written-by-specter.txt');
+        written = file ? new TextDecoder().decode(file.bytes) : null;
+        checkingAtomicImport = true;
+        worker.postMessage({ type: 'state-import', files: [
+          { path: 'sd/must-not-be-partial.bin', bytes: new Uint8Array([1]) },
+          { path: 'invalid/outside.bin', bytes: new Uint8Array([2]) },
+        ] });
+      }
+      if (data.type === 'operation-error' && checkingAtomicImport) {
+        checkingAtomicImport = false;
+        worker.postMessage({ type: 'snapshot', requestId: 2 });
+      }
+      if (data.type === 'snapshot' && data.requestId === 2) {
+        const partial = data.files.some(file => file.path === 'sd/must-not-be-partial.bin');
         clearTimeout(timer); worker.terminate();
-        resolve({ logs, written: file ? new TextDecoder().decode(file.bytes) : null });
+        resolve({ logs, written, partial });
       }
     };
     worker.onerror = error => { clearTimeout(timer); worker.terminate(); reject(new Error(error.message)); };
@@ -94,7 +109,7 @@ const probe = await page.evaluate(async () => {
 });
 if (!probe.logs.includes('SD_PROBE_PRESENT True') ||
     !probe.logs.some(line => line.includes("b'\\x00\\x01\\x02\\xff'")) ||
-    probe.written !== 'firmware-created file') {
+    probe.written !== 'firmware-created file' || probe.partial) {
   throw new Error(`Specter SD platform read/write failed: ${probe.logs.join('; ')}`);
 }
 
