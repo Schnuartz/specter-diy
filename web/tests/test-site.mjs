@@ -33,12 +33,24 @@ if (before.equals(after)) throw new Error('Pointer input did not change the Spec
 
 await page.locator('#sd-toggle').click();
 await page.locator('#sd-state').getByText('Inserted').waitFor();
-await page.locator('#sd-picker').setInputFiles({
-  name: 'probe.bin', mimeType: 'application/octet-stream', buffer: Buffer.from([0, 1, 2, 255]),
-});
+await page.locator('#sd-picker').setInputFiles([
+  { name: 'probe.bin', mimeType: 'application/octet-stream', buffer: Buffer.from([0, 1, 2, 255]) },
+  { name: 'second.txt', mimeType: 'text/plain', buffer: Buffer.from('second file') },
+]);
 await page.locator('#sd-files').getByText('probe.bin', { exact: false }).waitFor();
+await page.locator('#sd-files').getByText('second.txt', { exact: false }).waitFor();
+await page.evaluate(() => {
+  const clipboard = new DataTransfer();
+  clipboard.items.add(new File(['pasted one'], 'pasted-one.txt', { type: 'text/plain' }));
+  clipboard.items.add(new File(['pasted two'], 'pasted-two.txt', { type: 'text/plain' }));
+  dispatchEvent(new ClipboardEvent('paste', { clipboardData: clipboard, bubbles: true, cancelable: true }));
+});
+await page.locator('#sd-files').getByText('pasted-one.txt', { exact: false }).waitFor();
+await page.locator('#sd-files').getByText('pasted-two.txt', { exact: false }).waitFor();
+const probeDownload = page.locator('#sd-files li').filter({ hasText: 'probe.bin' })
+  .getByRole('button', { name: 'Download', exact: true });
 const downloadPromise = page.waitForEvent('download');
-await page.locator('#sd-files button').first().click();
+await probeDownload.click();
 const download = await downloadPromise;
 if (!(await readFile(await download.path())).equals(Buffer.from([0, 1, 2, 255]))) {
   throw new Error('Virtual SD export bytes differ from imported bytes');
@@ -141,7 +153,7 @@ if (await page.locator('img[alt="ClavaStack"]').count() ||
 }
 console.log(JSON.stringify({ result: 'pass', canvasColors: colors.size,
   crossOriginIsolated: isolated,
-  pointer: 'changed Specter screen', sd: 'import/export/restart/Specter platform read+write',
+  pointer: 'changed Specter screen', sd: 'multi-select/paste/export/restart/Specter platform read+write',
   mobileTouch: 'changed Specter screen', cameraDenied: 'handled', noCamera: 'handled',
   workerCrash: 'handled', branding: 'Specter DIY',
   legacyRequestsInBrowserMode: 0 }, null, 2));
