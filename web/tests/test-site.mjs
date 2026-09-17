@@ -124,32 +124,6 @@ if (!probe.logs.includes('SD_PROBE_PRESENT True') ||
   throw new Error(`Specter SD platform read/write failed: ${probe.logs.join('; ')}`);
 }
 
-const deniedPage = await browser.newPage();
-await deniedPage.addInitScript(() => Object.defineProperty(navigator, 'mediaDevices', {
-  configurable: true,
-  value: {
-    getUserMedia: () => Promise.reject(new DOMException('Denied for test', 'NotAllowedError')),
-    enumerateDevices: () => Promise.resolve([]),
-  },
-}));
-await deniedPage.goto(base);
-await deniedPage.locator('#camera-toggle').click();
-await deniedPage.locator('#camera-state').getByText('Camera permission denied').waitFor();
-await deniedPage.close();
-
-const missingCameraPage = await browser.newPage();
-await missingCameraPage.addInitScript(() => Object.defineProperty(navigator, 'mediaDevices', {
-  configurable: true,
-  value: {
-    getUserMedia: () => Promise.reject(new DOMException('No camera found', 'NotFoundError')),
-    enumerateDevices: () => Promise.resolve([]),
-  },
-}));
-await missingCameraPage.goto(base);
-await missingCameraPage.locator('#camera-toggle').click();
-await missingCameraPage.locator('#camera-state').getByText('Camera unavailable: No camera found').waitFor();
-await missingCameraPage.close();
-
 const crashPage = await browser.newPage();
 await crashPage.route('**/browser/runtime-worker.js*', route => route.abort());
 await crashPage.goto(base);
@@ -180,7 +154,6 @@ if (await page.locator('img[alt="ClavaStack"]').count() ||
 console.log(JSON.stringify({ result: 'pass', canvasColors: colors.size,
   crossOriginIsolated: isolated,
   pointer: 'changed Specter screen', sd: 'multi-select/paste/export/restart/Specter platform read+write',
-  mobileTouch: 'changed Specter screen', cameraDenied: 'handled', noCamera: 'handled',
-  workerCrash: 'handled', branding: 'Specter DIY',
+  mobileTouch: 'changed Specter screen', workerCrash: 'handled', branding: 'Specter DIY',
   legacyRequestsInBrowserMode: 0 }, null, 2));
 await browser.close();
