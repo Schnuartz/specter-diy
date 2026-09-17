@@ -14,7 +14,7 @@ await rows.nth(1).locator('.smartcard-graphic').click();
 await rows.nth(1).getByText('Inserted').waitFor();
 page.once('dialog', dialog => dialog.accept());
 await rows.nth(1).locator('.smartcard-graphic').click({ button: 'right' });
-await rows.nth(1).locator('.smartcard-graphic small').getByText('MemoryCard 2', { exact: true }).waitFor();
+await rows.nth(1).locator('.smartcard-graphic strong').getByText('MemoryCard 2', { exact: true }).waitFor();
 await rows.nth(0).locator('.smartcard-graphic').click();
 await rows.nth(0).getByText('Inserted').waitFor();
 let previousCanvas = await page.locator('#screen').elementHandle();
