@@ -2,6 +2,32 @@ import lvgl as lv
 from .prompt import Prompt
 from ..common import add_label, add_button
 from ..decorators import on_release
+from .menu import Menu
+
+
+class SettingsMenu(Menu):
+    """Settings landing page matching the playground information architecture.
+
+    The legacy firmware used to put every setting on one long page.  The
+    playground keeps the landing page deliberately small: interface status
+    first, then four clearly named destinations.  The individual pages are
+    still handled by :class:`specter.Specter`, so this screen remains usable
+    on boards which do not expose every peripheral.
+    """
+
+    def __init__(self, interface_note=""):
+        buttons = [
+            (0, "Security Settings"),
+            (1, "Manage Storage"),
+            (2, "Manage Preferences"),
+            (3, "Language"),
+        ]
+        super().__init__(
+            buttons,
+            title="Manage Settings",
+            note=interface_note,
+            last=(255, None),
+        )
 
 class HostSettings(Prompt):
     def __init__(self, controls, title="Host setttings", note=None, controls_empty_text="No settings available"):

@@ -9,15 +9,28 @@ from .prompt import Prompt
 class MnemonicScreen(Screen):
     QR = 1
     SD = 2
-    def __init__(self, mnemonic="", title="Your recovery phrase:", note=None):
+    def __init__(self, mnemonic="", title="Your recovery phrase:", note=None,
+                 temporary=False):
         super().__init__()
+        self.temporary = temporary
         self.title = add_label(title, scr=self, style="title")
+        if temporary:
+            self.temporary_badge = add_label("! Temporary seed mode", scr=self,
+                                             style="hint")
+            self.temporary_badge.align(self.title, lv.ALIGN.OUT_BOTTOM_MID, 0, 5)
+            badge_style = lv.style_t()
+            lv.style_copy(badge_style, self.temporary_badge.get_style(0))
+            badge_style.text.color = lv.color_hex(0x20D060)
+            self.temporary_badge.set_style(0, badge_style)
         if note is not None:
             lbl = add_label(note, scr=self, style="hint")
-            lbl.align(self.title, lv.ALIGN.OUT_BOTTOM_MID, 0, 5)
+            lbl.align(self.temporary_badge if temporary else self.title,
+                      lv.ALIGN.OUT_BOTTOM_MID, 0, 5)
         self.table = MnemonicTable(self)
         self.table.set_mnemonic(mnemonic)
-        self.table.align(self.title, lv.ALIGN.OUT_BOTTOM_MID, 0, 30)
+        self.table.set_temporary(temporary)
+        anchor = self.temporary_badge if temporary else self.title
+        self.table.align(anchor, lv.ALIGN.OUT_BOTTOM_MID, 0, 30)
 
         self.close_button = add_button(scr=self, callback=on_release(self.release))
 

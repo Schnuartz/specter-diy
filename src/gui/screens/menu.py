@@ -6,11 +6,20 @@ from ..decorators import on_release, cb_with_args
 
 class Menu(Screen):
     def __init__(
-        self, buttons=[], title="What do you want to do?", note=None, y0=60, last=None
+        self, buttons=[], title="What do you want to do?", note=None, y0=60,
+        last=None, warning=None
     ):
         super().__init__()
         y = y0
         self.title = add_label(title, style="title", scr=self)
+        if warning:
+            self.warning = add_label("!", scr=self, style="hint", width=30)
+            warning_style = lv.style_t()
+            lv.style_copy(warning_style, self.warning.get_style(0))
+            warning_style.text.color = lv.color_hex(0x20D060)
+            warning_style.text.font = lv.font_roboto_28
+            self.warning.set_style(0, warning_style)
+            self.warning.align(self.title, lv.ALIGN.OUT_RIGHT_MID, -35, 0)
         if note is not None:
             self.note = add_label(note, style="hint", scr=self)
             self.note.align(self.title, lv.ALIGN.OUT_BOTTOM_MID, 0, 5)

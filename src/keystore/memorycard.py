@@ -307,6 +307,7 @@ In this mode device can only operate when the smartcard is inserted!"""
     async def load_mnemonic(self):
         mnemonic = await self._get_mnemonic()
         self.set_mnemonic(mnemonic, "")
+        self.temporary_seed = False
         return True
 
     async def delete_mnemonic(self):

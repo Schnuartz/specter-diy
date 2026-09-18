@@ -21,7 +21,7 @@ from hosts import Host, HostError
 from app import BaseApp
 from embit import bip39
 from embit.liquid.networks import NETWORKS
-from gui.screens.settings import HostSettings
+from gui.screens.settings import HostSettings, SettingsMenu
 from gui.screens.mnemonic import MnemonicPrompt
 
 # small helper functions
@@ -234,7 +234,25 @@ class Specter:
 
     def init_apps(self):
         for app in self.apps:
+            app.specter = self
             app.init(self.keystore, self.network, self.gui.show_loader, self.cross_app_communicate)
+
+    def _interface_status_note(self):
+        """Compact status line for the playground-style settings landing page."""
+        status = []
+        for host in self.hosts:
+            if host.button is None:
+                continue
+            state = "on" if host.is_enabled else "off"
+            status.append("%s %s" % (host.button, state))
+        if hasattr(self.keystore, "connection"):
+            try:
+                card = ("Smartcard inserted" if self.keystore.connection.isCardInserted()
+                        else "Smartcard not inserted")
+            except Exception:
+                card = "Smartcard unavailable"
+            status.append(card)
+        return "Interfaces: " + "  |  ".join(status) if status else "Interfaces"
 
     async def cross_app_communicate(self, stream, app:str=None, show_fn=None):
         if app == "": # root
@@ -274,14 +292,17 @@ class Specter:
             buttons.append((2, self.keystore.load_button))
         buttons += [(None, "Settings"), (3, "Device settings")]
         # wait for menu selection
-        menuitem = await self.gui.menu(buttons)
+        menuitem = await self.gui.menu(
+            buttons,
+            title="Home",
+            warning=self.keystore.temporary_seed,
+        )
 
         # process the menu button:
         if menuitem == 0:
             mnemonic = await self.gui.new_mnemonic(gen_mnemonic, bip39.WORDLIST, fix_mnemonic)
             if mnemonic is not None:
-                # load keys using mnemonic and empty password
-                return self.set_mnemonic(mnemonic, "")
+                return await self._activate_generated_seed(mnemonic)
         # recover
         elif menuitem == 1:
             mnemonic = await self.gui.recover(
@@ -340,8 +361,103 @@ class Specter:
             return
         return self.set_mnemonic(mnemonic, "")
 
-    def set_mnemonic(self, mnemonic, password=""):
+    async def _activate_generated_seed(self, mnemonic):
+        """Choose persistence policy immediately after creating a seed."""
+        mode = await self.gui.menu(
+            [
+                (None, "Seed storage mode"),
+                ("save", "Save seed files"),
+                ("temporary", "Temporary seed mode", True, 0x123D2A),
+            ],
+            title="How should this seed be used?",
+            note="Would you like to save the seed files or use temporary seed mode?",
+            last=(255, None),
+        )
+        if mode == 255:
+            return self.mainmenu
+
+        self.set_mnemonic(mnemonic, "", temporary=(mode == "temporary"))
+        if mode == "temporary":
+            await self.gui.alert(
+                "Temporary seed mode",
+                "This recovery phrase is loaded in memory only.\n\n"
+                "It will be shown in green with a green exclamation mark and "
+                "will not survive a reboot.",
+            )
+            return self.mainmenu
+
+        await self._save_generated_seed()
+        return self.mainmenu
+
+    async def _save_generated_seed(self):
+        """Show the recommended storage hierarchy and explain each target."""
+        target = await self.gui.menu(
+            [
+                (None, "Recommend Smartcard"),
+                ("smartcard", "Smartcard"),
+                (None, "Not Rec"),
+                ("sd", "SD Card"),
+                (None, "Advanced"),
+                ("device", "Device storage"),
+            ],
+            title="Save seed files",
+            note="Smartcard is recommended for storing a recovery phrase.",
+            last=(255, None),
+        )
+        if target == 255:
+            return
+
+        explanations = {
+            "smartcard": (
+                "Smartcard (recommended)",
+                "The seed is stored on a PIN-protected Smartcard and is not "
+                "left as a seed file on the device."
+            ),
+            "sd": (
+                "SD Card — Not Rec",
+                "The seed is stored as an encrypted file on the SD Card. "
+                "Anyone who gets the card can still attempt to attack the file; "
+                "Smartcard storage is recommended."
+            ),
+            "device": (
+                "Device storage — Advanced",
+                "The seed is stored in the device's internal encrypted storage. "
+                "This is convenient, but it ties the backup to this device; "
+                "Smartcard storage is recommended."
+            ),
+        }
+        title, message = explanations[target]
+        if not await self.gui.prompt(title, message + "\n\nContinue?"):
+            return
+
+        try:
+            if target == "smartcard":
+                if not hasattr(self.keystore, "save_mnemonic") or self.keystore.NAME.lower() != "smartcard":
+                    await self.gui.alert(
+                        "Smartcard unavailable",
+                        "Insert and select a Smartcard keystore before saving to a Smartcard.",
+                    )
+                    return
+                await self.keystore.save_mnemonic()
+            else:
+                path = (
+                    self.keystore.sdpath
+                    if target == "sd" and hasattr(self.keystore, "sdpath")
+                    else self.keystore.flashpath
+                    if hasattr(self.keystore, "flashpath") else None
+                )
+                if path is None:
+                    raise SpecterError("Selected storage is not available")
+                if target == "sd" and not getattr(__import__("platform"), "sdcard").is_present:
+                    raise SpecterError("Please insert an SD card")
+                await self.keystore.save_mnemonic_to(path)
+            self.keystore.temporary_seed = False
+        except Exception as e:
+            await self.gui.alert("Seed was not saved", "%s" % e)
+
+    def set_mnemonic(self, mnemonic, password="", temporary=False):
         self.keystore.set_mnemonic(mnemonic.strip(), password)
+        self.keystore.temporary_seed = temporary
         self.init_apps()
         self.current_menu = self.mainmenu
         return self.mainmenu
@@ -405,50 +521,67 @@ class Specter:
             raise SpecterError("Not implemented")
 
     async def settingsmenu(self):
-        net = NETWORKS[self.network]["name"]
-        buttons = [
-            # id, text
-            (None, "Network"),
-            (5, "Switch network (%s)" % net),
-            (None, "Key management"),
-        ]
-        if self.keystore.storage_button is not None:
-            buttons.append((1, self.keystore.storage_button))
-        buttons.append((2, "Enter passphrase"))
-        if hasattr(self.keystore, "show_mnemonic"):
-            buttons.append((3, "Show recovery phrase"))
-        buttons.extend([(None, "Security"), (4, "Device settings")])  # delimiter
-        buttons.extend([(None, "About"), (6, "About this device")])
-        # wait for menu selection
-        menuitem = await self.gui.menu(buttons, last=(255, None), note=self._firmware_note())
+        menuitem = await self.gui.show_screen()(SettingsMenu(self._interface_status_note()))
 
         # process the menu button:
         # back button
         if menuitem == 255:
             return self.mainmenu
+        elif menuitem == 0:
+            await self.security_settings()
         elif menuitem == 1:
-            res = await self.keystore.storage_menu()
+            if self.keystore.storage_button is None:
+                await self.gui.alert("Manage Storage", "No removable seed storage is available.")
+                res = False
+            else:
+                res = await self.keystore.storage_menu()
             # storage_menu returns True if app reinit is required
             if res:
                 self.init_apps()
         elif menuitem == 2:
-            pwd = await self.gui.get_input()
-            if pwd is None:
-                return self.settingsmenu
-            self.keystore.set_mnemonic(password=pwd)
-            self.init_apps()
+            await self.preferences_settings()
         elif menuitem == 3:
-            await self.keystore.show_mnemonic()
-        elif menuitem == 4:
-            await self.update_devsettings()
-        elif menuitem == 5:
-            await self.select_network()
-        elif menuitem == 6:
-            await self.show_about()
+            await self.gui.alert(
+                "Language",
+                "Language selection is not available in this firmware build.",
+            )
         else:
             print(menuitem)
             raise SpecterError("Not implemented")
         return self.settingsmenu
+
+    async def security_settings(self):
+        buttons = [(None, "Security Settings")]
+        if hasattr(self.keystore, "change_pin"):
+            buttons.append((1, "Change PIN code"))
+        if hasattr(self.keystore, "show_mnemonic"):
+            buttons.append((2, "Show recovery phrase"))
+        buttons.append((3, "Lock device"))
+        choice = await self.gui.menu(buttons, last=(255, None))
+        if choice == 1:
+            await self.keystore.change_pin()
+        elif choice == 2:
+            await self.keystore.show_mnemonic()
+        elif choice == 3:
+            await self.lock()
+
+    async def preferences_settings(self):
+        net = NETWORKS[self.network]["name"]
+        choice = await self.gui.menu(
+            [
+                (None, "Manage Preferences"),
+                (1, "Switch network (%s)" % net),
+                (2, "Device settings"),
+                (3, "Communication settings"),
+            ],
+            last=(255, None),
+        )
+        if choice == 1:
+            await self.select_network()
+        elif choice == 2:
+            await self.update_devsettings()
+        elif choice == 3:
+            await self.communication_settings()
 
     async def select_network(self):
         buttons = [

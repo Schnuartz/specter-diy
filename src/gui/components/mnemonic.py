@@ -27,6 +27,9 @@ class MnemonicTable(lv.table):
         self.set_style(lv.table.STYLE.CELL1, cell_style)
         self.set_style(lv.table.STYLE.CELL2, num_style)
 
+        self._word_style = cell_style
+        self._number_style = num_style
+
         for i in range(12):
             self.set_cell_value(i, 0, "%d" % (i + 1))
             self.set_cell_value(i, 2, "%d" % (i + 13))
@@ -36,6 +39,20 @@ class MnemonicTable(lv.table):
     def set_mnemonic(self, mnemonic: str):
         self.words = mnemonic.split()
         self.update()
+
+    def set_temporary(self, temporary=True):
+        """Highlight words belonging to an in-memory-only seed.
+
+        The numbered cells remain subdued, just like normal mnemonic screens;
+        only the loaded words change colour so the warning cannot be missed.
+        """
+        if temporary:
+            style = lv.style_t()
+            lv.style_copy(style, self._word_style)
+            style.text.color = lv.color_hex(0x20D060)
+            self.set_style(lv.table.STYLE.CELL1, style)
+        else:
+            self.set_style(lv.table.STYLE.CELL1, self._word_style)
 
     def update(self):
         for i in range(24):

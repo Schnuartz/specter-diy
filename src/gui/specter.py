@@ -13,11 +13,11 @@ import asyncio
 class SpecterGUI(AsyncGUI):
     """Specter-related GUI"""
 
-    async def show_mnemonic(self, mnemonic: str):
+    async def show_mnemonic(self, mnemonic: str, temporary=False):
         """
         Shows mnemonic on the screen
         """
-        scr = MnemonicScreen(mnemonic)
+        scr = MnemonicScreen(mnemonic, temporary=temporary)
         await self.load_screen(scr)
         return await scr.result()
 

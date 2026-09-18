@@ -242,6 +242,42 @@ class FlashKeyStore(RAMKeyStore):
         # return the full file name incl. prefix if saved to SD card, just the name if on flash
         return filename
 
+    async def save_mnemonic_to(self, path):
+        """Save the active seed to an explicitly selected storage target.
+
+        The playground asks for the destination before the file-name dialog.
+        Keeping this small target-aware entry point separate preserves the
+        existing storage menu and makes the new generated-seed flow explicit.
+        """
+        if self.is_locked:
+            raise KeyStoreError("Keystore is locked")
+        if self.mnemonic is None:
+            raise KeyStoreError("Recovery phrase is not loaded")
+
+        filename = await self.get_input(suggestion=self.mnemonic.split()[0])
+        if filename is None:
+            return
+        fullpath = "%s/%s.%s" % (path, self.fileprefix(path), filename)
+
+        mounted_sd = fullpath.startswith(self.sdpath) if hasattr(self, "sdpath") else False
+        if mounted_sd:
+            platform.sdcard.mount()
+        try:
+            if platform.file_exists(fullpath):
+                if not await self.show(Prompt(
+                    "File already exists",
+                    "Would you like to overwrite this file?",
+                )):
+                    return
+            self.save_aead(fullpath, plaintext=self.mnemonic.encode(),
+                           key=self.enc_secret)
+        finally:
+            if mounted_sd:
+                platform.sdcard.unmount()
+
+        self.temporary_seed = False
+        return filename
+
     @property
     def is_key_saved(self):
         flash_files = [
@@ -265,6 +301,7 @@ class FlashKeyStore(RAMKeyStore):
         _, data = self.load_aead(file, self.enc_secret)
 
         self.set_mnemonic(data.decode(), "")
+        self.temporary_seed = False
         return True
 
     async def select_file(self):

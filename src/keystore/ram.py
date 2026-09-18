@@ -25,6 +25,9 @@ class RAMKeyStore(KeyStore):
     def __init__(self):
         # bip39 mnemonic
         self.mnemonic = None
+        # True means the current seed exists only in RAM and must be shown
+        # with the temporary-seed warning until a persistent save is made.
+        self.temporary_seed = False
         # root xprv (derived from mnemonic, password)
         self.root = None
         # root fingerprint
@@ -373,7 +376,9 @@ class RAMKeyStore(KeyStore):
         self.lock()
         await self.unlock()
         while True:
-            v = await self.show(ExportMnemonicScreen(self.mnemonic))
+            v = await self.show(
+                ExportMnemonicScreen(self.mnemonic, temporary=self.temporary_seed)
+            )
             if v == ExportMnemonicScreen.QR:
                 v = await self.show(
                         Menu([(1, "SeedQR (digits)"), (2, "Compact SeedQR (binary)"), (3, "Plaintext")],

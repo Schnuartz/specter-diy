@@ -126,6 +126,7 @@ class SDKeyStore(FlashKeyStore):
         if file.startswith(self.sdpath) and platform.sdcard.is_present:
             platform.sdcard.unmount()
         self.set_mnemonic(data.decode(), "")
+        self.temporary_seed = False
         return True
 
     async def select_file(self):

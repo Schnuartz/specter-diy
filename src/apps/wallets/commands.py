@@ -5,3 +5,4 @@ EDIT = 1
 MENU = 2
 INFO = 3
 EXPORT = 4
+CREATE = 5

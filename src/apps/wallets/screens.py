@@ -1,8 +1,41 @@
 import lvgl as lv
 from gui.common import add_label, add_button, HOR_RES, format_addr
 from gui.decorators import on_release
-from gui.screens import QRAlert, Prompt, Alert
-from .commands import DELETE, EDIT, MENU
+from gui.screens import QRAlert, Prompt, Alert, Screen
+from .commands import DELETE, EDIT, MENU, CREATE
+
+
+class WalletEmptyScreen(Screen):
+    """Small centered first-wallet call-to-action for an empty wallet list."""
+
+    def __init__(self):
+        super().__init__()
+        self.title = add_label("Wallets", scr=self, style="title")
+        self.message = add_label(
+            "No wallet is available yet.\nAdd your first wallet to get started.",
+            scr=self,
+            style="hint",
+        )
+        self.message.align(self.title, lv.ALIGN.OUT_BOTTOM_MID, 0, 30)
+        self.add_button = add_button(
+            "Add first Wallet", on_release(self.add_first), scr=self, y=350
+        )
+        self.add_button.set_width(260)
+        self.add_button.set_height(55)
+        blue = lv.style_t()
+        lv.style_copy(blue, self.add_button.get_style(lv.btn.STYLE.REL))
+        blue.body.main_color = lv.color_hex(0x00CAF1)
+        blue.body.grad_color = lv.color_hex(0x00CAF1)
+        self.add_button.set_style(lv.btn.STYLE.REL, blue)
+        self.back_button = add_button(
+            lv.SYMBOL.LEFT + " Back", on_release(self.go_back), scr=self
+        )
+
+    def add_first(self):
+        self.set_value(CREATE)
+
+    def go_back(self):
+        self.set_value(255)
 
 
 class WalletScreen(QRAlert):
@@ -16,7 +49,7 @@ class WalletScreen(QRAlert):
             branch_index=branch_index,
         )
         super().__init__(
-            "    " + wallet.name + "  #708092 " + lv.SYMBOL.EDIT,
+            wallet.name,
             format_addr(addr, words=4),
             "bitcoin:" + addr,
             qr_width=350,
@@ -24,6 +57,16 @@ class WalletScreen(QRAlert):
         self.title.set_recolor(True)
         self.title.set_click(True)
         self.title.set_event_cb(on_release(self.rename))
+        self.edit_icon = lv.label(self)
+        self.edit_icon.set_text(lv.SYMBOL.EDIT)
+        edit_style = lv.style_t()
+        lv.style_copy(edit_style, self.title.get_style(0))
+        edit_style.text.font = lv.font_roboto_28
+        edit_style.text.color = lv.color_hex(0x708092)
+        self.edit_icon.set_style(0, edit_style)
+        self.edit_icon.align(self.title, lv.ALIGN.OUT_RIGHT_MID, 8, 0)
+        self.edit_icon.set_click(True)
+        self.edit_icon.set_event_cb(on_release(self.rename))
         self.policy = add_label(wallet.policy, y=55, style="hint", scr=self)
 
         style = lv.style_t()

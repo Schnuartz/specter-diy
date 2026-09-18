@@ -1,6 +1,7 @@
 from app import BaseApp
 from gui.screens import Menu, InputScreen, Prompt, TransactionScreen
-from .screens import WalletScreen, ConfirmWalletScreen
+from .screens import WalletScreen, ConfirmWalletScreen, WalletEmptyScreen
+from .commands import CREATE
 
 import platform
 import os
@@ -110,6 +111,20 @@ class WalletManager(BaseApp):
             return hexlify(psbtout.script_pubkey.data).decode()
 
     async def menu(self, show_screen):
+        if not self.wallets:
+            menuitem = await show_screen(WalletEmptyScreen())
+            if menuitem == CREATE:
+                # Open the existing public-key wallet creator from the empty
+                # state so the first-wallet CTA is a complete action.
+                specter = getattr(self, "specter", None)
+                xpub = next(
+                    (app for app in getattr(specter, "apps", [])
+                     if getattr(app, "name", None) == "xpub"),
+                    None,
+                )
+                if xpub is not None:
+                    await xpub.menu(show_screen)
+            return True
         buttons = [(None, "Your wallets")]
         buttons += [(w, w.name) for w in self.wallets if not w.is_watchonly]
         if len(buttons) != (len(self.wallets)+1):

@@ -7,4 +7,4 @@ from .progress import Progress
 from .input import PinScreen, InputScreen, DerivationScreen, NumericScreen
 from .mnemonic import MnemonicScreen, NewMnemonicScreen, RecoverMnemonicScreen
 from .transaction import TransactionScreen
-from .settings import DevSettings
+from .settings import DevSettings, SettingsMenu
