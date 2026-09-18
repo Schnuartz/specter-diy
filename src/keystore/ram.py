@@ -54,7 +54,7 @@ class RAMKeyStore(KeyStore):
         # show function for menus and stuff
         self.show = None
 
-    def set_mnemonic(self, mnemonic=None, password=""):
+    def set_mnemonic(self, mnemonic=None, password="", temporary=False):
         if mnemonic == self.mnemonic and password != "":
             # probably checking mnemonic after saving
             self.show_loader()
@@ -65,6 +65,10 @@ class RAMKeyStore(KeyStore):
             self.mnemonic = mnemonic.strip()
             if not bip39.mnemonic_is_valid(self.mnemonic):
                 raise KeyStoreError("Invalid mnemonic")
+            # Every explicit seed load starts as a normal seed.  The only
+            # caller that opts into the green temporary state is the
+            # post-generation flow in Specter.
+            self.temporary_seed = temporary
         seed = bip39.mnemonic_to_seed(self.mnemonic, password)
         self.root = bip32.HDKey.from_seed(seed)
         self.fingerprint = self.root.child(0).fingerprint

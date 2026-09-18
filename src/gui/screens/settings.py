@@ -1,33 +1,115 @@
 import lvgl as lv
 from .prompt import Prompt
 from ..common import add_label, add_button
-from ..decorators import on_release
-from .menu import Menu
+from ..decorators import on_release, cb_with_args
+from .screen import Screen
 
 
-class SettingsMenu(Menu):
-    """Settings landing page matching the playground information architecture.
+class SettingsMenu(Screen):
+    """Playground-style settings page for the legacy LVGL renderer.
 
-    The legacy firmware used to put every setting on one long page.  The
-    playground keeps the landing page deliberately small: interface status
-    first, then four clearly named destinations.  The individual pages are
-    still handled by :class:`specter.Specter`, so this screen remains usable
-    on boards which do not expose every peripheral.
+    The playground presents a status card, a Device section and a Security
+    section.  This screen keeps that topology while using the older LVGL
+    primitives available in the firmware build.
     """
 
-    def __init__(self, interface_note=""):
-        buttons = [
-            (0, "Security Settings"),
-            (1, "Manage Storage"),
-            (2, "Manage Preferences"),
-            (3, "Language"),
-        ]
-        super().__init__(
-            buttons,
-            title="Manage Settings",
-            note=interface_note,
-            last=(255, None),
-        )
+    def __init__(self, interfaces=None, has_sd=False, has_smartcard=False,
+                 battery_available=False, can_lock=True):
+        super().__init__()
+        self.interfaces = interfaces or []
+        self.title = add_label("Manage Settings", scr=self, style="title")
+        self._add_interface_card()
+
+        y = 170
+        self._add_section("Device", y)
+        y += 30
+        self._add_info_row("Power", "Available" if battery_available else "Unavailable", y)
+        y += 50
+        if can_lock:
+            self._add_nav_row(8, "Lock device", "LOCK", y)
+            y += 50
+        self._add_nav_row(4, "Manage Interfaces", "IO", y)
+        y += 50
+        if has_sd:
+            self._add_nav_row(1, "SD Card", "SD", y)
+            y += 50
+        if has_smartcard:
+            self._add_nav_row(1, "Smartcard", "SC", y)
+            y += 50
+        self._add_nav_row(3, "Language", "A", y)
+        y += 50
+        self._add_nav_row(2, "Theme", "◐", y)
+        y += 55
+
+        self._add_section("Security", y)
+        y += 25
+        self._add_nav_row(0, "Security Settings", lv.SYMBOL.SETTINGS, y)
+        self.add_back_button(255)
+
+    def _add_interface_card(self):
+        card = lv.obj(self)
+        card.set_size(440, 84)
+        card.set_pos(20, 65)
+        style = lv.style_t()
+        lv.style_copy(style, self.title.get_style(0))
+        style.body.main_color = lv.color_hex(0x263544)
+        style.body.grad_color = style.body.main_color
+        style.body.opa = 255
+        style.body.radius = 10
+        style.body.border.width = 0
+        card.set_style(style)
+
+        if not self.interfaces:
+            labels = [("IO", True)]
+        else:
+            labels = self.interfaces
+        step = 440 // len(labels)
+        for i, item in enumerate(labels):
+            label, active = item
+            lbl = lv.label(card)
+            lbl.set_text(label)
+            lbl.set_width(step)
+            lbl.set_align(lv.label.ALIGN.CENTER)
+            lbl.set_x(i * step)
+            lbl.set_y(25)
+            item_style = lv.style_t()
+            lv.style_copy(item_style, self.title.get_style(0))
+            item_style.text.font = lv.font_roboto_16
+            item_style.text.color = lv.color_hex(0x20D060 if active else 0x708092)
+            lbl.set_style(0, item_style)
+
+    def _add_section(self, text, y):
+        add_label(text.upper(), y=y, scr=self, style="hint")
+
+    def _button_style(self, btn):
+        style = lv.style_t()
+        lv.style_copy(style, btn.get_style(lv.btn.STYLE.REL))
+        style.body.main_color = lv.color_hex(0x263544)
+        style.body.grad_color = style.body.main_color
+        style.body.radius = 10
+        style.body.border.width = 0
+        style.body.shadow.width = 0
+        btn.set_style(lv.btn.STYLE.REL, style)
+
+    def _add_info_row(self, text, status, y):
+        btn = add_button(text + "    " + status, scr=self, y=y)
+        btn.set_height(44)
+        self._button_style(btn)
+
+    def _add_nav_row(self, value, text, icon, y):
+        btn = add_button(scr=self, y=y)
+        btn.set_height(44)
+        self._button_style(btn)
+        lbl = lv.label(btn)
+        lbl.set_text("%s   %s                                      %s" % (icon, text, lv.SYMBOL.RIGHT))
+        lbl.set_align(lv.label.ALIGN.CENTER)
+        lbl.set_width(420)
+        lbl.set_x(10)
+        lbl.set_y(9)
+        btn.set_event_cb(on_release(cb_with_args(self.set_value, value)))
+
+    def add_back_button(self, value):
+        add_button(lv.SYMBOL.LEFT + " Back", on_release(cb_with_args(self.set_value, value)), scr=self)
 
 class HostSettings(Prompt):
     def __init__(self, controls, title="Host setttings", note=None, controls_empty_text="No settings available"):

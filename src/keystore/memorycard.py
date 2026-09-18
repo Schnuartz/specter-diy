@@ -289,6 +289,7 @@ In this mode device can only operate when the smartcard is inserted!"""
                 button_text="OK",
             )
         )
+        return True
 
     @property
     def is_key_saved(self):

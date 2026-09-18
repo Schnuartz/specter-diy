@@ -29,5 +29,5 @@ class App(BaseApp):
         table.set_mnemonic(mnemonic)
         confirm = await show_fn(scr)
         if confirm:
-            self.keystore.set_mnemonic(mnemonic)
+            self.keystore.set_mnemonic(mnemonic, temporary=False)
         return confirm

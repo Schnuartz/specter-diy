@@ -7,7 +7,7 @@ from ..decorators import on_release, cb_with_args
 class Menu(Screen):
     def __init__(
         self, buttons=[], title="What do you want to do?", note=None, y0=60,
-        last=None, warning=None
+        last=None, warning=None, warning_value=None
     ):
         super().__init__()
         y = y0
@@ -20,6 +20,11 @@ class Menu(Screen):
             warning_style.text.font = lv.font_roboto_28
             self.warning.set_style(0, warning_style)
             self.warning.align(self.title, lv.ALIGN.OUT_RIGHT_MID, -35, 0)
+            if warning_value is not None:
+                self.warning.set_click(True)
+                self.warning.set_event_cb(
+                    on_release(cb_with_args(self.set_value, warning_value))
+                )
         if note is not None:
             self.note = add_label(note, style="hint", scr=self)
             self.note.align(self.title, lv.ALIGN.OUT_BOTTOM_MID, 0, 5)

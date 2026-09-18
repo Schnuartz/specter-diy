@@ -125,6 +125,7 @@ class AsyncGUI:
         note=None,
         last=None,
         warning=None,
+        warning_value=None,
     ):
         """
         Creates a menu with buttons.
@@ -137,7 +138,14 @@ class AsyncGUI:
         < Back button is added to the bottom of the screen
         and if it is pressed AsyncGUI.BTN_CLOSE is returned (-99)
         """
-        menu = Menu(buttons=buttons, title=title, note=note, last=last, warning=warning)
+        menu = Menu(
+            buttons=buttons,
+            title=title,
+            note=note,
+            last=last,
+            warning=warning,
+            warning_value=warning_value,
+        )
         await self.load_screen(menu)
         return await menu.result()
 

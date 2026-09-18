@@ -254,6 +254,35 @@ class Specter:
             status.append(card)
         return "Interfaces: " + "  |  ".join(status) if status else "Interfaces"
 
+    def _settings_interface_status(self):
+        """Return compact status entries for the playground-style status card."""
+        entries = []
+        seen = set()
+        names = {
+            "QR scanner": "QR",
+            "USB communication": "USB",
+            "SD card": "SD",
+        }
+        for host in self.hosts:
+            name = names.get(host.settings_button)
+            if name is None or name in seen:
+                continue
+            seen.add(name)
+            active = host.is_enabled
+            if name == "SD":
+                try:
+                    active = active and __import__("platform").sdcard.is_present
+                except Exception:
+                    pass
+            entries.append((name, active))
+        if hasattr(self.keystore, "connection"):
+            try:
+                active = self.keystore.connection.isCardInserted()
+            except Exception:
+                active = False
+            entries.append(("SC", active))
+        return entries
+
     async def cross_app_communicate(self, stream, app:str=None, show_fn=None):
         if app == "": # root
             data = stream.read()
@@ -296,6 +325,7 @@ class Specter:
             buttons,
             title="Home",
             warning=self.keystore.temporary_seed,
+            warning_value=778,
         )
 
         # process the menu button:
@@ -323,6 +353,13 @@ class Specter:
             await self.update_devsettings()
         elif menuitem == 777:
             return await self.import_mnemonic()
+        elif menuitem == 778:
+            await self.gui.alert(
+                "Temporary seed mode",
+                "The green exclamation mark means this seed is loaded in memory only.\n\n"
+                "It is not a persistent seed file and will be cleared when the device restarts.",
+            )
+            return self.mainmenu
         # lock device
         elif menuitem == 5:
             await self.lock()
@@ -438,7 +475,7 @@ class Specter:
                         "Insert and select a Smartcard keystore before saving to a Smartcard.",
                     )
                     return
-                await self.keystore.save_mnemonic()
+                saved = await self.keystore.save_mnemonic()
             else:
                 path = (
                     self.keystore.sdpath
@@ -450,13 +487,16 @@ class Specter:
                     raise SpecterError("Selected storage is not available")
                 if target == "sd" and not getattr(__import__("platform"), "sdcard").is_present:
                     raise SpecterError("Please insert an SD card")
-                await self.keystore.save_mnemonic_to(path)
-            self.keystore.temporary_seed = False
+                saved = await self.keystore.save_mnemonic_to(path)
+            if saved:
+                self.keystore.temporary_seed = False
         except Exception as e:
             await self.gui.alert("Seed was not saved", "%s" % e)
 
     def set_mnemonic(self, mnemonic, password="", temporary=False):
-        self.keystore.set_mnemonic(mnemonic.strip(), password)
+        self.keystore.set_mnemonic(
+            mnemonic.strip(), password, temporary=temporary
+        )
         self.keystore.temporary_seed = temporary
         self.init_apps()
         self.current_menu = self.mainmenu
@@ -521,7 +561,19 @@ class Specter:
             raise SpecterError("Not implemented")
 
     async def settingsmenu(self):
-        menuitem = await self.gui.show_screen()(SettingsMenu(self._interface_status_note()))
+        try:
+            battery_available = get_battery_status()[0] is not None
+        except Exception:
+            battery_available = False
+        has_sd = any(host.settings_button == "SD card" for host in self.hosts)
+        has_smartcard = hasattr(self.keystore, "connection")
+        menuitem = await self.gui.show_screen()(SettingsMenu(
+            self._settings_interface_status(),
+            has_sd=has_sd,
+            has_smartcard=has_smartcard,
+            battery_available=battery_available,
+            can_lock=hasattr(self.keystore, "lock"),
+        ))
 
         # process the menu button:
         # back button
@@ -539,12 +591,21 @@ class Specter:
             if res:
                 self.init_apps()
         elif menuitem == 2:
-            await self.preferences_settings()
+            await self.gui.alert(
+                "Theme",
+                "Theme selection is not available in this firmware build.",
+            )
         elif menuitem == 3:
             await self.gui.alert(
                 "Language",
                 "Language selection is not available in this firmware build.",
             )
+        elif menuitem == 4:
+            await self.communication_settings()
+        elif menuitem == 8:
+            await self.lock()
+            await self.unlock()
+            return self.mainmenu
         else:
             print(menuitem)
             raise SpecterError("Not implemented")
@@ -821,8 +882,7 @@ class Specter:
         # confirm mnemonic
         if not await show_fn(scr):
             return
-        self.keystore.set_mnemonic(mnemonic, "")
-        self.init_apps()
+        self.set_mnemonic(mnemonic, "")
 
     async def process_host_request(self, stream, popup=True, appname=None, show_fn=None):
         """
