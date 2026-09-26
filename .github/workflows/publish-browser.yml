@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   publish:
-    uses: Schnuartz/specter-diy-web-simulator/.github/workflows/publish-browser.yml@0d6988558b410c642d83ab1946f128fe978a4577
+    uses: Schnuartz/specter-diy-web-simulator/.github/workflows/publish-browser.yml@795801ddce7f0dbd37f0dfcccfdec6d4d058b38d
     with:
       simulator_repository: Schnuartz/specter-diy-web-simulator
-      simulator_commit: 0d6988558b410c642d83ab1946f128fe978a4577
+      simulator_commit: 795801ddce7f0dbd37f0dfcccfdec6d4d058b38d
