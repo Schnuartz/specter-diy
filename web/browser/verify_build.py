@@ -7,7 +7,9 @@ import os
 import re
 
 
-def verify(root: Path, expected_sha: str | None = None, expected_repo: str | None = None) -> dict:
+def verify(root: Path, expected_sha: str | None = None, expected_repo: str | None = None,
+           expected_simulator_sha: str | None = None,
+           expected_simulator_repo: str | None = None) -> dict:
     root = root.resolve()
     pointer = json.loads((root / "browser/current.json").read_text())
     build_path = pointer["build"]
@@ -17,18 +19,28 @@ def verify(root: Path, expected_sha: str | None = None, expected_repo: str | Non
     if not build.is_relative_to(root):
         raise ValueError("Build escaped staging directory")
     manifest = json.loads((build / "build-info.json").read_text())
-    commit = manifest["commit"]
-    repository = manifest["repository"]
+    source = manifest["source"]
+    simulator = manifest["simulator"]
+    commit = source["commit"]
+    repository = source["repository"]
     if not re.fullmatch(r"[a-f0-9]{40}", commit):
         raise ValueError("Invalid source commit")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ValueError("Invalid source repository")
+    if not re.fullmatch(r"[a-f0-9]{40}", simulator["commit"]):
+        raise ValueError("Invalid simulator commit")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", simulator["repository"]):
+        raise ValueError("Invalid simulator repository")
     if build_path != f"builds/{repository}/{commit}/":
         raise ValueError("Manifest does not match build path")
     if expected_sha and commit != expected_sha:
         raise ValueError("Build does not match workflow commit")
     if expected_repo and repository.lower() != expected_repo.lower():
         raise ValueError("Build does not match workflow repository")
+    if expected_simulator_sha and simulator["commit"] != expected_simulator_sha:
+        raise ValueError("Build does not match simulator tooling commit")
+    if expected_simulator_repo and simulator["repository"].lower() != expected_simulator_repo.lower():
+        raise ValueError("Build does not match simulator tooling repository")
     artifacts = manifest["artifacts"]
     if set(artifacts) != {"micropython.js", "micropython.wasm", "micropython.data"}:
         raise ValueError("Unexpected artifact set")
@@ -46,5 +58,6 @@ def verify(root: Path, expected_sha: str | None = None, expected_repo: str | Non
 
 if __name__ == "__main__":
     base = Path(__file__).resolve().parent.parent
-    result = verify(base, os.getenv("EXPECTED_SHA"), os.getenv("SPECTER_SOURCE_REPOSITORY"))
-    print("Verified browser build", result["repository"], result["commit"])
+    result = verify(base, os.getenv("EXPECTED_SHA"), os.getenv("SPECTER_SOURCE_REPOSITORY"),
+                    os.getenv("SIMULATOR_COMMIT"), os.getenv("SIMULATOR_REPOSITORY"))
+    print("Verified browser build", result["source"]["repository"], result["source"]["commit"])

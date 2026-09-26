@@ -195,7 +195,14 @@ def comment(state: dict):
         pages_owner = repo.split("/")[0].lower()
         pages_url = f"https://{pages_owner}.github.io/{repo.split('/')[1]}/pr/{number}/"
         firmware_url = f"{run_url}/artifacts/{artifact_id(state['run_id'], 'firmware-binaries')}"
+        simulator = state["simulator"]
+        source = state["repo"]
+        source_link = f"https://github.com/{source}/commit/{sha}"
+        simulator_link = (f"https://github.com/{simulator['repository']}/commit/"
+                          f"{simulator['commit']}")
         body = (f"{MARKER}\n🧪 **Specter PR Build** · `{sha[:12]}` ✅\n\n"
+                f"**Specter source:** [{source}@{sha[:12]}]({source_link})\n"
+                f"**Simulator tooling:** [{simulator['repository']}@{simulator['commit'][:12]}]({simulator_link})\n\n"
                 f"🖥️ [Open browser simulator]({pages_url})\n\n"
                 f"⬇️ [Download firmware from the same commit]({firmware_url})\n\n"
                 f"🔧 [Build workflow and logs]({run_url})\n\n"
@@ -260,19 +267,23 @@ def prepare(args):
                     target["repository"].lower() != repo.lower() or \
                     target.get("number") != (number or 0) or \
                     (number and target.get("branch") != pr["head"]["ref"]) or \
+                    not isinstance(target.get("simulator_repository"), str) or \
+                    not isinstance(target.get("simulator_commit"), str) or \
                     (run["event"] == "workflow_dispatch" and
-                     target.get("platform_commit") != run["head_sha"]):
+                     target.get("simulator_commit") != run["head_sha"]):
                 raise ValueError("Workflow target does not match current run")
             manifest = validate_bundles(browser, firmware, sha, repo)
-            if run["event"] == "workflow_dispatch" and \
-                    manifest.get("platform_commit") != run["head_sha"]:
-                raise ValueError("Browser tooling does not match dispatch commit")
+            simulator = manifest["simulator"]
+            if simulator["repository"].lower() != target["simulator_repository"].lower() or \
+                    simulator["commit"] != target["simulator_commit"]:
+                raise ValueError("Browser simulator tooling does not match workflow target")
         except Exception as error:
             # Artifact content is untrusted data. Any missing or malformed
             # artifact makes this current PR build unpublishable.
             state["reason"] = f"Build artifacts unavailable or invalid: {error}"
             print(state["reason"])
         else:
+            state["simulator"] = simulator
             publish_files(browser / "web", pages, number, sha)
             state["published"] = True
     if number and not state["published"]:

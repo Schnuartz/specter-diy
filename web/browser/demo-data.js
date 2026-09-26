@@ -62,5 +62,3 @@ export function createDemoFiles() {
   }));
   return { files, roots, primary, secondary, cards };
 }
-
-

@@ -4,15 +4,32 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 import json
+import re
 import subprocess
 import sys
 
 source, output = (Path(p).resolve() for p in sys.argv[1:3])
-repository = sys.argv[3]
+source_repository = sys.argv[3]
+simulator_repository = sys.argv[4]
+simulator_commit = sys.argv[5]
 
 
 def git(*args):
     return subprocess.check_output(["git", "-C", str(source), *args], text=True).strip()
+
+
+def specter_firmware_version():
+    """Decode the firmware version using the layout from src/platform.py."""
+    boot = source / "boot" / "main" / "boot.py"
+    match = re.search(r"<version:tag10>(\d{10})</version:tag10>", boot.read_text())
+    if not match:
+        raise RuntimeError(f"Missing Specter firmware version tag in {boot}")
+    encoded = match.group(1)
+    version = f"{int(encoded[:2])}.{int(encoded[2:5])}.{int(encoded[5:8])}"
+    release_candidate = int(encoded[8:])
+    if release_candidate != 99:
+        version += f"-rc{release_candidate}"
+    return version
 
 
 artifacts = {}
@@ -24,10 +41,23 @@ for name in ("micropython.js", "micropython.wasm", "micropython.data"):
 
 artifact_set = sha256(''.join(artifacts[name]['sha256'] for name in sorted(artifacts)).encode()).hexdigest()
 
+source_commit = git("rev-parse", "HEAD")
+if not re.fullmatch(r"[a-f0-9]{40}", source_commit):
+    raise RuntimeError(f"Invalid source commit: {source_commit}")
+if not re.fullmatch(r"[a-f0-9]{40}", simulator_commit):
+    raise RuntimeError(f"Invalid simulator commit: {simulator_commit}")
+
 manifest = {
-    "repository": repository,
-    "source_url": "https://github.com/" + repository,
-    "commit": git("rev-parse", "HEAD"),
+    "source": {
+        "repository": source_repository,
+        "url": "https://github.com/" + source_repository,
+        "commit": source_commit,
+    },
+    "simulator": {
+        "repository": simulator_repository,
+        "url": "https://github.com/" + simulator_repository,
+        "commit": simulator_commit,
+    },
     "branch": git("branch", "--show-current") or None,
     "build_type": "Browser / WebAssembly",
     "capabilities": {"smartcard": True, "smartcard_type": "MemoryCard"},
@@ -37,13 +67,12 @@ manifest = {
     "built_at": datetime.now(timezone.utc).isoformat(),
     "artifacts": artifacts,
 }
-if len(sys.argv) > 4 and sys.argv[4] == "mockui":
+if source_repository.lower() in ("cryptoadvance/specter-diy", "schnuartz/specter-diy", "schnuartz-ai/specter-diy"):
+    manifest["firmware_version"] = specter_firmware_version()
+if len(sys.argv) > 6 and sys.argv[6] == "mockui":
     manifest["application"] = "MockUI"
     manifest["entrypoint"] = "mockui"
     manifest["capabilities"]["smartcard_type"] = "MockUI virtual card"
-elif len(sys.argv) > 4:
-    manifest["platform_repository"] = repository
-    manifest["platform_commit"] = sys.argv[4]
 (output / "build-info.json").write_text(json.dumps(manifest, indent=2) + "\n")
 pointer = {
     "build": str(output.relative_to(Path(__file__).resolve().parent.parent)).replace('\\', '/') + "/",

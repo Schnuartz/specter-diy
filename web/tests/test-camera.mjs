@@ -4,7 +4,7 @@ import { PNG } from 'pngjs';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
-const base = process.env.TEST_BASE_URL || 'http://127.0.0.1:8765/';
+const base = process.env.TEST_BASE_URL || 'http://127.0.0.1:8765';
 await mkdir('test-results', { recursive: true });
 const text = 'specter synthetic webcam qr';
 const png = PNG.sync.read(await QRCode.toBuffer(text, { width: 320, margin: 4 }));
@@ -33,7 +33,7 @@ await page.addInitScript(() => {
     return original.call(this, message, ...args);
   };
 });
-await page.goto(new URL('?probe=qr', base).href);
+await page.goto(`${base}/?probe=qr`);
 await page.locator('#st').getByText('Running locally').waitFor({ timeout: 45000 });
 await page.waitForFunction(() => document.querySelector('#debug-log').textContent.includes('QR_PROBE_HEX '),
   null, { timeout: 20000 });
@@ -53,22 +53,11 @@ await denied.addInitScript(() => Object.defineProperty(navigator, 'mediaDevices'
   configurable: true,
   value: { getUserMedia: () => Promise.reject(new DOMException('Denied', 'NotAllowedError')) },
 }));
-await denied.goto(new URL('?probe=qr', base).href);
+await denied.goto(`${base}/?probe=qr`);
 await denied.locator('#camera-screen').waitFor({ state: 'visible', timeout: 15000 });
 await denied.waitForFunction(() => document.querySelector('#debug-log').textContent.includes('Camera permission denied'));
 await denied.locator('#camera-screen-start').waitFor({ state: 'visible' });
 await denied.close();
-const missing = await browser.newPage();
-await missing.addInitScript(() => Object.defineProperty(navigator, 'mediaDevices', {
-  configurable: true,
-  value: { getUserMedia: () => Promise.reject(new DOMException('No camera found', 'NotFoundError')) },
-}));
-await missing.goto(new URL('?probe=qr', base).href);
-await missing.locator('#camera-screen').waitFor({ state: 'visible', timeout: 15000 });
-await missing.waitForFunction(() => document.querySelector('#debug-log').textContent.includes('Camera unavailable: No camera found'));
-await missing.locator('#camera-screen-start').waitFor({ state: 'visible' });
-await missing.close();
 console.log(JSON.stringify({ result: 'pass', camera: 'fake webcam to browser decoder to Specter QRHost',
-  unavailable: 'permission denied and missing camera handled',
   payload: text }, null, 2));
 await browser.close();

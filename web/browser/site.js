@@ -1,5 +1,5 @@
 const $ = selector => document.querySelector(selector);
-const siteRoot = new URL('./', document.baseURI);
+const siteRoot = new URL('../', import.meta.url);
 const params = new URLSearchParams(location.search);
 const embedded = params.get('embedded') === '1' && window.parent !== window;
 const gallery = embedded && params.get('gallery') === '1';
@@ -315,7 +315,9 @@ async function importDemoData() {
   demoImportBusy = true;
   button.disabled = true;
   try {
-    const { createDemoFiles } = await import('/browser/demo-data.js?v=20260916-multisig-psbt');
+    const demoUrl = new URL('browser/demo-data.js', siteRoot);
+    demoUrl.searchParams.set('v', '20260916-multisig-psbt');
+    const { createDemoFiles } = await import(demoUrl.href);
     const demo = createDemoFiles();
     let projected = sdUsedBytes;
     for (const file of demo.files) {
@@ -786,10 +788,16 @@ function formatPullRequest(value) {
   return match ? `PR #${match[1]}` : text.toLowerCase().startsWith('pr') ? text : `PR ${text}`;
 }
 function formatBuildPresentation(manifest) {
-  const repository = String(manifest.repository || '').trim();
-  const repositoryUrl = repository ? `https://github.com/${repository}` : String(manifest.source_url || '').replace(/\/$/, '');
-  const commit = String(manifest.commit || '').trim();
+  const source = manifest.source || manifest;
+  const simulator = manifest.simulator || {};
+  const repository = String(source.repository || '').trim();
+  const repositoryUrl = repository ? `https://github.com/${repository}` : String(source.url || manifest.source_url || '').replace(/\/$/, '');
+  const commit = String(source.commit || '').trim();
   const commitUrl = `${repositoryUrl}/commit/${commit}`;
+  const simulatorRepository = String(simulator.repository || '').trim();
+  const simulatorRepositoryUrl = simulatorRepository ? `https://github.com/${simulatorRepository}` : '';
+  const simulatorCommit = String(simulator.commit || '').trim();
+  const simulatorCommitUrl = simulatorRepositoryUrl ? `${simulatorRepositoryUrl}/commit/${simulatorCommit}` : '';
   const versionLabel = firstBuildValue(manifest.firmware_version, manifest.version, manifest.release_version, manifest.tag_name, manifest.tag);
   const branchPr = String(manifest.branch || '').match(/(?:^|[\/_-])pr[\/_-]?(\d+)/i)?.[1];
   const prLabel = formatPullRequest(firstBuildValue(manifest.pull_request, manifest.pull_request_number, manifest.pr_number, manifest.pr, branchPr));
@@ -806,7 +814,8 @@ function formatBuildPresentation(manifest) {
     prLabel,
     commit && `Commit: ${commit}`,
   ].filter(Boolean).join(' · ');
-  return { repository, repositoryUrl, commit, commitUrl, topLabel, context };
+  return { repository, repositoryUrl, commit, commitUrl, simulatorRepository,
+    simulatorRepositoryUrl, simulatorCommit, simulatorCommitUrl, topLabel, context };
 }
 function updateBuildMetadata(manifest) {
   const buildPresentation = formatBuildPresentation(manifest);
@@ -830,6 +839,17 @@ function updateBuildMetadata(manifest) {
     buildLink.href = buildPresentation.commitUrl;
     buildLink.textContent = buildPresentation.commit.slice(0, 12);
   }
+  const simulatorRepositoryLink = $('#simulator-repository-link');
+  if (simulatorRepositoryLink) {
+    simulatorRepositoryLink.href = buildPresentation.simulatorRepositoryUrl || '#';
+    simulatorRepositoryLink.textContent = buildPresentation.simulatorRepository || 'Unavailable';
+  }
+  const simulatorLink = $('#simulator-link');
+  if (simulatorLink) {
+    simulatorLink.href = buildPresentation.simulatorCommitUrl || '#';
+    simulatorLink.textContent = buildPresentation.simulatorCommit
+      ? buildPresentation.simulatorCommit.slice(0, 12) : 'Unavailable';
+  }
   const buildDetails = $('#build-details');
   if (buildDetails) buildDetails.textContent = JSON.stringify(manifest, null, 2);
   const cardPanel = $('#card-panel');
@@ -848,15 +868,19 @@ try {
   build = new URL(buildPath, siteRoot).href;
   if (!/^[a-f0-9]{16}$/.test(version)) throw new Error('Invalid artifact version');
   const manifest = await (await fetch(`${build}build-info.json`, { cache: 'no-store' })).json();
-  if (!build.includes(manifest.commit) || manifest.artifact_set_sha256?.slice(0, 16) !== version) {
+  const source = manifest.source || manifest;
+  const simulator = manifest.simulator || {};
+  if (!build.includes(source.commit) || manifest.artifact_set_sha256?.slice(0, 16) !== version) {
     throw new Error('Build manifest mismatch');
   }
   const expectedRepos = variant === 'diy' ? ['schnuartz/specter-diy', 'schnuartz-ai/specter-diy'] :
     variant === 'play' ? ['k9ert/specter-playground'] : ['schnuartz/specter-playground'];
-  if (!expectedRepos.includes(manifest.repository?.toLowerCase())) throw new Error('Wrong firmware variant in build manifest');
-  if (!/^[a-f0-9]{40}$/.test(manifest.commit)) throw new Error('Invalid source commit in build manifest');
+  if (!expectedRepos.includes(source.repository?.toLowerCase())) throw new Error('Wrong firmware variant in build manifest');
+  if (!/^[a-f0-9]{40}$/.test(source.commit)) throw new Error('Invalid source commit in build manifest');
+  if (manifest.simulator && (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(simulator.repository) ||
+      !/^[a-f0-9]{40}$/.test(simulator.commit))) throw new Error('Invalid simulator provenance in build manifest');
   program = manifest.entrypoint === 'mockui' ? 'mockui' : 'wallet';
-  log(`Firmware: ${manifest.commit}; build: ${version}; worker: ${workerRevision}`);
+  log(`Firmware: ${source.commit}; build: ${version}; worker: ${workerRevision}`);
   // Build presentation is optional UI. It must never prevent the firmware from starting.
   try {
     updateBuildMetadata(manifest);

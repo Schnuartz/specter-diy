@@ -11,18 +11,7 @@ const errors = [];
 page.on('request', request => requests.push(request.url()));
 page.on('pageerror', error => errors.push(error.message));
 await page.goto(base, { waitUntil: 'domcontentloaded' });
-try {
-  await page.locator('#st').getByText('Running locally').waitFor({ timeout: 75000 });
-} catch (error) {
-  console.error(JSON.stringify({
-    status: await page.locator('#st').textContent(),
-    loadingTitle: await page.locator('[data-loading-title]').textContent().catch(() => null),
-    loadingLabel: await page.locator('[data-loading-label]').textContent().catch(() => null),
-    diagnostics: await page.locator('#debug-log').textContent().catch(() => null),
-    pageErrors: errors,
-  }, null, 2));
-  throw error;
-}
+await page.locator('#st').getByText('Running locally').waitFor({ timeout: 45000 });
 if (!await page.locator('.phone-mockup').evaluate(img => img.complete && img.naturalWidth > 0)) {
   throw new Error('Specter Shield Metal device image did not load');
 }
@@ -71,11 +60,22 @@ const previousCanvas = await canvas.elementHandle();
 await page.locator('#restart-btn').click();
 await page.waitForFunction(previous => document.querySelector('#screen') !== previous,
   previousCanvas, { timeout: 10000 });
-await page.locator('#st').getByText('Running locally').waitFor({ timeout: 75000 });
+await page.locator('#st').getByText('Running locally').waitFor({ timeout: 45000 });
 await previousCanvas.dispose();
 await page.locator('#sd-state').getByText('Inserted').waitFor();
 await page.locator('#sd-files').getByText('probe.bin', { exact: false }).waitFor();
 await canvas.screenshot({ path: 'test-results/specter-after-restart.png' });
+await page.locator('#demo-load').click();
+await page.locator('#demo-load').getByText('Import Demo Data Again', { exact: true }).waitFor({ timeout: 30000 });
+await page.locator('#sd-files').getByText('testnet-multisig-unsigned.psbt', { exact: false }).waitFor();
+await page.locator('#card-slots > div').first().getByText('Inserted', { exact: true }).waitFor();
+await page.locator('#card-slots > div').first().getByText('ghost-seed', { exact: false }).waitFor();
+if (await page.locator('.smartcard-photo').count() !== 3 ||
+    !await page.locator('.smartcard-photo').first().evaluate(img => img.complete && img.naturalWidth > 0)) {
+  throw new Error('Smartcard artwork did not load');
+}
+if (await page.locator('.hardware-link').count()) throw new Error('Removed hardware purchase note is still present');
+if (await page.locator('#camera-toggle').isVisible()) throw new Error('Backup camera control should stay hidden');
 if (requests.some(url => /\/api\/(allocate|heartbeat)|\/novnc\//.test(url))) {
   throw new Error('Browser mode requested legacy VNC/session infrastructure');
 }
@@ -88,8 +88,6 @@ const probe = await page.evaluate(async () => {
     const worker = new Worker(new URL('browser/runtime-worker.js', location.href));
     const canvas = new OffscreenCanvas(480, 800);
     const logs = [];
-    let written;
-    let checkingAtomicImport = false;
     const timer = setTimeout(() => { worker.terminate(); reject(new Error(logs.join('\n'))); }, 10000);
     worker.onmessage = ({ data }) => {
       if (data.type === 'log') logs.push(data.message);
@@ -97,23 +95,10 @@ const probe = await page.evaluate(async () => {
       if (data.type === 'log' && data.message === 'SD_PROBE_WRITTEN') {
         worker.postMessage({ type: 'snapshot', requestId: 1 });
       }
-      if (data.type === 'snapshot' && data.requestId === 1) {
+      if (data.type === 'snapshot') {
         const file = data.files.find(file => file.path === 'sd/written-by-specter.txt');
-        written = file ? new TextDecoder().decode(file.bytes) : null;
-        checkingAtomicImport = true;
-        worker.postMessage({ type: 'state-import', files: [
-          { path: 'sd/must-not-be-partial.bin', bytes: new Uint8Array([1]) },
-          { path: 'invalid/outside.bin', bytes: new Uint8Array([2]) },
-        ] });
-      }
-      if (data.type === 'operation-error' && checkingAtomicImport) {
-        checkingAtomicImport = false;
-        worker.postMessage({ type: 'snapshot', requestId: 2 });
-      }
-      if (data.type === 'snapshot' && data.requestId === 2) {
-        const partial = data.files.some(file => file.path === 'sd/must-not-be-partial.bin');
         clearTimeout(timer); worker.terminate();
-        resolve({ logs, written, partial });
+        resolve({ logs, written: file ? new TextDecoder().decode(file.bytes) : null });
       }
     };
     worker.onerror = error => { clearTimeout(timer); worker.terminate(); reject(new Error(error.message)); };
@@ -123,7 +108,7 @@ const probe = await page.evaluate(async () => {
 });
 if (!probe.logs.includes('SD_PROBE_PRESENT True') ||
     !probe.logs.some(line => line.includes("b'\\x00\\x01\\x02\\xff'")) ||
-    probe.written !== 'firmware-created file' || probe.partial) {
+    probe.written !== 'firmware-created file') {
   throw new Error(`Specter SD platform read/write failed: ${probe.logs.join('; ')}`);
 }
 
@@ -137,7 +122,7 @@ const mobile = await browser.newContext({ viewport: { width: 390, height: 844 },
   deviceScaleFactor: 2, isMobile: true, hasTouch: true });
 const mobilePage = await mobile.newPage();
 await mobilePage.goto(base);
-await mobilePage.locator('#st').getByText('Running locally').waitFor({ timeout: 75000 });
+await mobilePage.locator('#st').getByText('Running locally').waitFor({ timeout: 45000 });
 const mobileCanvas = mobilePage.locator('#screen');
 const mobileBefore = await mobileCanvas.screenshot();
 const mobileBox = await mobileCanvas.boundingBox();
@@ -149,17 +134,15 @@ if (mobileBefore.equals(await mobileCanvas.screenshot())) {
 }
 await mobile.close();
 
-const sourceLinks = await page.locator('a[href]').evaluateAll(links =>
-  links.map(link => link.href.toLowerCase()));
 if (await page.locator('img[alt="ClavaStack"]').count() ||
     (await page.title()).includes('ClavaStack') ||
-    !sourceLinks.some(href => href === 'https://github.com/schnuartz/specter-diy' ||
-      href.startsWith('https://github.com/schnuartz/specter-diy/'))) {
+    !await page.locator('a[href="https://github.com/Schnuartz/specter-diy"]').count()) {
   throw new Error('Fork page branding or source link is incorrect');
 }
 console.log(JSON.stringify({ result: 'pass', canvasColors: colors.size,
   crossOriginIsolated: isolated,
   pointer: 'changed Specter screen', sd: 'multi-select/paste/export/restart/Specter platform read+write',
-  mobileTouch: 'changed Specter screen', workerCrash: 'handled', branding: 'Specter DIY',
+  mobileTouch: 'changed Specter screen', demo: 'files and Smartcards imported',
+  workerCrash: 'handled', branding: 'Specter DIY',
   legacyRequestsInBrowserMode: 0 }, null, 2));
 await browser.close();

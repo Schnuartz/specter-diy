@@ -16,9 +16,12 @@ from publish_preview import publish_files, validate_bundles
 
 ROOT = Path(__file__).resolve().parents[1]
 POINTER = json.loads((ROOT / "browser/current.json").read_text())
-MANIFEST = json.loads((ROOT / POINTER["build"] / "build-info.json").read_text())
-SHA = MANIFEST["commit"]
-REPO = MANIFEST["repository"]
+BUILD_PATH = POINTER["build"].lstrip("/")
+MANIFEST = json.loads((ROOT / BUILD_PATH / "build-info.json").read_text())
+SHA = MANIFEST["source"]["commit"]
+REPO = MANIFEST["source"]["repository"]
+SIMULATOR_REPO = MANIFEST["simulator"]["repository"]
+SIMULATOR_SHA = MANIFEST["simulator"]["commit"]
 
 
 class PublisherTests(unittest.TestCase):
@@ -30,7 +33,7 @@ class PublisherTests(unittest.TestCase):
         self.firmware = self.root / "firmware"
         web = self.browser / "web"
         for name in ("index.html", "assets", "browser/runtime", "browser/site.js",
-                     "browser/runtime-worker.js", "browser/current.json", POINTER["build"].rstrip("/")):
+                     "browser/runtime-worker.js", "browser/current.json", BUILD_PATH.rstrip("/")):
             source, target = ROOT / name, web / name
             target.parent.mkdir(parents=True, exist_ok=True)
             if source.is_dir():
@@ -71,7 +74,7 @@ class PublisherTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Firmware hash mismatch"):
             validate_bundles(self.browser, self.firmware, SHA, REPO)
         firmware.write_bytes(b"bin/specter-diy.bin")
-        wasm = self.browser / "web" / POINTER["build"] / "micropython.wasm"
+        wasm = self.browser / "web" / BUILD_PATH / "micropython.wasm"
         with wasm.open("ab") as file:
             file.write(b"tampered")
         with self.assertRaisesRegex(ValueError, "Missing or invalid|Hash mismatch"):
@@ -170,7 +173,9 @@ class PublisherTests(unittest.TestCase):
             "head_sha": SHA, "pull_requests": [{"number": 17}],
         }}))
         target.write_text(json.dumps({"event": "pull_request", "number": 17,
-                                      "commit": SHA, "repository": REPO, "branch": "feature"}))
+                                      "commit": SHA, "repository": REPO, "branch": "feature",
+                                      "simulator_repository": SIMULATOR_REPO,
+                                      "simulator_commit": SIMULATOR_SHA}))
         pr = {"number": 17, "state": "open", "merge_commit_sha": "1" * 40,
               "head": {"sha": SHA, "ref": "feature", "repo": {"full_name": REPO}}}
         pages = self.root / "pages"
@@ -260,7 +265,9 @@ class PublisherTests(unittest.TestCase):
             "head_sha": SHA, "pull_requests": [{"number": 17}],
         }}))
         target.write_text(json.dumps({"event": "pull_request", "number": 18,
-                                      "commit": SHA, "repository": REPO, "branch": "feature"}))
+                                      "commit": SHA, "repository": REPO, "branch": "feature",
+                                      "simulator_repository": SIMULATOR_REPO,
+                                      "simulator_commit": SIMULATOR_SHA}))
         pr = {"number": 17, "state": "open", "merge_commit_sha": "1" * 40,
               "head": {"sha": SHA, "ref": "feature", "repo": {"full_name": REPO}}}
         args = SimpleNamespace(event=event, target=target, state=self.root / "state.json",
@@ -316,20 +323,21 @@ class PublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Unrecognized workflow run"):
                 publish_preview.prepare(args)
 
-    def test_manual_success_checks_platform_commit(self):
-        platform_sha = "b" * 40
+    def test_manual_success_checks_simulator_commit(self):
+        simulator_sha = "b" * 40
         event = self.root / "event.json"
         target = self.root / "target.json"
         event.write_text(json.dumps({"repository": {"default_branch": "master"}, "workflow_run": {
             "id": 22, "html_url": "https://github.com/example/actions/runs/22",
             "name": f"Manual PR 17 {SHA}", "path": ".github/workflows/build.yml",
             "event": "workflow_dispatch", "conclusion": "success",
-            "display_title": f"Manual PR 17 {SHA}", "head_sha": platform_sha,
+            "display_title": f"Manual PR 17 {SHA}", "head_sha": simulator_sha,
             "head_branch": "master", "head_repository": {"full_name": REPO},
         }}))
         target.write_text(json.dumps({"event": "workflow_dispatch", "number": 17,
                                       "commit": SHA, "repository": REPO, "branch": "feature",
-                                      "platform_commit": platform_sha}))
+                                      "simulator_repository": REPO,
+                                      "simulator_commit": simulator_sha}))
         pr = {"number": 17, "state": "open", "head": {
             "sha": SHA, "ref": "feature", "repo": {"full_name": REPO}},
             "base": {"ref": "master", "repo": {"full_name": REPO}}}
@@ -338,12 +346,13 @@ class PublisherTests(unittest.TestCase):
         with patch.dict("os.environ", {"GITHUB_REPOSITORY": REPO}), \
                 patch.object(publish_preview, "api", return_value=pr), \
                 patch.object(publish_preview, "validate_bundles",
-                             return_value={"platform_commit": platform_sha}):
+                             return_value={"simulator": {"repository": REPO,
+                                                         "commit": simulator_sha}}):
             result = publish_preview.prepare(args)
         self.assertTrue(result["published"])
         self.assertTrue((self.root / "pages/pr/17/index.html").is_file())
         target_data = json.loads(target.read_text())
-        target_data["platform_commit"] = "f" * 40
+        target_data["simulator_commit"] = "f" * 40
         target.write_text(json.dumps(target_data))
         with patch.dict("os.environ", {"GITHUB_REPOSITORY": REPO}), \
                 patch.object(publish_preview, "api", return_value=pr):
