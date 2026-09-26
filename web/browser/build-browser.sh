@@ -8,7 +8,11 @@ SOURCE_SHA="$(git -C "$SPECTER_SRC" rev-parse HEAD)"
 ORIGIN_URL="$(git -C "$SPECTER_SRC" remote get-url origin)"
 ORIGIN_REPOSITORY="$(printf '%s' "$ORIGIN_URL" | sed -E 's#^(https://github.com/|git@github.com:)##; s#\.git$##')"
 SOURCE_REPOSITORY="${SPECTER_SOURCE_REPOSITORY:-${GITHUB_REPOSITORY:-$ORIGIN_REPOSITORY}}"
+SIMULATOR_REPOSITORY="${SIMULATOR_REPOSITORY:-${GITHUB_REPOSITORY:-$SOURCE_REPOSITORY}}"
+SIMULATOR_COMMIT="${SIMULATOR_COMMIT:-$SOURCE_SHA}"
 [[ "$SOURCE_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo 'Invalid source repository' >&2; exit 1; }
+[[ "$SIMULATOR_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo 'Invalid simulator repository' >&2; exit 1; }
+[[ "$SIMULATOR_COMMIT" =~ ^[a-f0-9]{40}$ ]] || { echo 'Invalid simulator commit' >&2; exit 1; }
 OUT="$ROOT/builds/$SOURCE_REPOSITORY/$SOURCE_SHA"
 
 # CI checks out the exact PR head. Building from this checkout makes the
@@ -70,9 +74,6 @@ mkdir -p "$OUT"
 cp "$SPECTER_SRC/f469-disco/micropython/ports/unix/micropython.js" "$OUT/"
 cp "$SPECTER_SRC/f469-disco/micropython/ports/unix/micropython.wasm" "$OUT/"
 cp "$SPECTER_SRC/f469-disco/micropython/ports/unix/micropython.data" "$OUT/"
-manifest_extra=()
-if [[ -n "${BROWSER_PLATFORM_COMMIT:-}" ]]; then
-  manifest_extra+=("$BROWSER_PLATFORM_COMMIT")
-fi
-python3 "$ROOT/browser/write-manifest.py" "$SPECTER_SRC" "$OUT" "$SOURCE_REPOSITORY" "${manifest_extra[@]}"
+python3 "$ROOT/browser/write-manifest.py" "$SPECTER_SRC" "$OUT" \
+  "$SOURCE_REPOSITORY" "$SIMULATOR_REPOSITORY" "$SIMULATOR_COMMIT"
 echo "Browser artifacts: $OUT"

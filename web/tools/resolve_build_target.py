@@ -51,15 +51,24 @@ def resolve(env, fetch=fetch_pull) -> dict:
         raise ValueError("Expected a full source commit SHA")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ValueError("Invalid source repository")
+    simulator_repository = env["TARGET_SIMULATOR_REPOSITORY"]
+    simulator_commit = env["TARGET_SIMULATOR_COMMIT"].strip(" \t")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", simulator_repository):
+        raise ValueError("Invalid simulator repository")
+    if not re.fullmatch(r"[a-f0-9]{40}", simulator_commit):
+        raise ValueError("Expected a full simulator commit SHA")
     return {"event": event, "number": int(number), "branch": branch,
             "commit": sha, "repository": repository,
-            "platform_commit": env["GITHUB_SHA"] if event == "workflow_dispatch" else None}
+            "simulator_repository": simulator_repository,
+            "simulator_commit": simulator_commit}
 
 
 def main():
     target = resolve(os.environ)
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-        output.write(f"sha={target['commit']}\nrepository={target['repository']}\n")
+        output.write(f"sha={target['commit']}\nrepository={target['repository']}\n"
+                     f"simulator_repository={target['simulator_repository']}\n"
+                     f"simulator_commit={target['simulator_commit']}\n")
     with open("target.json", "w") as output:
         json.dump(target, output)
 

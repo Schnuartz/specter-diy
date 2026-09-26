@@ -42,10 +42,14 @@ From a recursive checkout of this repository on Linux or WSL:
 
 The build output is `web/builds/<owner>/<repo>/<source-sha>/` with
 `micropython.js`, `.wasm`, `.data`, and `build-info.json`. The manifest records
-the source repository/commit, Emscripten version, build time, and SHA256 of
-each artifact. `web/browser/current.json` points to the build. Both generated
-directories are ignored by Git. `SPECTER_SOURCE_REPOSITORY=owner/repo` can
-override the origin URL when building a fork or a PR checkout.
+two immutable inputs: `source.repository`/`source.commit` identify the
+Specter-DIY code being simulated, while `simulator.repository`/
+`simulator.commit` identify the simulator tooling that built it. It also
+records the Emscripten version, build time, and SHA256 of each artifact.
+`web/browser/current.json` remains only a pointer to the build. Both generated
+directories are ignored by Git. `SPECTER_SOURCE_REPOSITORY=owner/repo`,
+`SIMULATOR_REPOSITORY=owner/repo`, and `SIMULATOR_COMMIT=<full-sha>` can be
+used when building source and tooling from different repositories.
 
 The build script applies only browser compatibility changes to the checked-out
 MicroPython/LVGL C submodules. It freezes the wallet's `src/` tree without
@@ -62,10 +66,22 @@ CPython-only embit examples and tests cannot enter a current browser build.
 ## CI and Pages
 
 The existing `Build` workflow now runs native tests, builds Unix and STM32
-firmware, builds the browser simulator, and runs browser/QR/SD/Smartcard smoke
-tests. It checks out the exact PR head SHA. The browser and firmware artifacts
-carry separate `source.json` records. The build workflow has **read-only**
-repository permissions and no deployment secret.
+firmware, and calls the reusable `.github/workflows/browser-simulator.yml`
+workflow for the browser/QR/SD/Smartcard smoke tests. The caller passes the
+exact source and simulator SHAs; the reusable workflow checks out both and
+overlays only the simulator's `web/` tooling onto the source checkout. This
+keeps the execution context and read-only token in the calling Specter
+repository. The browser and firmware artifacts carry separate `source.json`
+records, and the browser `build-info.json` carries both provenance records.
+The build workflow has **read-only** repository permissions and no deployment
+secret.
+
+When the tooling is moved to its own repository, the caller only needs to
+change the `uses:` target to a full simulator-workflow SHA and pass that
+repository/SHA as the two simulator inputs. The workflow should remain a
+reusable workflow, not a cross-repository dispatch: the caller's token and
+Pages/PR context then stay in the Specter repository, which keeps fork builds
+usable without PATs or cross-repository write credentials.
 
 A separate `Publish browser simulator` workflow runs from the trusted default
 branch after `Build` completes. It verifies that the browser manifest, its
@@ -105,7 +121,7 @@ This starts the existing `Build` workflow; it does not create another Actions
 workflow or add a commit to the PR. Manual runs check out the PR's exact head
 for Specter source and firmware, but use the current default branch's browser
 build tools and website shell. The browser manifest records both the PR source
-commit and the tooling (`platform_commit`) commit. The publisher checks both,
+commit and the simulator tooling commit. The publisher checks both,
 and it can remove a failed current manual preview without downloading any
 artifact. A very old PR with incompatible MicroPython/LVGL or firmware sources
 may still fail to build; its build log will show the concrete incompatibility.
