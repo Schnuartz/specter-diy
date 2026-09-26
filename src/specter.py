@@ -132,14 +132,29 @@ class Specter:
             raise exception
         except CriticalErrorWipeImmediately as e:
             # show error
-            await self.gui.error("Critical error, the device will be wiped.\n\n%s" % e)
+            await self.gui.error(
+                "Critical error, the device will be wiped.\n\n%s" % e,
+                button_text="Wipe Specter Device",
+            )
             self.gui.show_loader(title="Wiping the device...")
             # wipe everything and reboot
             self.wipe()
         # catch an expected error
         except BaseError as e:
             # show error
-            await self.gui.alert(e.NAME, "%s" % e)
+            requires_card_removal = getattr(e, "requires_card_removal", False)
+            button_text = "Remove card" if requires_card_removal else "OK"
+            await self.gui.alert(e.NAME, "%s" % e, button_text=button_text)
+            if requires_card_removal:
+                wait_for_removal = getattr(self.keystore, "wait_for_card_removal", None)
+                if wait_for_removal is not None:
+                    self.gui.show_loader(
+                        title="Remove the locked card",
+                        text="Waiting for the smartcard to be removed...",
+                    )
+                    await wait_for_removal()
+                    self.gui.hide_loader()
+                    self.keystore = None
             # restart
             return next_fn
         # show trace for unexpected errors
