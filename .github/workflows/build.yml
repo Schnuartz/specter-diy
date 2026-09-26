@@ -44,10 +44,10 @@ jobs:
           TARGET_BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
           TARGET_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
           TARGET_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          TARGET_SIMULATOR_REPOSITORY: ${{ github.repository }}
-          TARGET_SIMULATOR_COMMIT: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.event.pull_request.head.sha || github.sha }}
+          TARGET_SIMULATOR_REPOSITORY: Schnuartz/specter-diy-web-simulator
+          TARGET_SIMULATOR_COMMIT: 0d6988558b410c642d83ab1946f128fe978a4577
           GH_TOKEN: ${{ github.token }}
-        run: python3 web/tools/resolve_build_target.py
+        run: python3 .github/simulator/resolve_build_target.py
       - uses: actions/upload-artifact@v4
         with:
           name: build-target
@@ -106,9 +106,9 @@ jobs:
       - name: Record firmware provenance
         run: |
           if test "$GITHUB_EVENT_NAME" = workflow_dispatch; then
-            python3 trusted-tools/web/tools/source_info.py firmware
+            python3 trusted-tools/.github/simulator/source_info.py firmware
           else
-            python3 web/tools/source_info.py firmware
+            python3 .github/simulator/source_info.py firmware
           fi
       - name: Upload firmware binaries
         id: firmware-upload
@@ -132,7 +132,7 @@ jobs:
   browser:
     name: Build and smoke-test browser simulator
     needs: target
-    uses: ./.github/workflows/browser-simulator.yml
+    uses: Schnuartz/specter-diy-web-simulator/.github/workflows/browser-simulator.yml@0d6988558b410c642d83ab1946f128fe978a4577
     with:
       source_repository: ${{ needs.target.outputs.repository }}
       source_commit: ${{ needs.target.outputs.sha }}
