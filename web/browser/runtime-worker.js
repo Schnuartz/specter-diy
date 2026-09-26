@@ -88,6 +88,29 @@ function sdStorage(fs) {
 function sendSdList(fs) {
   send('sd-list', sdStorage(fs));
 }
+function prepareStateImport(fs, files) {
+  const storage = sdStorage(fs);
+  const sizes = new Map(storage.files.map(file => [file.path, file.size]));
+  let projected = storage.usedBytes;
+  const prepared = [];
+  for (const file of files || []) {
+    const name = relativePath(file.path);
+    if (!name.startsWith('sd/') && !/^cards\/[123]\//.test(name)) {
+      throw new Error('Invalid peripheral path');
+    }
+    const bytes = file.bytes instanceof Uint8Array ? file.bytes : new Uint8Array(file.bytes);
+    if (name.startsWith('sd/')) {
+      const sdName = name.slice(3);
+      projected = projected - (sizes.get(sdName) || 0) + bytes.byteLength;
+      sizes.set(sdName, bytes.byteLength);
+    }
+    prepared.push({ name, bytes });
+  }
+  if (projected > SD_CAPACITY_BYTES) {
+    throw sdFullError(fs, storage.usedBytes, Math.max(0, projected - storage.usedBytes));
+  }
+  return prepared;
+}
 function isSdPath(path) {
   return path === '/state/sd' || path.startsWith('/state/sd/');
 }
@@ -241,12 +264,10 @@ function handle(data) {
     } else if (data.type === 'sd-list') {
       sendSdList(fs);
     } else if (data.type === 'state-import') {
-      for (const file of data.files || []) {
-        const name = relativePath(file.path);
-        if (!name.startsWith('sd/') && !/^cards\/[123]\//.test(name)) throw new Error('Invalid peripheral path');
+      for (const { name, bytes } of prepareStateImport(fs, data.files)) {
         const path = `/state/${name}`;
         mkdirs(fs, path.substring(0, path.lastIndexOf('/')));
-        fs.writeFile(path, new Uint8Array(file.bytes));
+        fs.writeFile(path, bytes);
       }
       sendSdList(fs);
       cardInfo(fs);
@@ -333,14 +354,9 @@ onmessage = async ({ data }) => {
     self.Module = {
       canvas,
       headlessDisplay,
-      // Real Specter DIY hardware runs everything (firmware + wallet state) in
-      // 16MB total RAM. 64M here was simulator-only headroom, not a firmware
-      // requirement - with 3 instances running at once in the gallery, it was
-      // the single biggest avoidable memory cost (192MB of GC heap alone).
-      // (Tried 32M for the MockUI variants specifically to reduce GC pauses;
-      // reverted - reports of the MockUI simulators freezing appeared right
-      // after that change shipped, so back to the size proven stable here.)
-      arguments: ['-X', 'heapsize=16M', data.sdProbe ? '/browser/sd-probe.py' : data.qrProbe ? '/browser/qr-probe.py' : data.cardProbe ? '/browser/card-probe.py' : data.diag ? '/browser/diagnose.py' : data.program === 'mockui' ? '/browser/mockui-boot.py' : '/browser/boot.py', '/state'],
+      // Browser MicroPython heap is independent of hardware RAM. The full
+      // wallet import needs the previously proven 64M; MockUI stays lean.
+      arguments: ['-X', `heapsize=${program === 'mockui' ? '16M' : '64M'}`, data.sdProbe ? '/browser/sd-probe.py' : data.qrProbe ? '/browser/qr-probe.py' : data.cardProbe ? '/browser/card-probe.py' : data.diag ? '/browser/diagnose.py' : data.program === 'mockui' ? '/browser/mockui-boot.py' : '/browser/boot.py', '/state'],
       monitorRunDependencies: remaining => send('loading-progress', { remaining }),
       locateFile: path => data.build + path + assetSuffix,
       preRun: [() => {
