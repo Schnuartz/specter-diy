@@ -2,12 +2,12 @@
   "source": {
     "repository": "Schnuartz/specter-diy",
     "url": "https://github.com/Schnuartz/specter-diy",
-    "commit": "19bb720fd77dfc8cb0b737f576cc2432621d06ef"
+    "commit": "a973e62c94c6c8fe4d9e5b10d0fdcd5da1d5a574"
   },
   "simulator": {
     "repository": "cryptoadvance/specter-diy-web-simulator",
     "url": "https://github.com/cryptoadvance/specter-diy-web-simulator",
-    "commit": "af11f7365cdb8d32346c02a91d394c927b4f3abd"
+    "commit": "c3373fef311b8684d0ea226ba17d4a2880abee12"
   },
   "branch": null,
   "build_type": "Browser / WebAssembly",
@@ -18,7 +18,7 @@
   "experimental": true,
   "toolchain": "Emscripten 3.1.74",
   "artifact_set_sha256": "73c05ee08aa288644bf19e9cdcd6384059c9d3e0d1cae8ffd93c6cb072177d1d",
-  "built_at": "2026-09-27T19:32:31.841585+00:00",
+  "built_at": "2026-09-27T20:31:54.999228+00:00",
   "artifacts": {
     "micropython.js": {
       "bytes": 430891,
