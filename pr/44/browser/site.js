@@ -5,7 +5,7 @@ const embedded = params.get('embedded') === '1' && window.parent !== window;
 const gallery = embedded && params.get('gallery') === '1';
 const variant = ['diy', 'play', 'schnuartz'].includes(params.get('variant')) ? params.get('variant') : 'diy';
 const diagnosticQrProbe = params.get('probe') === 'qr' &&
-  ['127.0.0.1', 'localhost', 'try.clavastack.com'].includes(location.hostname);
+  ['127.0.0.1', 'localhost', 'try.clavastack.com', 'cryptoadvance.github.io'].includes(location.hostname);
 if (embedded) document.documentElement.classList.add('embedded');
 if (gallery) document.documentElement.classList.add('gallery');
 const notifyParent = message => { if (embedded) parent.postMessage(message, location.origin); };
@@ -873,7 +873,7 @@ try {
   if (!build.includes(source.commit) || manifest.artifact_set_sha256?.slice(0, 16) !== version) {
     throw new Error('Build manifest mismatch');
   }
-  const expectedRepos = variant === 'diy' ? ['schnuartz/specter-diy', 'schnuartz-ai/specter-diy'] :
+  const expectedRepos = variant === 'diy' ? ['cryptoadvance/specter-diy', 'schnuartz/specter-diy', 'schnuartz-ai/specter-diy'] :
     variant === 'play' ? ['k9ert/specter-playground'] : ['schnuartz/specter-playground'];
   if (!expectedRepos.includes(source.repository?.toLowerCase())) throw new Error('Wrong firmware variant in build manifest');
   if (!/^[a-f0-9]{40}$/.test(source.commit)) throw new Error('Invalid source commit in build manifest');
