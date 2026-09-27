@@ -599,7 +599,25 @@ class QRHost(Host):
             return bool(res)
         
         if self.scanner_model == MODEL_GM65:
-            return bool(self.query(FACTORY_RESET_CMD))
+            # The GM65 restores its 9600 baud default as part of the
+            # factory reset and can switch baudrate before it finishes
+            # sending the acknowledgement, so the ACK read at the current
+            # baudrate is unreliable (this is why "Failed to factory reset
+            # scanner!" was shown even though the reset had happened, see
+            # issue #355). Fire the command, then re-synchronise by
+            # probing the scanner across the known baudrates, starting
+            # with the post-reset default. configure_gm65() re-applies
+            # every setting and restores 115200 afterwards.
+            self.query(FACTORY_RESET_CMD)
+            time.sleep_ms(DELAY_AFTER_FACTORY_RESET)
+            for baud in (BAUD_RATE_9600, BAUD_RATE_115200, BAUD_RATE_57600):
+                if self.baudrate != baud:
+                    self._set_baud(baud)
+                else:
+                    self.clean_uart()
+                if self.get_setting(SERIAL_ADDR) is not None:
+                    return True
+            return False
         return False
     
     def _pre_reset_scanner(self):
