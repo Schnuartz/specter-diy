@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   publish:
-    uses: cryptoadvance/specter-diy-web-simulator/.github/workflows/publish-browser.yml@af11f7365cdb8d32346c02a91d394c927b4f3abd
+    uses: cryptoadvance/specter-diy-web-simulator/.github/workflows/publish-browser.yml@c3373fef311b8684d0ea226ba17d4a2880abee12
     with:
       simulator_repository: cryptoadvance/specter-diy-web-simulator
-      simulator_commit: af11f7365cdb8d32346c02a91d394c927b4f3abd
+      simulator_commit: c3373fef311b8684d0ea226ba17d4a2880abee12
