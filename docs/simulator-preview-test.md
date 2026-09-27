@@ -1,4 +1,5 @@
 # Simulator preview workflow test
 
 This temporary document exists only to exercise the PR browser-simulator
-preview pipeline on a fresh source commit.
+preview pipeline on a fresh source commit. It also verifies that the build
+comment uses a seven-character source SHA and collapsible provenance.
