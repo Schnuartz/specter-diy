@@ -23,6 +23,11 @@ def main(apps=None, network="main", keystore_cls=None):
     # create virtual file system /sdram
     # for temp untrusted data storage
     rampath = platform.mount_sdram()
+    # QSPI is unavailable on this board. Its persistent application namespace
+    # is backed by internal flash, so create the root before app subfolders are
+    # initialized by load_apps().
+    if not platform.simulator:
+        platform.maybe_mkdir(platform.fpath("/qspi"))
 
     # set working path to empty folder in sdram
     if not platform.simulator:
