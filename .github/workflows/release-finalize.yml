@@ -49,11 +49,11 @@ on:
         required: true
         type: string
       signature_1:
-        description: First authorized vendor signature (Base64 Bitcoin message signature; never enter a private key)
+        description: First authorized vendor signature (Base64 Bitcoin message signature)
         required: true
         type: string
       signature_2:
-        description: Second authorized vendor signature (Base64 Bitcoin message signature; never enter a private key)
+        description: Second authorized vendor signature (Base64 Bitcoin message signature)
         required: true
         type: string
   repository_dispatch:

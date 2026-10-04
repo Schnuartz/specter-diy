@@ -280,9 +280,9 @@ jobs:
             echo ""
             echo "Reproducible unsigned firmware build completed successfully."
             echo ""
-            echo "➡️ **Next step:** [Enter both vendor signatures and finalize this release]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/release-finalize.yml)."
+            echo "➡️ **Next step:** [Open the release-finalization workflow]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/release-finalize.yml)."
             echo ""
-            echo 'The form requires repository write access. Select the `master` branch; the finalizer rebuilds this release tag and verifies the signatures against the exact firmware message.'
+            echo 'On that page, select **Run workflow**. The `master` branch is selected by default; enter the release tag and both vendor signatures. GitHub does not provide a supported link that opens this form with a per-run release tag prefilled. The finalizer rebuilds the selected tag and verifies the signatures against the exact firmware message.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload reproducible build artifacts
