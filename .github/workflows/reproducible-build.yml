@@ -280,7 +280,9 @@ jobs:
             echo ""
             echo "Reproducible unsigned firmware build completed successfully."
             echo ""
-            echo "➡️ **Next step: collect at least $BOOT_THRESHOLD valid production vendor signatures for the message above.**"
+            echo "➡️ **Next step:** [Enter both vendor signatures and finalize this release]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/release-finalize.yml)."
+            echo ""
+            echo 'The form requires repository write access. Select the `master` branch; the finalizer rebuilds this release tag and verifies the signatures against the exact firmware message.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload reproducible build artifacts
