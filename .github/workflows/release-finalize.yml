@@ -35,7 +35,8 @@ name: Release Finalization & Verification
 #   signature_4  (optional)  vendor signature, Base64
 #
 # Manual UI: Actions > Release Finalization & Verification > Run workflow.
-# Select `master` and provide the release tag plus the two required signatures.
+# Select `master` and provide the release tag plus both required signatures.
+# The form has two required signature fields and one optional third field.
 # ---------------------------------------------------------------------------
 
 run-name: >-
@@ -55,6 +56,10 @@ on:
       signature_2:
         description: Second authorized vendor signature (Base64 Bitcoin message signature)
         required: true
+        type: string
+      signature_3:
+        description: Third authorized vendor signature (optional; Base64 Bitcoin message signature)
+        required: false
         type: string
   repository_dispatch:
     types: [release-finalize]
@@ -78,8 +83,8 @@ jobs:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.client_payload.release_tag }}
       SIG1: ${{ github.event_name == 'workflow_dispatch' && inputs.signature_1 || github.event.client_payload.signature_1 }}
       SIG2: ${{ github.event_name == 'workflow_dispatch' && inputs.signature_2 || github.event.client_payload.signature_2 }}
-      SIG3: ${{ github.event.client_payload.signature_3 }}
-      SIG4: ${{ github.event.client_payload.signature_4 }}
+      SIG3: ${{ github.event_name == 'workflow_dispatch' && inputs.signature_3 || github.event.client_payload.signature_3 }}
+      SIG4: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.signature_4 || '' }}
 
     steps:
       - name: Require the master version of this workflow
@@ -253,7 +258,13 @@ jobs:
 
           if [ "$BOOT_THRESHOLD" -gt 4 ]; then
             echo "ERROR: Production threshold is now >4."
-            echo "This workflow currently exposes four signature inputs and must be updated."
+            echo "This workflow currently accepts at most four signatures via repository_dispatch."
+            exit 1
+          fi
+
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && [ "$BOOT_THRESHOLD" -gt 3 ]; then
+            echo "ERROR: The manual form accepts at most three signatures."
+            echo "Use repository_dispatch for a fourth signature or add another form input."
             exit 1
           fi
 
