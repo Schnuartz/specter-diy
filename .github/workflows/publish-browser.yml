@@ -1,0 +1,25 @@
+name: Publish browser simulator
+
+# Publishing remains triggered by the trusted workflow_run event in the
+# Specter-DIY repository. The implementation lives in the simulator repo, but
+# the calling repository retains the token, Pages site, PR context, and
+# gh-pages branch.
+on:
+  workflow_run:
+    workflows: [Build]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+  issues: write
+  pull-requests: write
+  pages: write
+  id-token: write
+
+jobs:
+  publish:
+    uses: cryptoadvance/specter-diy-web-simulator/.github/workflows/publish-browser.yml@af11f7365cdb8d32346c02a91d394c927b4f3abd
+    with:
+      simulator_repository: cryptoadvance/specter-diy-web-simulator
+      simulator_commit: af11f7365cdb8d32346c02a91d394c927b4f3abd
