@@ -5,6 +5,7 @@ import pyb
 import gc
 
 simulator = (sys.platform in ["linux", "darwin"])
+FLASH_QSPI_RESERVE_BYTES = 16 * 1024
 
 
 # Build metadata injected at boot time. Defaults represent the minimum
@@ -116,7 +117,34 @@ class SDCard:
 
 def fpath(fname):
     """A small function to avoid % storage_root everywhere"""
+    # A normal F469 mounts QSPI at /qspi. The defect build omits that block
+    # device; only then use the limited persistent /flash/qspi fallback.
+    if not simulator and (fname == "/qspi" or fname.startswith("/qspi/")):
+        try:
+            os.stat("/qspi")
+        except:
+            fname = "/flash/qspi" + fname[5:]
     return "%s%s" % (config.storage_root, fname)
+
+
+def is_qspi_path(path):
+    """Return whether path belongs to the limited QSPI replacement area."""
+    return (not simulator and
+            (path == "/flash/qspi" or path.startswith("/flash/qspi/")))
+
+
+def ensure_qspi_space(required_bytes):
+    """Keep a reserved internal-flash area available for keystore writes."""
+    if simulator or required_bytes <= 0:
+        return
+    try:
+        stats = os.statvfs("/flash")
+        free_bytes = stats[0] * stats[3]
+        if free_bytes < FLASH_QSPI_RESERVE_BYTES + required_bytes:
+            raise OSError(28)  # ENOSPC
+    except AttributeError:
+        # Older ports without statvfs retain the existing filesystem behavior.
+        pass
 
 
 if simulator:
@@ -365,6 +393,13 @@ def wipe():
     256 - 447:   internal flash
     448 - 33215: QSPI
     """
+    qspi_mounted = False
+    if not simulator:
+        try:
+            os.stat("/qspi")
+            qspi_mounted = True
+        except:
+            pass
     # delete files normally in simulator
     try:
         delete_recursively(fpath("/flash"))
@@ -374,7 +409,8 @@ def wipe():
     # on real hardware overwrite flash with random data
     if not simulator:
         os.umount("/flash")
-        os.umount("/qspi")
+        if qspi_mounted:
+            os.umount("/qspi")
         f = pyb.Flash()
         block_size = f.ioctl(5, None)
         # wipe internal flash with random bytes
