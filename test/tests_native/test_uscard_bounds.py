@@ -62,6 +62,13 @@ class SmartcardReaderErrorTest(unittest.TestCase):
         with self.assertRaisesRegex(mod.CardConnectionException, "UART error"):
             reader.command(0x65)
 
+    def test_incomplete_uart_write_is_rejected(self):
+        mod = load_uscard()
+        reader = mod._SEC1210()
+        reader._uart = types.SimpleNamespace(read=lambda *args: None, write=lambda data: len(data) - 1)
+        with self.assertRaisesRegex(mod.CardConnectionException, "incomplete"):
+            reader.command(0x65)
+
     def test_garbage_cannot_extend_reader_deadline(self):
         from unittest import mock
         mod = load_uscard()

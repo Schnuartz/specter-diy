@@ -192,7 +192,8 @@ class _SEC1210:
             if stale:
                 _trace("stale", stale)
             _trace(">", message)
-        uart.write(frame)
+        if uart.write(frame) != len(frame):
+            raise CardConnectionException("incomplete card reader UART write")
         try:
             result = self._response(seq, time.ticks_add(time.ticks_ms(), timeout_ms))
         except CardConnectionException as error:
