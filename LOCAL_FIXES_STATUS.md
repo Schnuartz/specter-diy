@@ -50,9 +50,20 @@ Base: `sandman21vs/specter-diy` branch `esp32-p4-port`, commit `dffd80748543f21b
 - Bounds-check the P4 RAM block device, validate PKCS#7 padding and CPython deflate completion, pin the P4 bootloader dependency, and add clarifications to the security documentation.
 - Guard a missing mnemonic fixer and QR navigation state; avoid repeatedly adding a QR style and force menu label layout before measuring it.
 
+## Additional follow-up fixes
+
+- USB requests are limited to 128 KiB and oversized lines are discarded through their terminator. USB short writes and P4 disconnects/timeouts are reported as errors. Larger requests require a different transport; the limit has not been tested on hardware.
+- A lost ISO-DEP WTX response is retried with its extended timeout. Frame waits use the exact carrier-cycle calculation rounded up to milliseconds.
+- Failed QR scan startup closes the progress popup and releases the camera; hardware camera lifecycle testing remains outstanding.
+- SEC1210 exchanges, responses, WTX counts and serial read deadlines are bounded, and UART failures are translated to smartcard errors. No physical SEC1210 testing has been performed.
+- KEF envelopes above 500,000 PBKDF2 iterations are rejected before derivation. This is a compatibility change; use a trusted compatible tool for such backups. The bound has not been timed on P4 hardware.
+- After a lost SET_PIN response, the NFC smartcard must accept the selected PIN before the setup is treated as successful.
+
+The SFGT finding in the original report incorrectly asserts that positive SFGI values use a different multiplier from FWT: ISO/IEC 14443-4:2018 section 5.3.5 specifies the same carrier-cycle expression. The old implementation did, however, round that expression too early for large values; that rounding has been corrected.
+
 ## Known open work
 
-The report contains many issues not resolved here. In particular, secure erase, Secure Boot/flash encryption/readout protection, a verified radio-off state from power-on, signed release/flasher verification, P4 CI and hardware smoke tests remain open. The PBKDF2 resource bound, full NFC card-swap protection, smartcard PIN retry/change cases, QR lifecycle, USB limits and short writes, display recovery and shared I2C lifetimes, unauthenticated card pinning, plaintext smartcard storage, and smartcard transport bounds also remain to be reviewed or fixed. A pinned dependency alone does not make a reproducible or authenticated release. The MicroPython deflate implementation does not expose the same EOF checks used in the CPython branch.
+The report contains many issues not resolved here. In particular, secure erase, Secure Boot/flash encryption/readout protection, a verified radio-off state from power-on, signed release/flasher verification, P4 CI and hardware smoke tests remain open. Full NFC card-swap protection, remaining smartcard PIN-change cases, display recovery and shared I2C lifetimes, unauthenticated card pinning, and plaintext smartcard storage also remain to be reviewed or fixed. The new resource limits and lifecycle changes still require hardware validation. A pinned dependency alone does not make a reproducible or authenticated release. The MicroPython deflate implementation does not expose the same EOF checks used in the CPython branch.
 
 Security and reproducibility claims in upstream documentation must not be interpreted as applying to the P4 development build. The original report's individual findings should be independently verified; the suggested fixes are not assumed correct merely because they are in the report.
 
