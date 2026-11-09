@@ -165,10 +165,11 @@ class IsoDep:
                     if isinstance(error, NFCTimeout):
                         raise NFCTimeout("Card stopped answering")
                     raise IsoDepError("No valid block")
-                # Rules 4 and 5: repeat the R(ACK) if the card was chaining,
-                # otherwise ask it with an R(NAK) to repeat itself
-                block = last if receiving else bytes([0xB2 | self.bn])
-                timeout = self.fwt_ms
+                # A lost response to S(WTX) must retry that response and its
+                # extended timeout. Other errors use the normal R-block rules.
+                if block[0] != 0xF2:
+                    block = last if receiving else bytes([0xB2 | self.bn])
+                    timeout = self.fwt_ms
                 continue
 
             pcb, inf = reply[0], reply[1:]
