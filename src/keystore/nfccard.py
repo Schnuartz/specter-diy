@@ -313,8 +313,7 @@ The card is asked for when the device is unlocked and when its storage is change
                     self._card_unlock(self._pin)
                 return fn() if fn is not None else None
             except PinError:
-                self._pin = None
-                self._session_pin = None
+                self.lock()
                 raise
             except (CardLost, AppletException):
                 title = "Hold the smartcard to the reader again"
