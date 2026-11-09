@@ -1078,6 +1078,7 @@ class QRHost(Host):
 
     async def get_data(self, raw=True, chunk_timeout=CHUNK_TIMEOUT):
         delete_recursively(self.path)
+        self._scan_finished = False
         if self.manager is not None:
             # pass self so user can abort
             if getattr(self.uart, "is_camera", False):
@@ -1085,13 +1086,22 @@ class QRHost(Host):
             else:
                 message = "Point scanner to the QR code"
             await self.manager.gui.show_progress(self, "Scanning...", message)
-        stream = await self.scan(raw=raw, chunk_timeout=chunk_timeout)
-        # Wait for progress popup to close before returning
-        if self.manager is not None:
-            while self.manager.gui.background is not None:
-                await asyncio.sleep_ms(10)
-        if stream is not None:
-            return stream
+        try:
+            return await self.scan(raw=raw, chunk_timeout=chunk_timeout)
+        finally:
+            # Wake the popup task even when scan fails before scanning starts.
+            self._scan_finished = True
+            try:
+                if self.scanning:
+                    self.abort()
+            finally:
+                try:
+                    if self.manager is not None:
+                        while self.manager.gui.background is not None:
+                            await asyncio.sleep_ms(10)
+                finally:
+                    if getattr(self.uart, "is_camera", False):
+                        self.uart.deinit()
 
     async def send_data(self, stream, meta, *args, **kwargs):
         # if it's str - it's a file

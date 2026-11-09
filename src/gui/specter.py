@@ -66,18 +66,21 @@ class SpecterGUI(AsyncGUI):
         - or host finishes processing
         Also updates progress screen
         """
-        # Wait for scanning to start (or user cancel)
-        while not host.in_progress and scr.waiting:
-            await asyncio.sleep_ms(10)
-        # Wait for scanning to finish (or user cancel)
-        while host.in_progress and scr.waiting:
-            await asyncio.sleep_ms(30)
-            scr.set_progress(host.progress)
-        if host.in_progress:
-            host.abort()
-        if scr.waiting:
-            scr.waiting = False
-        await self.close_popup()
+        try:
+            # A scan can fail before it ever enters the in-progress state.
+            while not host.in_progress and scr.waiting and not host._scan_finished:
+                await asyncio.sleep_ms(10)
+            while host.in_progress and scr.waiting:
+                await asyncio.sleep_ms(30)
+                scr.set_progress(host.progress)
+        finally:
+            try:
+                if host.in_progress:
+                    host.abort()
+            finally:
+                if scr.waiting:
+                    scr.waiting = False
+                await self.close_popup()
 
     async def devscreen(self, dev=False, usb=False, note=None):
         scr = DevSettings(dev=dev, usb=usb, note=note)
