@@ -190,14 +190,18 @@ class QRCode(lv.obj):
             self.check_controls()
 
     def on_next(self, obj, event):
-        if event == lv.EVENT.RELEASED:
-            self.idx = (self.idx + 1) % self.frame_num
-            self.set_frame()
+        if (event != lv.EVENT.RELEASED or getattr(self, "idx", None) is None
+                or not getattr(self, "frame_num", 0)):
+            return
+        self.idx = (self.idx + 1) % self.frame_num
+        self.set_frame()
 
     def on_prev(self, obj, event):
-        if event == lv.EVENT.RELEASED:
-            self.idx = (self.idx + self.frame_num - 1) % self.frame_num
-            self.set_frame()
+        if (event != lv.EVENT.RELEASED or getattr(self, "idx", None) is None
+                or not getattr(self, "frame_num", 0)):
+            return
+        self.idx = (self.idx + self.frame_num - 1) % self.frame_num
+        self.set_frame()
 
     def cb(self, obj, event):
         # check event

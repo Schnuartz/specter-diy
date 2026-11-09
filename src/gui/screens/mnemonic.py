@@ -309,7 +309,7 @@ class RecoverMnemonicScreen(MnemonicScreen):
                     self.fix_button.align(
                         self.table, lv.ALIGN.OUT_BOTTOM_MID, -400, -38
                     )
-            else:
+            elif self.fixer is not None:
                 self.fix_button.align(self.table, lv.ALIGN.OUT_BOTTOM_MID, -400, -38)
 
     def callback(self, obj, event):
