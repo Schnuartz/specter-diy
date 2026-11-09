@@ -195,10 +195,9 @@ def parse_header(header, capacity, record_type=None):
     declared length is checked against what the card can physically hold as
     well as against the ceiling.
 
-    record_type None accepts any known type, which is what "is there already a
-    record here" has to ask before overwriting one. A caller about to parse the
-    payload names the type it can parse, and anything else reads as no record:
-    a type buys a parser, never a permission.
+    record_type None accepts any known type. A caller about to parse the
+    payload names the type it can parse. The separate overwrite check must
+    detect even types that this parser does not know.
     """
     if len(header) < HEADER_LEN or bytes(header[:4]) != RECORD_MAGIC:
         raise NFCNotFound("No record")
@@ -582,14 +581,13 @@ class NFC:
         """True when the selected tag already carries a record, of any type.
 
         Any type on purpose: this is what the overwrite warning asks, and a
-        record this firmware can not parse is still something to lose. Absent
-        or unreadable records report False.
+        record this firmware can not parse is still something to lose. Read
+        errors propagate so they cannot be mistaken for a blank card.
         """
-        try:
-            parse_header(self.read(0, HEADER_LEN), self.tag.capacity)
-            return True
-        except NFCError:
-            return False
+        # An unfamiliar or damaged record is still data the user may lose.
+        # Propagate read failures rather than treating them as an empty card.
+        header = self.read(0, HEADER_LEN)
+        return bytes(header[:4]) == RECORD_MAGIC
 
     def read_record(self, record_type=RECORD_KEF):
         """Reads a record of the named type, validating it throughout"""

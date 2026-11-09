@@ -358,6 +358,15 @@ class RecordTest(unittest.TestCase):
             link.read_record(nfc.RECORD_KEF)
         self.assertEqual(link.read_record(nfc.RECORD_DESCRIPTOR), b"wpkh(...)")
 
+    def test_unknown_record_type_warns_before_overwrite(self):
+        card = SimCard()
+        chip, link = setup(card)
+        card.blocks[1][:] = b"KRN1\xff\x00\x00\x01" + bytes(8)
+        link.poll()
+        self.assertTrue(link.has_record())
+        with self.assertRaises(NFCNotFound):
+            link.read_record()
+
     def test_overwrite(self):
         chip, link = setup(SimCard())
         link.poll()
@@ -371,7 +380,8 @@ class RecordTest(unittest.TestCase):
         # what an NDEF formatted Classic looks like: the factory key is gone
         chip, link = setup(SimCard(key=b"\xd3\xf7\xd3\xf7\xd3\xf7"))
         link.poll()
-        self.assertFalse(link.has_record())
+        with self.assertRaises(NFCError):
+            link.has_record()
         link.poll()
         with self.assertRaises(NFCError):
             link.read_record()
@@ -409,7 +419,7 @@ class RecordTest(unittest.TestCase):
         # a length the card can not hold, straight into the first data block
         card.blocks[1][:] = b"KRN1\x01\x00\xff\xff" + bytes(8)
         link.poll()
-        self.assertFalse(link.has_record())
+        self.assertTrue(link.has_record())
         with self.assertRaises(NFCSizeError):
             link.read_record()
         # reserved bytes carrying something
