@@ -362,7 +362,7 @@ class RecoverMnemonicScreen(MnemonicScreen):
         if getattr(self, "confirm_exit_mbox", None) is not None:
             return
 
-        mbox = lv.msgbox(None)
+        mbox = lv.msgbox(self)
         self.confirm_exit_mbox = mbox
         style = lv.style_t()
         style.init()
