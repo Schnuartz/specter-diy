@@ -96,6 +96,7 @@ class QRCode(lv.obj):
         self.encoder = None
         self._autoplay = True
 
+        self.add_style(qr_style, 0)
         self.qr = lvqr.QRCode(self)
         self.qr.set_scrollbar_mode(lv.SCROLLBAR_MODE.OFF)
         self.qr.remove_flag(lv.obj.FLAG.SCROLLABLE)
@@ -390,7 +391,6 @@ class QRCode(lv.obj):
         # one bcur frame doesn't require checksum
         payload_changed = self._qr_text != text
         self._qr_text = text
-        self.add_style(qr_style, 0)
         self.qr.set_fixed_size(self._fixed_size)
         if self._version_range is not None:
             self.qr.set_version_range(self._version_range[0], self._version_range[1])
