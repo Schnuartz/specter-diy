@@ -72,20 +72,28 @@ class RAMKeyStore(KeyStore):
         self.idkey = self.root.child(0x1D, hardened=True).key.serialize()
 
     def sign_psbt(self, psbt, sighash=SIGHASH.ALL):
+        self._require_signing_key()
         psbt.sign_with(self.root, sighash)
 
     def sign_input(self, psbtv, i, sig_stream, sighash=SIGHASH.ALL, extra_scope_data=None):
+        self._require_signing_key()
         return psbtv.sign_input(i, self.root, sig_stream, sighash=sighash, extra_scope_data=extra_scope_data)
 
     def sign_hash(self, derivation, msghash: bytes):
+        self._require_signing_key()
         return self.root.derive(derivation).key.sign(msghash)
 
     def sign_recoverable(self, derivation, msghash: bytes):
         """Returns a signature and a recovery flag"""
+        self._require_signing_key()
         prv = self.root.derive(derivation).key
         sig = secp256k1.ecdsa_sign_recoverable(msghash, prv._secret)
         flag = sig[64]
         return ec.Signature(sig[:64]), flag
+
+    def _require_signing_key(self):
+        if self.is_locked or self.root is None:
+            raise KeyStoreError("Keystore is not ready")
 
     def save_aead(self, path, adata=b"", plaintext=b"", key=None):
         """Encrypts and saves plaintext and associated data to file"""

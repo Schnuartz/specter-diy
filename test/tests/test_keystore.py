@@ -1,5 +1,7 @@
 from unittest import TestCase
 from keystore import FlashKeyStore, PinError
+from keystore.core import KeyStoreError
+from keystore.ram import RAMKeyStore
 import os
 import platform
 
@@ -10,6 +12,25 @@ def init_keystore(ks):
     ks.load_secret(ks.path)
     ks.load_state()
     ks.initialized = True
+
+
+class LockedSigningTest(TestCase):
+    def test_locked_keystore_refuses_signing(self):
+        class LockedKeystore(RAMKeyStore):
+            @property
+            def is_locked(self):
+                return True
+
+        ks = LockedKeystore()
+        ks.root = object()
+        for sign in (
+            lambda: ks.sign_psbt(None),
+            lambda: ks.sign_input(None, 0, None),
+            lambda: ks.sign_hash([], bytes(32)),
+            lambda: ks.sign_recoverable([], bytes(32)),
+        ):
+            with self.assertRaises(KeyStoreError):
+                sign()
 
 class FlashKeyStoreTest(TestCase):
 

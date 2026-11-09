@@ -75,6 +75,8 @@ def setup_native_stubs():
         pyb.Pin = _DummyPin
 
     uscard = _ensure_module("uscard")
+    if not hasattr(uscard, "SmartcardException"):
+        uscard.SmartcardException = type("SmartcardException", (Exception,), {})
     if not hasattr(uscard, "Reader"):
         class _DummyReader:
             def __init__(self, *args, **kwargs):
@@ -130,6 +132,7 @@ def setup_native_stubs():
 
     _ensure_submodule("gui.screens", "mnemonic", {
         "ExportMnemonicScreen": type("ExportMnemonicScreen", (), {}),
+        "MnemonicPrompt": type("MnemonicPrompt", (), {}),
     })
     _ensure_submodule("gui.screens", "settings", {
         "HostSettings": type("HostSettings", (), {}),
