@@ -50,13 +50,21 @@ class RAMDevice:
         self.blocks = blocks
         self.data = bytearray(block_size * blocks)
 
-    def readblocks(self, block_num, buf, offset=0):
+    def _start(self, block_num, offset, length):
+        if block_num < 0 or block_num >= self.blocks or offset < 0 or offset >= self.block_size:
+            raise ValueError("Block or offset out of range")
         start = block_num * self.block_size + offset
+        if length > len(self.data) - start:
+            raise ValueError("Block operation exceeds device")
+        return start
+
+    def readblocks(self, block_num, buf, offset=0):
+        start = self._start(block_num, offset, len(buf))
         buf[:] = self.data[start:start + len(buf)]
         return 0
 
     def writeblocks(self, block_num, buf, offset=0):
-        start = block_num * self.block_size + offset
+        start = self._start(block_num, offset, len(buf))
         self.data[start:start + len(buf)] = buf
         return 0
 
