@@ -23,6 +23,7 @@ export IDF_TOOLS_PATH="${IDF_TOOLS_PATH:-$P4_DEPS/espressif}"
 MICROPYTHON_REF=8cf130db34
 BOOTLOADER_URL=https://github.com/sandman21vs/specter-bootloader.git
 BOOTLOADER_BRANCH=port_esp32-p4
+BOOTLOADER_REF=4efca5be9acaf5c6443cf8578509034bd13f8f27
 
 step() { printf '\n==> %s\n' "$*"; }
 
@@ -48,6 +49,8 @@ step "ESP-IDF v5.5.5 (via specter-bootloader)"
 if [ ! -d "$SPECTER_BOOTLOADER_DIR/.git" ]; then
   git clone --branch "$BOOTLOADER_BRANCH" "$BOOTLOADER_URL" "$SPECTER_BOOTLOADER_DIR"
 fi
+git -C "$SPECTER_BOOTLOADER_DIR" fetch --quiet origin "$BOOTLOADER_REF"
+git -C "$SPECTER_BOOTLOADER_DIR" checkout --quiet "$BOOTLOADER_REF"
 git -C "$SPECTER_BOOTLOADER_DIR" submodule update --init third_party/esp-idf
 git -C "$SPECTER_BOOTLOADER_DIR/third_party/esp-idf" submodule update --init --recursive
 
