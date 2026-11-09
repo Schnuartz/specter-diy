@@ -66,7 +66,21 @@ class SecureChannel:
         self.card_mac_key = hashlib.sha256(b"card_mac" + shared_secret).digest()
         return hashlib.sha256(shared_secret).digest()[:4]
 
+    def _clear_session(self):
+        self.is_open = False
+        self.iv = 0
+        self.card_aes_key = self.host_aes_key = None
+        self.card_mac_key = self.host_mac_key = None
+
     def open(self, mode=None):
+        self._clear_session()
+        try:
+            return self._open(mode)
+        except Exception:
+            self._clear_session()
+            raise
+
+    def _open(self, mode=None):
         """Opens a secure channel.
         Mode can be "es" - ephemeral-static
                  or "ee" - ephemeral-ephemenral
@@ -163,6 +177,9 @@ class SecureChannel:
 
     def decrypt(self, ct):
         """Decrypts the message received from the card"""
+        if not self.is_open or len(ct) < MAC_SIZE + AES_BLOCK or (len(ct) - MAC_SIZE) % AES_BLOCK:
+            self._clear_session()
+            raise SecureChannelError("Invalid secure response length or state")
         recv_hmac = ct[-MAC_SIZE:]
         ct = ct[:-MAC_SIZE]
         iv = self.iv.to_bytes(IV_SIZE, "big")
@@ -172,12 +189,14 @@ class SecureChannel:
         expected_hmac = h.digest()[:MAC_SIZE]
         # constant-time compare (L6) - do not replace with == / !=
         if not consteq(expected_hmac, recv_hmac):
+            self._clear_session()
             raise SecureChannelError("Wrong HMAC.")
         crypto = aes(self.card_aes_key, AES_CBC, iv)
         plain = crypto.decrypt(ct)
         # check and remove \x80... padding
         arr = plain.split(b"\x80")
         if len(arr) == 1 or len(arr[-1].replace(b"\x00", b"")) > 0:
+            self._clear_session()
             raise SecureChannelError("Wrong padding")
         return b"\x80".join(arr[:-1])
 
@@ -189,9 +208,16 @@ class SecureChannel:
         # if counter reached maximum - reestablish channel
         if self.iv >= 2 ** 16 or not self.is_open:
             self.open()
-        ct = self.encrypt(data)
-        res = self.applet.request(self.SECURE_MSG + encode(ct))
-        plaintext = self.decrypt(res)
+        try:
+            ct = self.encrypt(data)
+            res = self.applet.request(self.SECURE_MSG + encode(ct))
+            plaintext = self.decrypt(res)
+            if len(plaintext) < 2:
+                raise SecureChannelError("Invalid secure response")
+        except Exception:
+            # The card may have consumed this IV even if its response was lost.
+            self._clear_session()
+            raise
         self.iv += 1
         if plaintext[:2] == self.SUCCESS:
             return plaintext[2:]
@@ -200,6 +226,8 @@ class SecureChannel:
 
     def close(self):
         """Closes the secure channel"""
-        self.applet.request(self.CLOSE)
-        self.is_open = False
-        self.card_pubkey = None
+        try:
+            self.applet.request(self.CLOSE)
+        finally:
+            self._clear_session()
+            self.card_pubkey = None

@@ -696,6 +696,8 @@ class Specter:
         This method is called whenever we got data from the host.
         It tries to find a proper app and pass the stream with data to it.
         """
+        if self.keystore is None or self.keystore.is_locked:
+            raise HostError("Keystore is locked")
         self.gui.show_loader(title="Processing host data...")
         res = None
         if show_fn is None:

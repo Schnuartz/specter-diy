@@ -1,5 +1,6 @@
 from unittest import TestCase
 from keystore.javacard.applets.securechannel import SecureChannel, SecureChannelError
+from keystore.javacard.applets.secureapplet import SecureApplet
 import hashlib
 import hmac
 import secp256k1
@@ -36,6 +37,7 @@ def get_channel():
     sc.card_aes_key = b"1" * 32
     sc.card_mac_key = b"2" * 32
     sc.iv = 0
+    sc.is_open = True
     return sc
 
 
@@ -88,6 +90,48 @@ class SecureChannelDecryptTest(TestCase):
         wrong.card_mac_key = b"3" * 32
         with self.assertRaises(SecureChannelError):
             wrong.decrypt(ct)
+
+    def test_invalid_response_discards_keys(self):
+        sc = get_channel()
+        sc.host_aes_key = b"3" * 32
+        sc.host_mac_key = b"4" * 32
+        with self.assertRaises(SecureChannelError):
+            sc.decrypt(b"short")
+        self.assertFalse(sc.is_open)
+        self.assertEqual(sc.card_aes_key, None)
+        self.assertEqual(sc.host_mac_key, None)
+
+    def test_lost_response_discards_keys(self):
+        class LostResponse:
+            def request(self, payload):
+                raise OSError("response lost")
+
+        sc = get_channel()
+        sc.applet = LostResponse()
+        sc.host_aes_key = b"3" * 32
+        sc.host_mac_key = b"4" * 32
+        with self.assertRaises(OSError):
+            sc.request(b"message")
+        self.assertFalse(sc.is_open)
+        self.assertEqual(sc.host_aes_key, None)
+        self.assertEqual(sc.card_mac_key, None)
+
+
+class PinStatusTest(TestCase):
+    def test_invalid_status_does_not_replace_cached_state(self):
+        class Channel:
+            def request(self, payload):
+                return b"\x0b\x0a\x01"
+
+        applet = SecureApplet.__new__(SecureApplet)
+        applet.sc = Channel()
+        applet._pin_attempts_left = 5
+        applet._pin_attempts_max = 10
+        applet._pin_status = applet.PIN_LOCKED
+        with self.assertRaises(SecureChannelError):
+            applet.get_pin_status()
+        self.assertEqual(applet._pin_attempts_left, 5)
+        self.assertEqual(applet._pin_status, applet.PIN_LOCKED)
 
 
 def _decode(payload):
