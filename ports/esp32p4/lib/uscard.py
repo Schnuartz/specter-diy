@@ -68,6 +68,10 @@ _SETTLE_MS = 1000
 _SETTLE_POLL_MS = 50
 
 _T1_MAX_RETRIES = 3
+# Bounds apply to the entire APDU exchange, not just a single CCID frame.
+_MAX_RESPONSE_BYTES = 65536
+_MAX_EXCHANGE_BLOCKS = 512
+_MAX_WTX_BLOCKS = 100
 
 
 class SmartcardException(Exception):
@@ -407,13 +411,21 @@ class CardConnection:
         block = pending
         wait_multiplier = 0
         retries = 0
+        blocks = 0
+        wtx_blocks = 0
         while True:
+            blocks += 1
+            if blocks > _MAX_EXCHANGE_BLOCKS:
+                raise CardConnectionException("T=1 exchange too long")
             pcb, info = self._t1_exchange(block, wait_multiplier)
             wait_multiplier = 0
             if pcb == 0xC3:
                 # S(WTX request): o cartao pede mais tempo. Confirmamos, e o
                 # multiplicador vale para a espera seguinte do leitor.
-                wait_multiplier = info[0] if info else 1
+                wtx_blocks += 1
+                if len(info) != 1 or not 1 <= info[0] <= 59 or wtx_blocks > _MAX_WTX_BLOCKS:
+                    raise CardConnectionException("Invalid or excessive T=1 WTX")
+                wait_multiplier = info[0]
                 block = self._t1_block(0xE3, info)
             elif pcb == 0xC1:
                 # S(IFS request): o cartao mudou o tamanho de bloco que aceita.
@@ -447,6 +459,8 @@ class CardConnection:
                 if ((pcb >> 6) & 1) != self._recv_seq:
                     raise CardConnectionException("T=1 sequence error")
                 self._recv_seq ^= 1
+                if len(result) + len(info) > _MAX_RESPONSE_BYTES:
+                    raise CardConnectionException("T=1 response too long")
                 result += info
                 if not pcb & 0x20:
                     return result
@@ -473,10 +487,16 @@ class CardConnection:
             tpdu = apdu[: 5 + lc]
         response = self._reader.exchange(tpdu)
         result = b""
+        blocks = 0
         while True:
+            blocks += 1
+            if blocks > _MAX_EXCHANGE_BLOCKS:
+                raise CardConnectionException("T=0 exchange too long")
             if len(response) < 2:
                 raise CardConnectionException("T=0 response too short")
             sw1, sw2 = response[-2], response[-1]
+            if len(result) + len(response) > _MAX_RESPONSE_BYTES:
+                raise CardConnectionException("T=0 response too long")
             result += response[:-2]
             if sw1 == 0x61:
                 response = self._reader.exchange(bytes([apdu[0], 0xC0, 0x00, 0x00, sw2]))

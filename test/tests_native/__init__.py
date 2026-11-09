@@ -20,3 +20,4 @@ from .test_specter_recovery import *
 from .test_usb_limits import *
 from .test_isodep_wtx import *
 from .test_qr_lifecycle import *
+from .test_uscard_bounds import *
