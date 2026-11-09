@@ -321,7 +321,7 @@ static uint16_t preview_height;
 static volatile uint32_t preview_frames;
 
 esp_err_t p4camera_preview_enable(uint16_t width, uint16_t height, uint16_t **buffer) {
-    if (width == 0 || height == 0 || !buffer) {
+    if (width == 0 || height == 0 || width > 1024 || height > 1024 || !buffer) {
         return ESP_ERR_INVALID_ARG;
     }
     size_t needed = (size_t)width * height;
