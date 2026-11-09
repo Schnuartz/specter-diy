@@ -13,6 +13,7 @@ class Menu(Screen):
         self.title = add_label(title, style="title", scr=self)
         if note is not None:
             self.note = add_label(note, style="hint", scr=self)
+            self.note.update_layout()
             self.note.align_to(self.title, lv.ALIGN.OUT_BOTTOM_MID, 0, 5)
             y += self.note.get_height()
         # LVGL 9.x: page replaced with scrollable obj
