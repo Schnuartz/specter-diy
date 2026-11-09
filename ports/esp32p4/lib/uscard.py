@@ -378,6 +378,8 @@ class CardConnection:
     # 00 EE; S = 1 1 r tttttt (r = resposta).
 
     def _t1_block(self, pcb, info=b""):
+        if len(info) > 254:
+            raise CardConnectionException("T=1 information field too long")
         block = bytes([0x00, pcb, len(info)]) + info
         return block + bytes([_lrc(block)])
 

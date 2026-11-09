@@ -27,6 +27,11 @@ class SmartcardBoundsTest(unittest.TestCase):
         self.mod = load_uscard()
         self.connection = self.mod.CardConnection(None)
 
+    def test_t1_information_length_is_checked(self):
+        self.connection._t1_block(0, bytes(254))
+        with self.assertRaises(self.mod.CardConnectionException):
+            self.connection._t1_block(0, bytes(255))
+
     def test_t1_wtx_loop_is_bounded(self):
         self.mod._MAX_WTX_BLOCKS = 2
         self.connection._t1_exchange = lambda block, wait: (0xC3, b"\x01")
