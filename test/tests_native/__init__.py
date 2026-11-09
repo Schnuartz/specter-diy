@@ -16,3 +16,5 @@ from .test_nfc_pn532 import *
 
 from .test_p4_audit_fixes import *
 from .test_specter_recovery import *
+
+from .test_usb_limits import *

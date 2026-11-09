@@ -14,6 +14,8 @@ class USBHost(Host):
 
     ACK = b"ACK\r\n"
     RECOVERY_TIME = 10
+    # Leave space for filesystem metadata and other temporary files on P4.
+    MAX_REQUEST_SIZE = 128 * 1024
     settings_button = "USB communication"
 
     def __init__(self, path):
@@ -22,6 +24,8 @@ class USBHost(Host):
         self.settings = { "enabled": False }
         self.usb = None
         self.f = None
+        self._request_size = 0
+        self._discarding = False
 
     def init(self):
         # doesn't work if it was enabled and then disabled
@@ -62,6 +66,17 @@ class USBHost(Host):
             self.f.close()
             self.f = None
         platform.delete_recursively(self.path)
+        self._request_size = 0
+        self._discarding = False
+
+    def _write_request(self, data):
+        if self._request_size + len(data) > self.MAX_REQUEST_SIZE:
+            self.cleanup()
+            self._discarding = True
+            return False
+        self.f.write(data)
+        self._request_size += len(data)
+        return True
 
     async def process_command(self, stream):
         if self.manager is None:
@@ -111,13 +126,20 @@ class USBHost(Host):
         # if we didn't get anything - return
         if res is None or len(res) == 0:
             return
+        # Discard the rest of an oversized line so its suffix cannot execute
+        # as a separate command. Resume only after its terminator.
+        if self._discarding:
+            if b"\n" in res or b"\r" in res:
+                self._discarding = False
+                self.respond(b"error: Request too large")
+            return
         # check if we already have something
         # if not - create new file on the ramdisk
         if self.f is None:
             self.f = open(self.path + "/data", "wb")
         # check if we don't have EOL in the data
         if b"\n" not in res and b"\r" not in res:
-            self.f.write(res)
+            self._write_request(res)
             return
         # if we do - there is a command
         # both \r, \n or \r\n should work:
@@ -135,17 +157,22 @@ class USBHost(Host):
                 # if command is not complete yet
                 # we write and return
                 if eol not in res:
-                    self.f.write(res)
+                    self._write_request(res)
                     return
             if eol in res:
                 arr = res.split(eol)
                 break
         # only one command at a time is allowed,
         # throw everything else away
-        self.f.write(arr[0])
+        if not self._write_request(arr[0]):
+            # This chunk already contains the line terminator.
+            self._discarding = False
+            self.respond(b"error: Request too large")
+            return
         # close file
         self.f.close()
         self.f = None
+        self._request_size = 0
         return self.path + "/data"
 
     async def update(self):
