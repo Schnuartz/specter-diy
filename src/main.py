@@ -5,6 +5,8 @@ import sys
 if sys.platform == "esp32":
     import pyb
     pyb.usb_mode(None)
+    import p4board
+    p4board.radio_off()
     # Detach any configured terminal streams; a failure must stop startup.
     os.dupterm(None, 0)
     try:
