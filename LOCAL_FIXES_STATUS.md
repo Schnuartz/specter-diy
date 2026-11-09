@@ -57,19 +57,19 @@ Base: `sandman21vs/specter-diy` branch `esp32-p4-port`, commit `dffd80748543f21b
 - Failed QR scan startup closes the progress popup and releases the camera; hardware camera lifecycle testing remains outstanding.
 - SEC1210 exchanges, responses, WTX counts and serial read deadlines are bounded, and UART failures are translated to smartcard errors. No physical SEC1210 testing has been performed.
 - KEF envelopes above 500,000 PBKDF2 iterations are rejected before derivation. This is a compatibility change; use a trusted compatible tool for such backups. The bound has not been timed on P4 hardware.
-- After a lost SET_PIN response, the NFC smartcard must accept the selected PIN before the setup is treated as successful.
+- After a lost SET_PIN response, the NFC smartcard must accept the selected PIN before the setup is treated as successful. A PIN-change rejection also locks the device and invokes the PIN-error handler.
 
 The SFGT finding in the original report incorrectly asserts that positive SFGI values use a different multiplier from FWT: ISO/IEC 14443-4:2018 section 5.3.5 specifies the same carrier-cycle expression. The old implementation did, however, round that expression too early for large values; that rounding has been corrected.
 
 ## Known open work
 
-The report contains many issues not resolved here. In particular, secure erase, Secure Boot/flash encryption/readout protection, a verified radio-off state from power-on, signed release/flasher verification, P4 CI and hardware smoke tests remain open. Full NFC card-swap protection, remaining smartcard PIN-change cases, display recovery and shared I2C lifetimes, unauthenticated card pinning, and plaintext smartcard storage also remain to be reviewed or fixed. The new resource limits and lifecycle changes still require hardware validation. A pinned dependency alone does not make a reproducible or authenticated release. The MicroPython deflate implementation does not expose the same EOF checks used in the CPython branch.
+The report contains many issues not resolved here. In particular, secure erase, Secure Boot/flash encryption/readout protection, a verified radio-off state from power-on, signed release/flasher verification, P4 CI and hardware smoke tests remain open. Full NFC card-swap protection, display recovery and shared I2C lifetimes, unauthenticated card pinning, and plaintext smartcard storage also remain to be reviewed or fixed. The new resource limits and lifecycle changes still require hardware validation. A pinned dependency alone does not make a reproducible or authenticated release. The MicroPython deflate implementation does not expose the same EOF checks used in the CPython branch.
 
 Security and reproducibility claims in upstream documentation must not be interpreted as applying to the P4 development build. The original report's individual findings should be independently verified; the suggested fixes are not assumed correct merely because they are in the report.
 
 ## Verification
 
-- Native suite: 457 tests passed, two skipped, in WSL after the main changes.
+- Follow-up native suite: 488 tests passed, two skipped, in WSL before the final PIN retry and UART short-write changes. The new PIN retry was then tested with each of the three simulated NFC readers; the PIN-change and UART cases also passed targeted tests.
 - The additional RAM block-device bounds regression and the 13-test KEF suite (including two new padding/deflate cases) passed separately.
 - Changed Python modules passed `compileall`.
 - The P4 firmware and camera C code compiled and linked in WSL against the pinned dependencies. The image occupies `0x356d60` bytes of its `0x400000`-byte app partition (17% free). The first build hit Linux's per-command length limit; the successful retry used a temporary generated-build-file workaround. This does not establish that the unmodified build script works in this environment.
