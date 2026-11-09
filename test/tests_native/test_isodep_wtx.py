@@ -4,7 +4,7 @@ import unittest
 from unittest import mock
 
 from nfc import NFCTimeout
-from nfc.isodep import IsoDep
+from nfc.isodep import IsoDep, _fwt_ms, _FWT_MAX_MS
 
 
 class WaitTimeRetryTest(unittest.TestCase):
@@ -30,3 +30,13 @@ class WaitTimeRetryTest(unittest.TestCase):
              mock.patch.object(time, "ticks_diff", lambda a, b: a - b, create=True):
             self.assertEqual(dep.exchange(b"\x00\x00\x00\x00"), b"\x90\x00")
         self.assertEqual(sent[1:], [(b"\xf2\x03", 30), (b"\xf2\x03", 30)])
+
+
+class FrameTimingTest(unittest.TestCase):
+    def test_wait_is_never_shorter_than_the_carrier_cycle_formula(self):
+        for value in range(15):
+            with self.subTest(value=value):
+                wait_ms = _fwt_ms(value)
+                self.assertGreaterEqual(wait_ms * 13560, 4096 * (1 << value))
+                self.assertLess((wait_ms - 1) * 13560, 4096 * (1 << value))
+        self.assertGreaterEqual(_FWT_MAX_MS, _fwt_ms(14))

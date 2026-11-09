@@ -26,7 +26,7 @@ FSD = FIFO_SIZE
 _FSDI = 5
 _MAX_ATS = 20
 _FSC_TABLE = (16, 24, 32, 40, 48, 64, 96, 128, 256)
-_FWT_MAX_MS = 4949  # FWI 14, the longest the standard allows
+_FWT_MAX_MS = 4950  # ceil the FWI 14 maximum to whole milliseconds
 _ACTIVATION_MS = 30
 MAX_APDU = 261
 MAX_RESPONSE = 258  # short APDU: 256 bytes of data and the status word
@@ -65,8 +65,9 @@ def parse_ats(ats):
 
 
 def _fwt_ms(fwi):
-    # FWT = 256 * 16 / fc * 2^FWI = 302 us * 2^FWI
-    return (302 * (1 << fwi)) // 1000 + 1
+    # 4096 carrier cycles at 13.56 MHz, rounded up to milliseconds.
+    # Truncating 302.064... us before multiplying can wait too little.
+    return (4096 * (1 << fwi) + 13559) // 13560
 
 
 class IsoDep:
