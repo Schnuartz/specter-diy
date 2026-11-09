@@ -1,5 +1,12 @@
 # Security of Specter-DIY
 
+> **ESP32-P4 experimental port:** This document describes the STM32/F469
+> release and does not establish security or reproducibility for ESP32-P4.
+> The P4 build has no Secure Boot, flash encryption, secure wipe, or signed
+> release verification. Do not use it with real seeds or funds. See the
+> [P4 security notes](../ports/esp32p4/README.md#perfil-de-segurança).
+
+
 This document explains the security model of Specter-DIY: what the device
 protects against, what it explicitly does NOT protect against, and which
 mechanisms implement these guarantees.
