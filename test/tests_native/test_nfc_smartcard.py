@@ -728,3 +728,42 @@ class ConnectionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(READY, "needs embit, cryptography and the app's modules")
+class SecureChannelFailureTest(unittest.TestCase):
+    def make_channel(self):
+        class Applet:
+            def request(self, data):
+                raise OSError("response lost")
+        channel = securechannel.SecureChannel(Applet())
+        channel.is_open = True
+        channel.iv = 7
+        channel.host_aes_key = channel.card_aes_key = b"a" * 32
+        channel.host_mac_key = channel.card_mac_key = b"b" * 32
+        return channel
+
+    def assert_cleared(self, channel):
+        self.assertFalse(channel.is_open)
+        self.assertIsNone(channel.host_aes_key)
+        self.assertIsNone(channel.card_mac_key)
+
+    def test_invalid_response_closes_channel(self):
+        channel = self.make_channel()
+        with self.assertRaises(securechannel.SecureChannelError):
+            channel.decrypt(b"short")
+        self.assert_cleared(channel)
+
+    def test_lost_response_closes_channel(self):
+        channel = self.make_channel()
+        channel.encrypt = lambda data: b"encrypted"
+        with self.assertRaises(OSError):
+            channel.request(b"message")
+        self.assert_cleared(channel)
+
+    def test_failed_reopen_closes_old_channel(self):
+        channel = self.make_channel()
+        channel._open = lambda mode: (_ for _ in ()).throw(OSError("failed"))
+        with self.assertRaises(OSError):
+            channel.open()
+        self.assert_cleared(channel)
