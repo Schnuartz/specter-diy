@@ -162,6 +162,8 @@ class Specter:
             self.keystore = self.keystores[0]()
             return
         # checking the first available keystore
+        if not self.keystores:
+            raise SpecterError("No keystore is available. Restart the device to retry.")
         keystore_cls = None
         # TODO: show some screen here if none are available
         while keystore_cls is None:
@@ -169,9 +171,8 @@ class Specter:
                 if keystore.is_available():
                     keystore_cls = keystore
                     break
-            # if none are available just wait for it
-            # if keystore_cls is None:
-            #     await asyncio.sleep_ms(50)
+            if keystore_cls is None:
+                await asyncio.sleep_ms(50)
         self.keystore = keystore_cls()
 
     async def setup(self):
