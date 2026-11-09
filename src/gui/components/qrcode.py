@@ -256,10 +256,14 @@ class QRCode(lv.obj):
         self.check_controls()
 
     def on_next(self, event):
+        if self.idx is None or not self.frame_num:
+            return
         self.idx = (self.idx + 1) % self.frame_num
         self.set_frame()
 
     def on_prev(self, event):
+        if self.idx is None or not self.frame_num:
+            return
         self.idx = (self.idx + self.frame_num - 1) % self.frame_num
         self.set_frame()
 
