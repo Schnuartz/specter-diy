@@ -152,6 +152,8 @@ class _SEC1210:
         uart = self._uart
         data = b""
         while len(data) < count:
+            if time.ticks_diff(deadline, time.ticks_ms()) <= 0:
+                raise CardConnectionException("card reader timeout")
             chunk = uart.read(count - len(data))
             if chunk:
                 data += chunk
@@ -195,6 +197,8 @@ class _SEC1210:
 
     def _response(self, seq, deadline):
         while True:
+            if time.ticks_diff(deadline, time.ticks_ms()) <= 0:
+                raise CardConnectionException("card reader timeout")
             first = self._read(1, deadline)[0]
             if first == _NOTIFY_SLOT_CHANGE:
                 # RDR_to_PC_NotifySlotChange: um byte de estado, fora de quadro.

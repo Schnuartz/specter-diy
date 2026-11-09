@@ -50,3 +50,15 @@ class SmartcardBoundsTest(unittest.TestCase):
         self.connection._reader = types.SimpleNamespace(exchange=lambda data: b"\x61\x01")
         with self.assertRaisesRegex(self.mod.CardConnectionException, "exchange too long"):
             self.connection._transmit_t0(b"\x00" * 4)
+
+
+class SmartcardReaderErrorTest(unittest.TestCase):
+    def test_garbage_cannot_extend_reader_deadline(self):
+        from unittest import mock
+        mod = load_uscard()
+        reader = mod._SEC1210()
+        reader._read = lambda count, deadline: b"x"
+        with mock.patch.object(mod.time, "ticks_ms", side_effect=[0, 1, 2, 3], create=True), \
+             mock.patch.object(mod.time, "ticks_diff", lambda a, b: a - b, create=True):
+            with self.assertRaisesRegex(mod.CardConnectionException, "timeout"):
+                reader._response(1, 3)
