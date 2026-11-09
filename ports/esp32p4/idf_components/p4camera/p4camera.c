@@ -301,6 +301,11 @@ esp_err_t p4camera_capture(uint8_t **data, size_t *length) {
         /* Sem quadro dentro de DQBUF_TIMEOUT_MS: o chamador tenta de novo. */
         return (errno == ETIMEDOUT || errno == EPERM) ? ESP_ERR_TIMEOUT : ESP_FAIL;
     }
+    if (current.index >= BUFFER_COUNT || !buffers[current.index] ||
+        current.bytesused > buffer_lengths[current.index]) {
+        ESP_LOGE(TAG, "Invalid camera buffer returned by driver");
+        return ESP_ERR_INVALID_SIZE;
+    }
     holding_frame = true;
     if (data) *data = buffers[current.index];
     if (length) *length = current.bytesused;
@@ -436,6 +441,11 @@ esp_err_t p4camera_scan(uint8_t *payload, size_t capacity, size_t *length) {
     err = p4camera_capture(&frame, &frame_length);
     if (err != ESP_OK) {
         return err;
+    }
+    size_t required = (size_t)frame_width * frame_height * sizeof(uint16_t);
+    if (frame_length < required) {
+        p4camera_release();
+        return ESP_ERR_INVALID_SIZE;
     }
     rgb565_to_gray(frame);
     if (preview_width && preview_buffer) {
