@@ -1,4 +1,18 @@
 import os
+import sys
+
+# Do this before importing the application or showing the PIN screen.
+if sys.platform == "esp32":
+    import pyb
+    pyb.usb_mode(None)
+    # Detach any configured terminal streams; a failure must stop startup.
+    os.dupterm(None, 0)
+    try:
+        os.dupterm(None, 1)
+    except ValueError:
+        # Some MicroPython builds expose only one dupterm slot.
+        pass
+
 from specter import Specter
 from gui.specter import SpecterGUI
 

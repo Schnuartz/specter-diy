@@ -6,8 +6,11 @@
 #define MICROPY_HW_BOARD_NAME "Waveshare ESP32-P4 Touch LCD 4.3-C"
 #define MICROPY_HW_MCU_NAME   "ESP32-P4"
 
-// The REPL arrives over the on-board CH343 USB-UART bridge, not native USB.
-#define MICROPY_HW_ENABLE_UART_REPL (1)
+// Disable UART and USB Serial/JTAG consoles. TinyUSB requires the built-in
+// CDC interface to compile; main.py disables that REPL when the app starts.
+// The pre-application boot window remains unprotected.
+#define MICROPY_HW_ENABLE_UART_REPL     (0)
+#define MICROPY_HW_ESP_USB_SERIAL_JTAG  (0)
 
 // No radio. The P4 has none of its own; the companion ESP32-C6 is held in
 // reset by p4board.radio_off(). Leaving these off keeps the radio stacks out
