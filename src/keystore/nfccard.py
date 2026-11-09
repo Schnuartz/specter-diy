@@ -422,7 +422,27 @@ The card is asked for when the device is unlocked and when its storage is change
             while True:
                 if not self.is_pin_set:
                     pin = await self.setup_pin()
-                    await self._do(lambda: self._set_pin(pin), need_pin=False)
+                    attempted = [False]
+                    attempts_before = [None]
+
+                    def set_or_verify_pin():
+                        if not self.is_pin_set:
+                            attempted[0] = True
+                            self._set_pin(pin)
+                            return
+                        if not attempted[0]:
+                            raise KeyStoreError("PIN was already set on the card")
+                        # The response to SET_PIN may have been lost. Prove
+                        # the chosen PIN before treating the operation as done.
+                        if not self.applet.is_locked:
+                            self.applet.lock()
+                        left = self.applet.pin_attempts_left
+                        if attempts_before[0] is not None and left < attempts_before[0]:
+                            raise PinError("The card rejected the chosen PIN.")
+                        attempts_before[0] = left
+                        self._unlock(pin)
+
+                    await self._do(set_or_verify_pin, need_pin=False)
                 if not self.is_locked:
                     return
                 pin = self._pin = await self.get_pin()

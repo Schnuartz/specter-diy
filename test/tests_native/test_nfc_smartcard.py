@@ -316,6 +316,25 @@ class SmartcardKeystoreTest(unittest.TestCase):
         self.assertIsNotNone(rig.applet.pin)
         self.assertFalse(ks.is_key_saved)
 
+    def test_set_pin_response_lost_verifies_the_chosen_pin(self):
+        rig = self.rig()
+        original = rig.applet._secure
+        state = {"dropped": False}
+
+        def lose_reply(plain):
+            reply = original(plain)
+            if plain[:2] == b"\x03\x04" and not state["dropped"]:
+                state["dropped"] = True
+                rig.card.mute = 100
+            return reply
+
+        rig.applet._secure = lose_reply
+        ks = self.set_up_card(rig)
+        self.assertTrue(state["dropped"])
+        self.assertFalse(ks.is_locked)
+        self.assertEqual(len([c for c in rig.applet.commands if c[0] == b"\x03\x04"]), 1)
+        self.assertEqual(len(rig.unlocks()), 1)
+
     def test_one_tap_at_boot_and_none_to_load(self):
         rig = self.rig()
         ks = self.set_up_card(rig)
