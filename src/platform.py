@@ -96,8 +96,14 @@ class SDCard:
             return
         if self._led is not None:
             self._led.on()
-        self._sd.power(True)
-        os.mount(self._sd, "/sd")
+        try:
+            self._sd.power(True)
+            os.mount(self._sd, "/sd")
+        except Exception:
+            self._sd.power(False)
+            if self._led is not None:
+                self._led.off()
+            raise
         self._mounted = True
 
     def open(self, filename, *args, **kwargs):
