@@ -1,4 +1,5 @@
 import sys
+import os
 import gc
 import json
 from io import BytesIO
@@ -161,9 +162,9 @@ class Specter:
         if len(self.keystores) == 1:
             self.keystore = self.keystores[0]()
             return
-        # checking the first available keystore
         if not self.keystores:
             raise SpecterError("No keystore is available. Restart the device to retry.")
+        # checking the first available keystore
         keystore_cls = None
         # TODO: show some screen here if none are available
         while keystore_cls is None:
@@ -588,14 +589,18 @@ class Specter:
         return self.SETTINGS_DIR+"/global.settings"
 
     def load_settings(self, fname=None):
-        settings = {}
+        if fname is None:
+            fname = self.settings_fname
         try:
-            if fname is None:
-                fname = self.settings_fname
-            adata, _ = self.keystore.load_aead(fname, key=self.keystore.settings_key)
-            settings = json.loads(adata.decode())
-        except Exception as e:
-            print(e)
+            os.stat(fname)
+        except OSError as e:
+            if e.args and e.args[0] == 2:  # ENOENT: first run
+                return {}
+            raise
+        adata, _ = self.keystore.load_aead(fname, key=self.keystore.settings_key)
+        settings = json.loads(adata.decode())
+        if not isinstance(settings, dict):
+            raise SpecterError("Invalid global settings")
         return settings
 
     def save_settings(self, settings, fname=None):
