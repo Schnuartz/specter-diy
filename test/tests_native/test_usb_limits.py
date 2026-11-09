@@ -62,3 +62,8 @@ class USBRequestLimitsTest(unittest.TestCase):
         self.assertIsNone(self.host.read_to_file())
         self.assertIn(b"too large", self.host.usb.output)
         self.assertFalse(os.path.exists(os.path.join(self.temp.name, "data")))
+
+    def test_short_write_is_an_error(self):
+        self.host.usb = FakeUSB(short=True)
+        with self.assertRaises(OSError):
+            self.host.respond(b"success")

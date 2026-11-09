@@ -78,6 +78,13 @@ class USBHost(Host):
         self._request_size += len(data)
         return True
 
+    def _write_usb(self, data):
+        if isinstance(data, str):
+            data = data.encode()
+        written = self.usb.write(data)
+        if written != len(data):
+            raise OSError("Incomplete USB write")
+
     async def process_command(self, stream):
         if self.manager is None:
             raise HostError("Device is busy")
@@ -107,13 +114,13 @@ class USBHost(Host):
         # loop until we read everything
         chunk = stream.read(32)
         while len(chunk) > 0:
-            self.usb.write(chunk)
+            self._write_usb(chunk)
             chunk = stream.read(32)
         self.respond(b"")
 
     def respond(self, data):
-        self.usb.write(data)
-        self.usb.write("\r\n")
+        self._write_usb(data)
+        self._write_usb(b"\r\n")
 
     def read_to_file(self):
         """
@@ -186,7 +193,7 @@ class USBHost(Host):
         # if we got a filename - line is ready
         if res is not None:
             # first send the host that we are processing data
-            self.usb.write(self.ACK)
+            self._write_usb(self.ACK)
             # open again for reading and try to process content
             try:
                 with open(self.path + "/data", "rb") as f:

@@ -385,7 +385,7 @@ class USB_VCP:
         if isinstance(data, str):
             data = data.encode()
         if not self.isconnected():
-            return len(data)
+            raise OSError("USB is disconnected")
         # Com timeout=0 o CDC escreve so o que cabe no buffer; o Specter espera
         # que o write entregue tudo, entao repetimos ate o host ler.
         mv = memoryview(data)
@@ -396,7 +396,7 @@ class USB_VCP:
             sent += n or 0
             if sent < len(data):
                 if time.ticks_diff(time.ticks_ms(), start) > _USB_WRITE_TIMEOUT_MS:
-                    break
+                    raise OSError("USB write timed out")
                 machine.idle()
         return sent
 
