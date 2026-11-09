@@ -188,48 +188,27 @@ esp_err_t p4camera_init(void) {
     frame_width = format.fmt.pix.width;
     frame_height = format.fmt.pix.height;
 
-    /* Escolher o formato em vez de exigir um.
-     *
-     * O quirc trabalha em luminancia, entao GREY seria ideal -- um plano, sem
-     * conversao. Mas nem todo sensor entrega GREY pelo pipeline CSI, e um
-     * S_FMT recusado derruba a inicializacao inteira. Enumeramos o que o
-     * driver oferece e ficamos com o melhor disponivel, guardando a escolha
-     * para quem for decodificar saber o que recebeu. */
-    static const uint32_t preferred[] = {
-        V4L2_PIX_FMT_GREY,     /* melhor: ja e luminancia */
-        V4L2_PIX_FMT_RGB565,   /* aceitavel: converter por quadro */
-        V4L2_PIX_FMT_SBGGR8,   /* Bayer cru: o canal verde serve de aproximacao */
-    };
-    uint32_t chosen = format.fmt.pix.pixelformat;
-    bool picked = false;
-    for (size_t rank = 0; rank < sizeof(preferred) / sizeof(preferred[0])
-        && !picked; ++rank) {
-        struct v4l2_fmtdesc desc = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE };
-        for (desc.index = 0; ioctl(video_fd, VIDIOC_ENUM_FMT, &desc) == 0;
-            ++desc.index) {
-            if (desc.pixelformat == preferred[rank]) {
-                chosen = preferred[rank];
-                picked = true;
-                break;
-            }
-        }
-    }
-    if (chosen != format.fmt.pix.pixelformat) {
-        struct v4l2_format want = {
-            .type = V4L2_BUF_TYPE_VIDEO_CAPTURE,
-            .fmt.pix.width = frame_width,
-            .fmt.pix.height = frame_height,
-            .fmt.pix.pixelformat = chosen,
-        };
-        if (ioctl(video_fd, VIDIOC_S_FMT, &want) != 0) {
-            ESP_LOGE(TAG, "S_FMT %c%c%c%c failed: %s",
-                (char)(chosen), (char)(chosen >> 8), (char)(chosen >> 16),
-                (char)(chosen >> 24), strerror(errno));
-            init_stage = "S_FMT";
+    /* The decoder and preview currently consume tightly packed RGB565 only. */
+    if (format.fmt.pix.pixelformat != V4L2_PIX_FMT_RGB565) {
+        format.fmt.pix.pixelformat = V4L2_PIX_FMT_RGB565;
+        if (ioctl(video_fd, VIDIOC_S_FMT, &format) != 0) {
+            init_stage = "S_FMT RGB565";
             goto fail;
         }
     }
-    pixel_format = chosen;
+    if (ioctl(video_fd, VIDIOC_G_FMT, &format) != 0 ||
+        format.fmt.pix.pixelformat != V4L2_PIX_FMT_RGB565 ||
+        format.fmt.pix.width == 0 || format.fmt.pix.width > 4096 ||
+        format.fmt.pix.height == 0 || format.fmt.pix.height > 4096 ||
+        (format.fmt.pix.bytesperline != 0 &&
+         format.fmt.pix.bytesperline != format.fmt.pix.width * 2)) {
+        ESP_LOGE(TAG, "Unsupported camera format or frame layout");
+        init_stage = "unsupported format";
+        goto fail;
+    }
+    frame_width = format.fmt.pix.width;
+    frame_height = format.fmt.pix.height;
+    pixel_format = format.fmt.pix.pixelformat;
 
     struct timeval timeout = {
         .tv_sec = DQBUF_TIMEOUT_MS / 1000,
