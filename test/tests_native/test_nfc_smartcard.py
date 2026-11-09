@@ -649,6 +649,26 @@ class SmartcardKeystoreTest(unittest.TestCase):
         ks = self.reboot(rig, "777")
         self.assertFalse(ks.is_locked)
 
+    def test_change_pin_rejected_by_already_unlocked_card_locks_device(self):
+        rig = self.rig()
+        ks = self.set_up_card(rig)
+        calls = []
+        async def on_error():
+            calls.append(True)
+        ks.on_pin_error = on_error
+        original = ks.applet.change_pin
+        def rejected(old, new):
+            raise securechannel.SecureError("0502")
+        ks.applet.change_pin = rejected
+        rig.pins = [PIN, "777", "777"]
+        try:
+            with self.assertRaises(PinError):
+                rig.run(ks.change_pin())
+        finally:
+            ks.applet.change_pin = original
+        self.assertTrue(ks.is_locked)
+        self.assertEqual(calls, [True])
+
     def test_change_pin_with_a_wrong_old_pin(self):
         rig = self.rig()
         ks = self.set_up_card(rig)

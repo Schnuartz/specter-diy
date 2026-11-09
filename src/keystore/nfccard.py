@@ -474,6 +474,12 @@ The card is asked for when the device is unlocked and when its storage is change
         def change():
             try:
                 self.applet.change_pin(old_pin, new_pin)
+            except SecureError as error:
+                if str(error) == "0502":
+                    raise PinError("The card rejected the old PIN.")
+                if str(error) == "0503":
+                    raise CriticalErrorWipeImmediately("No more PIN attempts!\nWipe!")
+                raise
             except (CardLost, AppletException):
                 # Not repeated: a second try with the old PIN would cost an
                 # attempt if the first one did go through.
