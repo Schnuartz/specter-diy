@@ -1,4 +1,5 @@
 import sys
+import os
 import gc
 import json
 from io import BytesIO
@@ -173,6 +174,8 @@ class Specter:
         if len(self.keystores) == 1:
             self.keystore = self.keystores[0]()
             return
+        if not self.keystores:
+            raise SpecterError("No keystore is available. Restart the device to retry.")
         # checking the first available keystore
         keystore_cls = None
         # TODO: show some screen here if none are available
@@ -181,27 +184,22 @@ class Specter:
                 if keystore.is_available():
                     keystore_cls = keystore
                     break
-            # if none are available just wait for it
-            # if keystore_cls is None:
-            #     await asyncio.sleep_ms(50)
+            if keystore_cls is None:
+                await asyncio.sleep_ms(50)
         self.keystore = keystore_cls()
 
     async def setup(self):
-        try:
-            # check if the user already selected the keystore class
-            if self.keystore is None:
-                await self.select_keystore()
-
-            if self.keystore is not None:
-                self.load_network(self.path, self.network)
-
-            # load secrets
-            await self.keystore.init(self.gui.show_screen(), self.gui.show_loader)
-            # unlock with PIN or set up the PIN code
-            await self.unlock()
-        except Exception as e:
-            next_fn = await self.handle_exception(e, self.setup)
-            await next_fn()
+        while True:
+            try:
+                if self.keystore is None:
+                    await self.select_keystore()
+                if self.keystore is not None:
+                    self.load_network(self.path, self.network)
+                await self.keystore.init(self.gui.show_screen(), self.gui.show_loader)
+                await self.unlock()
+                break
+            except Exception as e:
+                await self.handle_exception(e, self.setup)
 
         await self.main()
 
@@ -528,14 +526,18 @@ class Specter:
         return self.SETTINGS_DIR+"/global.settings"
 
     def load_settings(self, fname=None):
-        settings = {}
+        if fname is None:
+            fname = self.settings_fname
         try:
-            if fname is None:
-                fname = self.settings_fname
-            adata, _ = self.keystore.load_aead(fname, key=self.keystore.settings_key)
-            settings = json.loads(adata.decode())
-        except Exception as e:
-            print(e)
+            os.stat(fname)
+        except OSError as e:
+            if e.args and e.args[0] == 2:
+                return {}
+            raise
+        adata, _ = self.keystore.load_aead(fname, key=self.keystore.settings_key)
+        settings = json.loads(adata.decode())
+        if not isinstance(settings, dict):
+            raise SpecterError("Invalid global settings")
         return settings
 
     def save_settings(self, settings, fname=None):
@@ -546,6 +548,29 @@ class Specter:
                            adata=json.dumps(settings).encode(),
                            key=self.keystore.settings_key
         )
+
+    async def load_settings_with_recovery(self):
+        try:
+            return self.load_settings()
+        except Exception:
+            if not await self.gui.prompt(
+                "Global settings could not be read",
+                "Restore default settings? The unreadable file will be "
+                "kept as a backup.\n\nChoose No to retry without changing it.",
+            ):
+                raise SpecterError("Global settings were not changed. Retry or restart the device.")
+        index = 1
+        while True:
+            backup = self.settings_fname + ".unreadable.%d" % index
+            try:
+                os.stat(backup)
+            except OSError as e:
+                if e.args and e.args[0] == 2:
+                    break
+                raise
+            index += 1
+        os.rename(self.settings_fname, backup)
+        return {}
 
     async def experimental_settings(self):
 
@@ -658,7 +683,7 @@ class Specter:
         # now keystore is unlocked - we can load hosts configs
         for host in self.hosts:
             host.load_settings(self.keystore)
-        settings = self.load_settings()
+        settings = await self.load_settings_with_recovery()
         self.GLOBAL = settings
         BaseApp.GLOBAL = settings
 
