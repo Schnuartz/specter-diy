@@ -162,6 +162,13 @@ class _SEC1210:
         return data
 
     def command(self, message_type, data=b"", params=b"\x00\x00\x00", timeout_ms=_XFR_TIMEOUT_MS):
+        """Send a CCID command and normalize UART failures."""
+        try:
+            return self._command(message_type, data, params, timeout_ms)
+        except OSError as error:
+            raise CardConnectionException("card reader UART error: %s" % error)
+
+    def _command(self, message_type, data=b"", params=b"\x00\x00\x00", timeout_ms=_XFR_TIMEOUT_MS):
         """Manda um comando CCID e devolve (bStatus, bError, dados)."""
         if self._absent_until is not None:
             if time.ticks_diff(self._absent_until, time.ticks_ms()) > 0:

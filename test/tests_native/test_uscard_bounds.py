@@ -53,6 +53,15 @@ class SmartcardBoundsTest(unittest.TestCase):
 
 
 class SmartcardReaderErrorTest(unittest.TestCase):
+    def test_uart_errors_are_wrapped(self):
+        mod = load_uscard()
+        reader = mod._SEC1210()
+        def fail():
+            raise OSError("serial failure")
+        reader._open = fail
+        with self.assertRaisesRegex(mod.CardConnectionException, "UART error"):
+            reader.command(0x65)
+
     def test_garbage_cannot_extend_reader_deadline(self):
         from unittest import mock
         mod = load_uscard()
