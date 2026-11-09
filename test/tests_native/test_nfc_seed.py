@@ -205,6 +205,22 @@ class SeedFlowTest(unittest.TestCase):
         self.assertTrue(self.save(WORDS24, gui))
         self.assertEqual(self.load(FakeGUI(prompts=[True], inputs=["b"])), WORDS24)
 
+    def test_card_changed_during_overwrite_confirmation_is_not_written(self):
+        self.assertTrue(self.save(WORDS12, FakeGUI(prompts=[True], inputs=["a", "a"])))
+        replacement = SimCard(uid=b"\x01\x02\x03\x04")
+        gui = FakeGUI(prompts=[True, True], inputs=["b", "b"])
+        original = gui.prompt
+
+        async def prompt(title, msg, popup=False):
+            if title == "Overwrite this card?":
+                self.chip.card = replacement
+            return await original(title, msg, popup)
+
+        gui.prompt = prompt
+        with self.assertRaises(seed.NFCStorageError):
+            self.save(WORDS24, gui)
+        self.assertEqual(replacement.writes, [])
+
     def test_card_removed_before_the_write(self):
         self.assertTrue(self.save(WORDS12, FakeGUI(prompts=[True], inputs=["a", "a"])))
 

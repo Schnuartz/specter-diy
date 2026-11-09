@@ -122,6 +122,7 @@ async def save_mnemonic(gui, mnemonic):
     try:
         if await wait_for_card(gui, nfc, "Save key to NFC card") is None:
             return False
+        original_uid = bytes(nfc.tag.uid)
         if nfc.has_record():
             if not await gui.prompt(
                 "Overwrite this card?",
@@ -131,9 +132,13 @@ async def save_mnemonic(gui, mnemonic):
             # Select again rather than trusting the earlier look: the question
             # was on screen, and the card only had to drift a centimetre.
             nfc.poll()
+            if bytes(nfc.tag.uid) != original_uid:
+                raise NFCError("Card changed during confirmation")
         nfc.write_record(envelope, RECORD_KEF)
         # A write is only as good as what reads back
         nfc.poll()
+        if bytes(nfc.tag.uid) != original_uid:
+            raise NFCError("Card changed after writing")
         if nfc.read_record(RECORD_KEF) != envelope:
             raise NFCError("Read back differs")
     except NFCSizeError:
