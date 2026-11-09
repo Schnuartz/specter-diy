@@ -207,8 +207,9 @@ resolve os componentes para caminhos absolutos com `idf_component_get_property`.
 
 **O `mpconfigboard.h` precisa desligar rádio explicitamente.** Sem
 `MICROPY_PY_BLUETOOTH (0)` o build tenta compilar o NimBLE e falha por falta dos
-headers. O `MICROPY_HW_ENABLE_UART_REPL (1)` também é obrigatório: o REPL desta
-placa chega pela ponte CH343, não por USB nativo.
+headers. O REPL UART fica desativado neste perfil; a inicialização também
+solicita que o terminal e o rádio C6 sejam desligados. Isso ainda não foi
+verificado na placa e não protege o intervalo anterior ao início do aplicativo.
 
 ## Fase 3 — secp256k1
 

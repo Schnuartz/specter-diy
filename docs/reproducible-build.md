@@ -1,5 +1,12 @@
 # Reproducible build
 
+> **ESP32-P4 experimental port:** This document describes the STM32/F469
+> release and does not establish security or reproducibility for ESP32-P4.
+> The P4 build has no Secure Boot, flash encryption, secure wipe, or signed
+> release verification. Do not use it with real seeds or funds. See the
+> [P4 security notes](../ports/esp32p4/README.md#perfil-de-segurança).
+
+
 With [docker](https://docs.docker.com/get-docker/) you can build the firmware yourself in the same environment as we do, and verify that binaries in github releases have the same hash. This way you can be sure that firmware upgrades signed by our public keys are actually built from the code in this repository, no backdoors included.
 
 Release builds (`./build_firmware.sh`) embed no clone-local provenance at all: the `REPOSITORY`, `BRANCH` and `COMMIT` values shown on the About screen are all `unknown`. This is what makes the build reproducible — the clone URL (HTTPS, SSH, or a fork remote), the checkout ref (branch or detached HEAD), the clone depth, and whether the source came from `git` at all or from a `.git`-less source archive all have no effect on the firmware binary. `build_firmware.sh` sets `SPECTER_REPRODUCIBLE_BUILD=1` for this; plain `make disco` dev builds still embed the live commit SHA.

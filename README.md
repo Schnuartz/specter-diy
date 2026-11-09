@@ -35,7 +35,7 @@ Every item below was tested on the board.
 | Smartcard keystore over NFC, with the [M5Stack RFID Unit 2](#which-reader-to-get) | working, **experimental**, position sensitive |
 | Smartcard keystore over NFC, with an [RFID-RC522 module](#which-reader-to-get) | **does not work**: the module can not power the card |
 | Hardware random number generator | working |
-| ESP32-C6 radio | held in reset (airgapped by design) |
+| ESP32-C6 radio | application requests reset at startup; not verified during boot or on hardware |
 | Secure boot / flash encryption / secure wipe | **not implemented** |
 
 ## What you need
@@ -567,6 +567,11 @@ Our main focus is multisignature setup with other hardware wallets, but wallet c
 Most of the firmware is written in MicroPython which makes the code easy to audit and change. We use [secp256k1](https://github.com/bitcoin-core/secp256k1) library from Bitcoin Core for elliptic curve calculations and [LVGL](https://lvgl.io/) library for GUI.
 
 ## DISCLAIMER
+
+The following paragraph describes the upstream STM32/F469 project. It does not
+apply to this experimental ESP32-P4 port, which has no secure boot, flash
+encryption, secure wipe, or verified signed release chain. **Do not use real
+seeds or funds.**
 
 The project has significantly matured, to the extent that the security level of Specter-DIY is now comparable to commercial hardware wallets on the market. We implemented a secure bootloader that verifies firmware upgrades, so you can be sure that only signed firmware can be uploaded to the device after initial setup. However, unlike with commercial signing devices the bootloader has to be installed manually by the user and is not set in the factory of the device vendor. Thus, pay extra attention during the initial firmware installation and make sure you verified PGP signatures and flash the firmware from a secure computer.
 
