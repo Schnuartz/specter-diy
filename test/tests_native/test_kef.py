@@ -123,6 +123,13 @@ class KEFTest(unittest.TestCase):
                 with self.assertRaises(kef.KEFError, msg=index):
                     kef.decrypt(bytes(damaged), PASSWORD)
 
+    def test_pkcs7_rejects_inconsistent_padding(self):
+        data = b"payload"
+        authenticated = data + hashlib.sha256(data).digest()[:4]
+        self.assertEqual(kef._unpad_and_authenticate(6, b"", b"", authenticated + b"\x02\x02", b""), data)
+        with self.assertRaises(kef.KEFAuthError):
+            kef._unpad_and_authenticate(6, b"", b"", authenticated + b"\x00\x02", b"")
+
     def test_iteration_bounds(self):
         head = b"\x07test ID\x14"
         body = bytes(12 + 16 + 4)

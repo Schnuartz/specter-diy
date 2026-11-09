@@ -239,7 +239,8 @@ def _unpad_and_authenticate(version, key, iv, decrypted, exposed):
 
     if padding is True:
         pad = decrypted[-1]
-        if not 1 <= pad <= AES_BLOCK or pad > len(decrypted):
+        if (not 1 <= pad <= AES_BLOCK or pad > len(decrypted)
+                or decrypted[-pad:] != bytes([pad]) * pad):
             raise KEFAuthError("Authentication failed")
         decrypted = decrypted[:-pad]
 
