@@ -56,10 +56,10 @@ VERSION_GCM = 20
 DEFAULT_ITERATIONS = 100000
 
 # The floor stops a crafted envelope from declaring a trivial work factor and
-# skipping the key stretching. The ceiling stops one from parking the device in
-# PBKDF2: the three byte field can ask for a hundred million rounds.
+# skipping the key stretching. The ceiling bounds unauthenticated work from a
+# card; envelopes above it must be opened with a more capable trusted tool.
 MIN_ITERATIONS = 10000
-MAX_ITERATIONS = 10000000
+MAX_ITERATIONS = 500000
 
 # Compressed versions inflate to a size the envelope picks.
 MAX_PLAINTEXT = 8192
@@ -67,6 +67,10 @@ MAX_PLAINTEXT = 8192
 
 class KEFError(Exception):
     pass
+
+
+class KEFWorkLimitError(KEFError):
+    """The envelope asks this device to perform too much work."""
 
 
 class KEFAuthError(KEFError):
@@ -179,7 +183,9 @@ def unwrap(envelope):
 
     stored = int.from_bytes(envelope[2 + len_id : 5 + len_id], "big")
     iterations = stored * 10000 if stored <= 10000 else stored
-    if not MIN_ITERATIONS <= iterations <= MAX_ITERATIONS:
+    if iterations > MAX_ITERATIONS:
+        raise KEFWorkLimitError("KEF iteration count exceeds this device's limit")
+    if iterations < MIN_ITERATIONS:
         raise KEFError("Invalid iteration count")
 
     payload = envelope[5 + len_id :]

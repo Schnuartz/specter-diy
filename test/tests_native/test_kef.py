@@ -145,18 +145,23 @@ class KEFTest(unittest.TestCase):
         for stored, ok in (
             (b"\x00\x00\x00", False),  # zero rounds
             (b"\x00\x00\x01", True),  # 10000
-            (b"\x00\x03\xe8", True),  # 1000 * 10000, the ceiling
-            (b"\x00\x03\xe9", False),  # 10010000
+            (b"\x00\x00\x32", True),  # 50 * 10000, the ceiling
+            (b"\x00\x00\x33", False),  # 510000
             (b"\x00\x27\x10", False),  # 10000 * 10000
             (b"\x00\x27\x11", True),  # 10001, stored as is
-            (b"\x98\x96\x80", True),  # 10000000, stored as is
-            (b"\x98\x96\x81", False),
+            (b"\x07\xa1\x20", True),  # 500000, stored as is
+            (b"\x07\xa1\x21", False),  # 500001
             (b"\xff\xff\xff", False),
         ):
             self.assertEqual(kef.is_envelope(head + stored + body), ok, stored)
-        for iterations in (0, 9999, 10000001):
+        for iterations in (0, 9999, 500001):
             with self.assertRaises(kef.KEFError):
                 kef.encrypt(ID, PASSWORD, ENTROPY, iterations, IV[:12])
+
+    def test_excessive_iterations_are_rejected_before_key_derivation(self):
+        envelope = b"\x07test ID\x14\x07\xa1\x21" + bytes(12 + 16 + 4)
+        with self.assertRaises(kef.KEFWorkLimitError):
+            kef.decrypt(envelope, PASSWORD)
 
     def test_iterations_round_trip(self):
         for iterations in (10000, 10001, 100000, 123456, 500000):

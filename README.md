@@ -384,8 +384,10 @@ antenna, and nothing unencrypted is written.
 The record layout and the envelope are the ones used by the NFC branches of
 [Kern](https://github.com/sandman21vs/Kern/blob/nfc-card-storage/docs/nfc.md)
 and [Krux](https://github.com/sandman21vs/krux), so a card written by one is
-meant to load on the others. Specter reads every KEF version and writes
-AES-GCM.
+meant to load on the others. Specter supports every KEF version and writes
+AES-GCM. To limit untrusted work, this build refuses envelopes above 500,000
+PBKDF2 iterations; open such backups with a trusted compatible tool instead.
+The limit has not been benchmarked on the P4 hardware.
 
 Things to know:
 

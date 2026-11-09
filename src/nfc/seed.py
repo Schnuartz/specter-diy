@@ -176,6 +176,11 @@ async def load_mnemonic(gui):
 
     try:
         id_ = kef.unwrap(envelope)[0].decode()
+    except kef.KEFWorkLimitError:
+        raise NFCStorageError(
+            "This backup needs more password iterations than this device permits.\n\n"
+            "Open it with a trusted compatible tool."
+        )
     except kef.KEFError:
         raise NFCStorageError("No encrypted key on this card.")
 
