@@ -584,10 +584,14 @@ class NFC:
         record this firmware can not parse is still something to lose. Read
         errors propagate so they cannot be mistaken for a blank card.
         """
-        # An unfamiliar or damaged record is still data the user may lose.
-        # Propagate read failures rather than treating them as an empty card.
-        header = self.read(0, HEADER_LEN)
-        return bytes(header[:4]) == RECORD_MAGIC
+        # Only an entirely zero-filled data area is considered blank. Even
+        # unfamiliar formats or a damaged header can contain valuable data.
+        # A read failure must not be mistaken for an empty card.
+        for offset in range(0, self.tag.capacity, READ_LEN):
+            size = min(READ_LEN, self.tag.capacity - offset)
+            if any(self.read(offset, size)):
+                return True
+        return False
 
     def read_record(self, record_type=RECORD_KEF):
         """Reads a record of the named type, validating it throughout"""

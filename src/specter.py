@@ -177,29 +177,32 @@ class Specter:
         self.keystore = keystore_cls()
 
     async def setup(self):
-        try:
-            while True:
-                # check if the user already selected the keystore class
-                if self.keystore is None:
-                    await self.select_keystore()
+        while True:
+            try:
+                while True:
+                    # check if the user already selected the keystore class
+                    if self.keystore is None:
+                        await self.select_keystore()
 
-                if self.keystore is not None:
-                    self.load_network(self.path, self.network)
+                    if hasattr(self.keystore, "on_pin_error"):
+                        self.keystore.on_pin_error = self.lock
+                    if self.keystore is not None:
+                        self.load_network(self.path, self.network)
 
-                try:
-                    # load secrets
-                    await self.keystore.init(self.gui.show_screen(), self.gui.show_loader)
-                    # unlock with PIN or set up the PIN code
-                    await self.unlock()
-                    break
-                except KeyStoreUnavailable:
-                    # this one bowed out: the next in line gets its turn
-                    skipped = type(self.keystore)
-                    self.keystores = [k for k in self.keystores if k is not skipped]
-                    self.keystore = None
-        except Exception as e:
-            next_fn = await self.handle_exception(e, self.setup)
-            await next_fn()
+                    try:
+                        # load secrets
+                        await self.keystore.init(self.gui.show_screen(), self.gui.show_loader)
+                        # unlock with PIN or set up the PIN code
+                        await self.unlock()
+                        break
+                    except KeyStoreUnavailable:
+                        # this one bowed out: the next in line gets its turn
+                        skipped = type(self.keystore)
+                        self.keystores = [k for k in self.keystores if k is not skipped]
+                        self.keystore = None
+                break
+            except Exception as e:
+                await self.handle_exception(e, self.setup)
 
         await self.main()
 
@@ -612,6 +615,32 @@ class Specter:
                            key=self.keystore.settings_key
         )
 
+    async def load_settings_with_recovery(self):
+        try:
+            return self.load_settings()
+        except Exception:
+            if not await self.gui.prompt(
+                "Global settings could not be read",
+                "Restore default settings? The unreadable file will be "
+                "kept as a backup.\n\nChoose No to retry without changing it.",
+            ):
+                raise SpecterError("Global settings were not changed. Retry or restart the device.")
+
+        # Do not overwrite an earlier backup, or replace the existing settings
+        # unless the original has been preserved successfully.
+        index = 1
+        while True:
+            backup = self.settings_fname + ".unreadable.%d" % index
+            try:
+                os.stat(backup)
+            except OSError as e:
+                if e.args and e.args[0] == 2:
+                    break
+                raise
+            index += 1
+        os.rename(self.settings_fname, backup)
+        return {}
+
     async def experimental_settings(self):
 
         controls = [{
@@ -722,7 +751,7 @@ class Specter:
         # now keystore is unlocked - we can load hosts configs
         for host in self.hosts:
             host.load_settings(self.keystore)
-        settings = self.load_settings()
+        settings = await self.load_settings_with_recovery()
         self.GLOBAL = settings
         BaseApp.GLOBAL = settings
 
@@ -760,6 +789,8 @@ class Specter:
         This method is called whenever we got data from the host.
         It tries to find a proper app and pass the stream with data to it.
         """
+        if self.keystore is None or self.keystore.is_locked:
+            raise HostError("Keystore is locked")
         self.gui.show_loader(title="Processing host data...")
         res = None
         if show_fn is None:

@@ -205,6 +205,16 @@ class SeedFlowTest(unittest.TestCase):
         self.assertTrue(self.save(WORDS24, gui))
         self.assertEqual(self.load(FakeGUI(prompts=[True], inputs=["b"])), WORDS24)
 
+    def test_unrecognized_data_is_not_overwritten_without_confirmation(self):
+        # Data may begin after a blank header or use an entirely different format.
+        self.chip.card.blocks[2][:] = b"foreign backup!!"
+        before = bytes(self.chip.card.blocks[2])
+        gui = FakeGUI(prompts=[True, False], inputs=["b", "b"])
+        self.assertFalse(self.save(WORDS12, gui))
+        self.assertEqual(gui.titles("prompt")[-1], "Overwrite this card?")
+        self.assertEqual(self.chip.card.writes, [])
+        self.assertEqual(bytes(self.chip.card.blocks[2]), before)
+
     def test_card_changed_during_overwrite_confirmation_is_not_written(self):
         self.assertTrue(self.save(WORDS12, FakeGUI(prompts=[True], inputs=["a", "a"])))
         replacement = SimCard(uid=b"\x01\x02\x03\x04")

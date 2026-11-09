@@ -109,6 +109,7 @@ def setup_native_stubs():
 
     _ensure_submodule("gui.screens", "mnemonic", {
         "ExportMnemonicScreen": type("ExportMnemonicScreen", (), {}),
+        "MnemonicPrompt": type("MnemonicPrompt", (), {}),
     })
     _ensure_submodule("gui.screens", "settings", {
         "HostSettings": type("HostSettings", (), {}),

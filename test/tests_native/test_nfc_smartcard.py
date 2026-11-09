@@ -633,11 +633,33 @@ class SmartcardKeystoreTest(unittest.TestCase):
     def test_change_pin_with_a_wrong_old_pin(self):
         rig = self.rig()
         ks = self.set_up_card(rig)
+        lock_calls = []
+
+        async def lock_device():
+            lock_calls.append(ks.is_locked)
+
+        ks.on_pin_error = lock_device
         old = rig.applet.pin
         rig.pins = ["0000", "777", "777"]
         with self.assertRaises(PinError):
             rig.run(ks.change_pin())
         self.assertEqual(rig.applet.pin, old)
+        self.assertEqual(lock_calls, [True])
+        self.assertTrue(ks.is_locked)
+
+    def test_locked_keystore_refuses_all_signing_entry_points(self):
+        rig = self.rig()
+        ks = self.set_up_card(rig)
+        ks.root = object()
+        ks.lock()
+        for sign in (
+            lambda: ks.sign_psbt(None),
+            lambda: ks.sign_input(None, 0, None),
+            lambda: ks.sign_hash([], bytes(32)),
+            lambda: ks.sign_recoverable([], bytes(32)),
+        ):
+            with self.assertRaises(KeyStoreError):
+                sign()
 
     def test_cancelled_tap_in_a_menu_changes_nothing(self):
         rig = self.rig()

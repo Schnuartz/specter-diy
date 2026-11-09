@@ -1,5 +1,43 @@
 # ESP32-P4 audit fixes: local review notes
 
+## Follow-up review of the 23 commits
+
+The fork's `master` at `f8020bfe` and upstream `cryptoadvance/master` at
+`bec1ab10` were compared on 2026-11-09. Shared fixes are prepared separately
+against the fork's `master`; they must not be interpreted as merged upstream.
+The P4 branch retains the protections while those changes are under review.
+
+| Commit | Disposition |
+| --- | --- |
+| `486ecc21` | P4 startup and console; port-specific. |
+| `f82954f1` | P4 companion radio; port-specific. |
+| `72abb16b` | P4 NFC backups; extended to warn for nonblank unfamiliar data. |
+| `833d3a3a` | P4 NFC backups; port-specific UID check. |
+| `9c5e674c` | Common smartcard secure-channel fix; prepared in `codex/smartcard-session-signing-hardening`. |
+| `603f99df` | Common smartcard PIN status validation; prepared in the same smartcard branch. |
+| `914615c6` | P4 NFC smartcard; extended so a PIN failure disables hosts. Common locked-signing protections are in the smartcard branch. |
+| `d1586468` | P4 camera format validation; port-specific. |
+| `46f79a61` | P4 camera buffer validation; port-specific. |
+| `b61cfac1` | P4 camera preview bounds; port-specific. |
+| `f9ff7fb2` | Common keystore wait; prepared in `codex/global-settings-recovery`. |
+| `170ace10` | Common settings handling; recovery and retry fixes prepared in the settings branch. |
+| `003f6bbb` | Common SD mount cleanup; prepared in the settings branch. |
+| `f00e5405` | P4 RAM disk bounds; port-specific. |
+| `f4adbbc1` | KEF support exists in this port, not current upstream. |
+| `c9f68761` | KEF CPython deflate validation; port-specific. MicroPython remains subject to the limitation below. |
+| `017da71b` | LVGL 9 QR style lifecycle; P4 port's UI implementation. |
+| `0b558973` | QR navigation guard also applies to upstream's older UI; prepared in `codex/legacy-ui-state-guards`. |
+| `17272dd9` | Optional mnemonic fixer guard also applies to upstream's older UI; prepared in the UI branch. |
+| `059f653c` | LVGL 9 dialog ownership; P4 port's UI implementation. |
+| `ac29297a` | LVGL 9 label layout; P4 port's UI implementation. |
+| `391867cd` | P4 bootloader dependency; port-specific. |
+| `f174d3b5` | P4 security documentation; port-specific. |
+
+Review follow-up also rejects host requests and signing while locked, retries
+startup without recursion, and offers to preserve unreadable settings in a
+numbered backup before restoring defaults. No P4 hardware verification has been
+performed for these changes.
+
 Base: `sandman21vs/specter-diy` branch `esp32-p4-port`, commit `dffd80748543f21b294462e4c1aa3c27bd5e2bb6`. This is an incomplete local response to the audit, not a security sign-off. Do not use real seeds or funds.
 
 ## Changes for independent review

@@ -133,6 +133,7 @@ The card is asked for when the device is unlocked and when its storage is change
         self._pin = None
         # PIN that unlocked the device, until it is locked again
         self._session_pin = None
+        self.on_pin_error = None
 
     def _recall_card(self):
         """Takes the key of the card last used from flash, if there is one.
@@ -314,6 +315,8 @@ The card is asked for when the device is unlocked and when its storage is change
                 return fn() if fn is not None else None
             except PinError:
                 self.lock()
+                if self.on_pin_error is not None:
+                    await self.on_pin_error()
                 raise
             except (CardLost, AppletException):
                 title = "Hold the smartcard to the reader again"
