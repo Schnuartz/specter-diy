@@ -140,6 +140,8 @@ def _inflate(data):
 
             stream = zlib.decompressobj(-15)
             out = stream.decompress(bytes(data), MAX_PLAINTEXT + 1)
+            if not stream.eof or stream.unconsumed_tail or stream.unused_data:
+                raise ValueError("Incomplete or trailing deflate data")
         else:
             with deflate.DeflateIO(io.BytesIO(data), deflate.RAW, 10) as stream:
                 out = stream.read(MAX_PLAINTEXT + 1)

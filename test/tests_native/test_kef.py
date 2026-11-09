@@ -130,6 +130,15 @@ class KEFTest(unittest.TestCase):
         with self.assertRaises(kef.KEFAuthError):
             kef._unpad_and_authenticate(6, b"", b"", authenticated + b"\x00\x02", b"")
 
+    def test_deflate_rejects_truncated_or_trailing_data(self):
+        import zlib
+        compressor = zlib.compressobj(wbits=-15)
+        compressed = compressor.compress(b"payload" * 20) + compressor.flush()
+        self.assertEqual(kef._inflate(compressed), b"payload" * 20)
+        for bad in (compressed[:-1], compressed + b"junk"):
+            with self.assertRaises(kef.KEFAuthError):
+                kef._inflate(bad)
+
     def test_iteration_bounds(self):
         head = b"\x07test ID\x14"
         body = bytes(12 + 16 + 4)
