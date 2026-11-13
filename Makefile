@@ -91,6 +91,7 @@ frozen-import-smoke: unix
 
 test: unix frozen-import-smoke
 	cd test && ../$(TARGET_DIR)/micropython_unix run_tests.py
+	$(TARGET_DIR)/micropython_unix f469-disco/tests/run_qrcode_tests.py
 
 all: mpy-cross disco unix
 
