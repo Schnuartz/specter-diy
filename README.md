@@ -68,6 +68,8 @@ make test
 
 The build system will fetch the necessary submodules and compile the simulator
 before executing the tests.
+It also synchronizes initialized submodule URLs from `.gitmodules` before
+building, so existing checkouts pick up repository URL changes automatically.
 
 ## USB communication on Linux
 
