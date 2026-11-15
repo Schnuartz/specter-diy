@@ -19,8 +19,13 @@ GIT_INFO ?= src/git_info.py
 $(TARGET_DIR):
 	mkdir -p $(TARGET_DIR)
 
+# Keep initialized checkouts aligned with .gitmodules when a submodule URL changes.
+sync-submodules:
+	git submodule sync --recursive
+	git submodule update --init --recursive
+
 # check submodules
-$(MPY_DIR)/mpy-cross/Makefile:
+$(MPY_DIR)/mpy-cross/Makefile: | sync-submodules
 	git submodule update --init --recursive
 
 $(EMBIT_INIT): | $(MPY_DIR)/mpy-cross/Makefile
@@ -106,4 +111,4 @@ clean:
 		USER_C_MODULES=$(USER_C_MODULES) \
 		FROZEN_MANIFEST=$(FROZEN_MANIFEST_DISCO) clean
 
-.PHONY: all clean git-info frozen-import-smoke
+.PHONY: all clean git-info frozen-import-smoke sync-submodules
