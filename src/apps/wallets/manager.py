@@ -34,6 +34,12 @@ LIST_WALLETS = 0x06
 BASE64_STREAM = 0x64
 RAW_STREAM = 0xFF
 ADDRESS_URI_SCHEMES = ("bitcoin", "liquidnetwork", "liquidtestnet", "liquid")
+URI_NETWORKS = {
+    "bitcoin": ("main", "test", "signet", "regtest"),
+    "liquidnetwork": ("liquidv1",),
+    "liquidtestnet": ("liquidtestnet",),
+    "liquid": ("liquidv1", "liquidtestnet", "elementsregtest"),
+}
 
 
 def address_uri_scheme(payload):
@@ -291,6 +297,7 @@ class WalletManager(BaseApp):
         elif cmd == VERIFY_ADDRESS:
             raw = stream.read().decode().strip()
             uri_scheme = address_uri_scheme(raw)
+            self.validate_uri_network(uri_scheme)
             if uri_scheme is not None:
                 raw = raw.split(":", 1)[1]
             addr_part = raw
@@ -519,6 +526,13 @@ class WalletManager(BaseApp):
         if lower_addr.startswith("bcrt1"):
             return "regtest", "Bitcoin Regtest"
         return None
+
+    def validate_uri_network(self, scheme):
+        """Reject an address URI whose scheme conflicts with the active network."""
+        if scheme is not None and self.network not in URI_NETWORKS[scheme]:
+            raise WalletError(
+                "QR payment scheme does not match the selected network."
+            )
 
     async def sign_psbt(self, stream, show_screen, encoding=BASE64_STREAM):
         if encoding == BASE64_STREAM:
