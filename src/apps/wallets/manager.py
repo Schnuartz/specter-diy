@@ -864,66 +864,51 @@ class WalletManager(BaseApp):
                     hints.add(coin_type)
         return hints
 
-    def add_psbt_network_info(self, meta, coin_types):
-        """Show the network family indicated by verified Bitcoin key origins."""
-        networks = {
-            "main": ("Bitcoin Mainnet", "main"),
-            "test": ("Bitcoin Testnet", "test"),
-            "signet": ("Bitcoin Signet", "test"),
-            "regtest": ("Bitcoin Regtest", "test"),
-        }
-        selected, selected_family = networks.get(self.network, (self.network, None))
+    def get_psbt_network_info(self, coin_types):
+        """Return the network hint and warning for verified Bitcoin key origins."""
+        selected = {
+            "main": "Bitcoin Mainnet",
+            "test": "Bitcoin Testnet",
+            "signet": "Bitcoin Signet",
+            "regtest": "Bitcoin Regtest",
+        }.get(self.network, self.network)
 
-        if len(coin_types) == 1:
-            coin_type = next(iter(coin_types))
-            hinted_type, hinted_family = {
-                0: ("Bitcoin Mainnet (verified key origins)", "main"),
-                1: (
-                    "Bitcoin test network family (Testnet/Signet/Regtest)",
-                    "test",
-                ),
-            }[coin_type]
+        if coin_types == {0}:
+            hinted_type = "Bitcoin Mainnet (verified key origins)"
+            warning = None
+            if self.network != "main":
+                warning = (
+                    "PSBT key origins indicate Bitcoin Mainnet, but the device is "
+                    "set to %s. Switch the device network and scan again." % selected
+                )
+        elif coin_types == {1}:
+            hinted_type = (
+                "Bitcoin test network family (Testnet/Signet/Regtest; "
+                "key paths do not distinguish them)"
+            )
+            warning = None
+            if self.network == "main":
+                warning = (
+                    "PSBT key origins indicate a Bitcoin test network family, but "
+                    "the device is set to Bitcoin Mainnet. Switch the device "
+                    "network and scan again."
+                )
         elif coin_types:
             hinted_type = "Conflicting Bitcoin Mainnet and test network key origins"
-            hinted_family = None
-        else:
-            hinted_type = "Unknown (no verified standard key origins)"
-            hinted_family = None
-
-        meta["network_info"] = (
-            "PSBT network hint: %s\nSelected device network: %s"
-            % (hinted_type, selected)
-        )
-        if coin_types == {1}:
-            meta["network_info"] += (
-                "\nKey origins cannot distinguish Testnet, Signet, and Regtest."
-            )
-
-        warning = None
-        if len(coin_types) > 1:
             warning = (
                 "Verified key origins indicate conflicting Bitcoin network types. "
                 "Review the transaction and selected network before signing."
             )
-        elif (
-            hinted_family is not None
-            and selected_family is not None
-            and hinted_family != selected_family
-        ):
-            expected = (
-                "Bitcoin Mainnet" if hinted_family == "main"
-                else "a Bitcoin test network (Testnet/Signet/Regtest)"
-            )
-            warning = (
-                "PSBT key origins indicate %s, but the device is set to %s. "
-                "Switch the device network and scan again."
-                % (expected, selected)
-            )
+        else:
+            hinted_type = "Unknown (no verified standard key origins)"
+            warning = None
 
-        if warning:
-            warnings = meta.setdefault("warnings", [])
-            if warning not in warnings:
-                warnings.append(warning)
+        network_info = (
+            "PSBT network hint: %s\nSelected device network: %s"
+            % (hinted_type, selected)
+        )
+
+        return network_info, warning
 
     def check_signed_inputs(self, psbtv):
         """Goes through all input scopes and checks if they are already signed"""
@@ -1080,11 +1065,13 @@ class WalletManager(BaseApp):
 
             out.write_to(fout, version=psbtv.version)
         meta["fee"] = fee
-        self.add_warnings(wallets, meta)
-        self.add_psbt_network_info(meta, network_coin_types)
+        meta["network_info"], network_warning = self.get_psbt_network_info(
+            network_coin_types
+        )
+        self.add_warnings(wallets, meta, network_warning)
         return wallets, meta
 
-    def add_warnings(self, wallets, meta):
+    def add_warnings(self, wallets, meta, additional_warning=None):
         """
         Populates meta["warnings"] for the transaction confirmation screen.
         Warns if the transaction spends inputs from multiple different
@@ -1100,10 +1087,11 @@ class WalletManager(BaseApp):
             # cannot prove that those inputs share the same wallet policy.
             warning = "Multiple unknown inputs may be from different wallets!"
 
-        if warning:
+        if warning or additional_warning:
             warnings = meta.setdefault("warnings", [])
-            if warning not in warnings:
-                warnings.append(warning)
+            for warning in (warning, additional_warning):
+                if warning and warning not in warnings:
+                    warnings.append(warning)
 
     def sign_psbtview(self, psbtv, out_stream, wallets, sighash):
         for w in wallets:
