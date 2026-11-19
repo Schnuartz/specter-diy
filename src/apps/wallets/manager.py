@@ -834,35 +834,43 @@ class WalletManager(BaseApp):
     def get_verified_bitcoin_network_hints(self, scope):
         """Return Bitcoin coin types from key origins verified against this device."""
         hints = set()
-        fingerprint = self.keystore.fingerprint
-        for is_taproot, derivations in (
-            (False, getattr(scope, "bip32_derivations", {})),
-            (True, getattr(scope, "taproot_bip32_derivations", {})),
-        ):
-            for pubkey, value in derivations.items():
-                origin = value[1] if is_taproot else value
-                # A zero fingerprint is accepted only if the derived public
-                # key below proves that the origin belongs to this device.
-                if origin.fingerprint not in (fingerprint, b"\x00\x00\x00\x00"):
-                    continue
-                path = origin.derivation
-                if len(path) < 2 or path[0] < 0x80000000 or path[1] < 0x80000000:
-                    continue
-                purpose = path[0] - 0x80000000
-                coin_type = path[1] - 0x80000000
-                if purpose not in (44, 48, 49, 84, 86) or coin_type not in (0, 1):
-                    continue
-                try:
-                    derived_key = self.keystore.get_xpub(path).key
-                    matches = (
-                        derived_key.xonly() == pubkey.xonly()
-                        if is_taproot else derived_key == pubkey
-                    )
-                except Exception:
-                    continue
-                if matches:
-                    hints.add(coin_type)
+        for pubkey, origin in getattr(scope, "bip32_derivations", {}).items():
+            coin_type = self.get_verified_bitcoin_coin_type(pubkey, origin)
+            if coin_type is not None:
+                hints.add(coin_type)
+        for pubkey, (_, origin) in getattr(
+            scope, "taproot_bip32_derivations", {}
+        ).items():
+            coin_type = self.get_verified_bitcoin_coin_type(
+                pubkey, origin, taproot=True
+            )
+            if coin_type is not None:
+                hints.add(coin_type)
         return hints
+
+    def get_verified_bitcoin_coin_type(self, pubkey, origin, taproot=False):
+        """Return a standard Bitcoin coin type if this origin derives ``pubkey``."""
+        fingerprint = self.keystore.fingerprint
+        # A zero fingerprint is accepted only if the derived public key below
+        # proves that the origin belongs to this device.
+        if origin.fingerprint not in (fingerprint, b"\x00\x00\x00\x00"):
+            return None
+        path = origin.derivation
+        if len(path) < 2 or path[0] < 0x80000000 or path[1] < 0x80000000:
+            return None
+        purpose = path[0] - 0x80000000
+        coin_type = path[1] - 0x80000000
+        if purpose not in (44, 48, 49, 84, 86) or coin_type not in (0, 1):
+            return None
+        try:
+            derived_key = self.keystore.get_xpub(path).key
+            matches = (
+                derived_key.xonly() == pubkey.xonly()
+                if taproot else derived_key == pubkey
+            )
+        except Exception:
+            return None
+        return coin_type if matches else None
 
     def get_psbt_network_info(self, coin_types):
         """Return the network hint and warning for verified Bitcoin key origins."""
