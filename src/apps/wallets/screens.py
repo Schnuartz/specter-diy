@@ -3,16 +3,18 @@ from gui.common import add_label, add_button, HOR_RES, format_addr
 from gui.decorators import on_release
 from gui.screens import QRAlert, Prompt, Alert
 from .commands import DELETE, EDIT, MENU
-from .address_uri import NETWORK_URI_SCHEMES
 
 
 class WalletScreen(QRAlert):
     @staticmethod
     def address_qr_payload(network, addr):
+        if network == "liquidv1":
+            return "liquidnetwork:" + addr
+        if network == "liquidtestnet":
+            return "liquidtestnet:" + addr
         if network == "elementsregtest":
             return addr
-        scheme = NETWORK_URI_SCHEMES.get(network, "bitcoin")
-        return scheme + ":" + addr
+        return "bitcoin:" + addr
 
     def __init__(self, wallet, network, idx=None, branch_index=0):
         self.wallet = wallet

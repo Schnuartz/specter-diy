@@ -12,7 +12,6 @@ from embit.networks import NETWORKS
 from embit.transaction import SIGHASH
 from .wallet import WalletError, Wallet
 from .commands import DELETE, EDIT
-from .address_uri import ADDRESS_URI_NETWORKS, NETWORK_NAMES, address_uri_scheme
 from io import BytesIO
 from bcur import bcur_decode_stream
 from helpers import a2b_base64_stream, b2a_base64_stream
@@ -34,6 +33,23 @@ LIST_WALLETS = 0x06
 
 BASE64_STREAM = 0x64
 RAW_STREAM = 0xFF
+ADDRESS_URI_SCHEMES = ("bitcoin", "liquidnetwork", "liquidtestnet", "liquid")
+
+
+def address_uri_scheme(payload):
+    """Return a supported URI scheme from a QR payload, if present."""
+    separator = b":" if isinstance(payload, bytes) else ":"
+    prefix = payload.split(separator, 1)[0]
+    try:
+        scheme = (
+            prefix.decode("ascii").lower()
+            if isinstance(prefix, bytes)
+            else prefix.lower()
+        )
+    except UnicodeDecodeError:
+        return None
+    return scheme if scheme in ADDRESS_URI_SCHEMES else None
+
 
 SIGHASH_NAMES = {
     SIGHASH.ALL: "ALL",
@@ -276,14 +292,6 @@ class WalletManager(BaseApp):
             raw = stream.read().decode().strip()
             uri_scheme = address_uri_scheme(raw)
             if uri_scheme is not None:
-                expected_network = ADDRESS_URI_NETWORKS[uri_scheme]
-                if expected_network is not None and self.network != expected_network:
-                    expected_name = NETWORK_NAMES[expected_network]
-                    raise WalletError(
-                        "This is a %s address.\n\n"
-                        "Switch the device network to %s and scan again."
-                        % (expected_name, expected_name)
-                    )
                 raw = raw.split(":", 1)[1]
             addr_part = raw
             query = ""
