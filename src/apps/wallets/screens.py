@@ -3,9 +3,17 @@ from gui.common import add_label, add_button, HOR_RES, format_addr
 from gui.decorators import on_release
 from gui.screens import QRAlert, Prompt, Alert
 from .commands import DELETE, EDIT, MENU
+from .address_uri import NETWORK_URI_SCHEMES
 
 
 class WalletScreen(QRAlert):
+    @staticmethod
+    def address_qr_payload(network, addr):
+        if network == "elementsregtest":
+            return addr
+        scheme = NETWORK_URI_SCHEMES.get(network, "bitcoin")
+        return scheme + ":" + addr
+
     def __init__(self, wallet, network, idx=None, branch_index=0):
         self.wallet = wallet
         self.network = network
@@ -18,7 +26,7 @@ class WalletScreen(QRAlert):
         super().__init__(
             "    " + wallet.name + "  #708092 " + lv.SYMBOL.EDIT,
             format_addr(addr, words=4),
-            "bitcoin:" + addr,
+            self.address_qr_payload(network, addr),
             qr_width=350,
         )
         self.title.set_recolor(True)
@@ -108,7 +116,7 @@ class WalletScreen(QRAlert):
         note = "%s address #%d" % (self.prefix, self.idx)
         self.note.set_text(note)
         self.message.set_text(format_addr(addr, words=4))
-        self.qr.set_text("bitcoin:" + addr)
+        self.qr.set_text(self.address_qr_payload(self.network, addr))
 
         if self.idx > gap:
             self.warning.set_text(

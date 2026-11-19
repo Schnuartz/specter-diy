@@ -12,6 +12,7 @@ from embit.networks import NETWORKS
 from embit.transaction import SIGHASH
 from .wallet import WalletError, Wallet
 from .commands import DELETE, EDIT
+from .address_uri import ADDRESS_URI_NETWORKS, NETWORK_NAMES, address_uri_scheme
 from io import BytesIO
 from bcur import bcur_decode_stream
 from helpers import a2b_base64_stream, b2a_base64_stream
@@ -194,15 +195,9 @@ class WalletManager(BaseApp):
             stream.seek(0)
             return ADD_WALLET, stream
         # probably verifying address
-        if (data.startswith(b"bitcoin:") or data.startswith(b"BITCOIN:") or
-                data.startswith(b"liquid:") or data.startswith(b"LIQUID:") or
-                b"index=" in data):
-            if data.startswith(b"bitcoin:") or data.startswith(b"BITCOIN:"):
-                stream.seek(8)
-            elif data.startswith(b"liquid:") or data.startswith(b"LIQUID:"):
-                stream.seek(7)
-            else:
-                stream.seek(0)
+        uri_scheme = address_uri_scheme(data)
+        if uri_scheme is not None or b"index=" in data:
+            stream.seek(0)
             return VERIFY_ADDRESS, stream
         # probably raw bitcoin address (base58 or bech32)
         try:
@@ -279,9 +274,16 @@ class WalletManager(BaseApp):
             return bool(confirm)
         elif cmd == VERIFY_ADDRESS:
             raw = stream.read().decode().strip()
-            # Liquid wallets use the same URI shape but with a liquid: scheme.
-            if (raw.lower().startswith("bitcoin:") or
-                    raw.lower().startswith("liquid:")):
+            uri_scheme = address_uri_scheme(raw)
+            if uri_scheme is not None:
+                expected_network = ADDRESS_URI_NETWORKS[uri_scheme]
+                if expected_network is not None and self.network != expected_network:
+                    expected_name = NETWORK_NAMES[expected_network]
+                    raise WalletError(
+                        "This is a %s address.\n\n"
+                        "Switch the device network to %s and scan again."
+                        % (expected_name, expected_name)
+                    )
                 raw = raw.split(":", 1)[1]
             addr_part = raw
             query = ""

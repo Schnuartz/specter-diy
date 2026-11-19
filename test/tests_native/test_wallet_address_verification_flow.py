@@ -13,7 +13,9 @@ import gc
 
 import apps.wallets.manager as wallet_manager_module
 import apps.wallets.liquid.manager as liquid_manager_module
+from apps.wallets.screens import WalletScreen
 from embit.liquid.addresses import to_unconfidential
+from apps.wallets.wallet import WalletError
 from tests.util import clear_testdir, get_keystore, get_wallets_app
 
 
@@ -62,8 +64,10 @@ class WalletAddressVerificationFlowTest(TestCase):
     def test_bitcoin_qr_selects_wallet_and_verifies_derived_address(self):
         app = get_wallets_app(self.keystore, "regtest")
         address, _ = app.manager.wallets[0].get_address(0, app.manager.network)
+        qr_payload = WalletScreen.address_qr_payload(app.manager.network, address)
 
-        result, shown_screens = self._process_qr(app, "bitcoin:" + address)
+        self.assertEqual(qr_payload, "bitcoin:" + address)
+        result, shown_screens = self._process_qr(app, qr_payload)
 
         self.assertTrue(result)
         self.assertEqual(len(shown_screens), 2)
@@ -74,6 +78,10 @@ class WalletAddressVerificationFlowTest(TestCase):
             5, app.manager.network
         )
         unconfidential_address = to_unconfidential(confidential_address)
+        qr_payload = WalletScreen.address_qr_payload(
+            app.manager.network, unconfidential_address
+        )
+        self.assertEqual(qr_payload, "liquidnetwork:" + unconfidential_address)
 
         original_to_unconfidential = liquid_manager_module.to_unconfidential
         with patch.object(
@@ -82,7 +90,7 @@ class WalletAddressVerificationFlowTest(TestCase):
             wraps=original_to_unconfidential,
         ) as decode_address:
             result, shown_screens = self._process_qr(
-                app, "liquid:" + unconfidential_address
+                app, qr_payload
             )
 
         self.assertTrue(result)
@@ -107,3 +115,45 @@ class WalletAddressVerificationFlowTest(TestCase):
 
         self.assertTrue(result)
         self.assertEqual(len(shown_screens), 2)
+
+    def test_liquid_testnet_qr_roundtrips_with_network_uri_scheme(self):
+        app = get_wallets_app(self.keystore, "liquidtestnet")
+        address, _ = app.manager.wallets[0].get_address(0, app.manager.network)
+        qr_payload = WalletScreen.address_qr_payload(app.manager.network, address)
+
+        self.assertEqual(qr_payload, "liquidtestnet:" + address)
+        result, shown_screens = self._process_qr(app, qr_payload)
+
+        self.assertTrue(result)
+        self.assertEqual(len(shown_screens), 2)
+
+    def test_liquid_regtest_qr_roundtrips_as_raw_address(self):
+        app = get_wallets_app(self.keystore, "elementsregtest")
+        address, _ = app.manager.wallets[0].get_address(0, app.manager.network)
+        qr_payload = WalletScreen.address_qr_payload(app.manager.network, address)
+
+        self.assertEqual(qr_payload, address)
+        result, shown_screens = self._process_qr(app, qr_payload)
+
+        self.assertTrue(result)
+        self.assertEqual(len(shown_screens), 2)
+
+    def test_liquid_uri_scheme_enforces_its_network(self):
+        app = get_wallets_app(self.keystore, "liquidv1")
+        address, _ = app.manager.wallets[0].get_address(0, app.manager.network)
+        shown_screens = []
+
+        async def show_screen(screen):
+            shown_screens.append(screen)
+            return app.manager.wallets[0]
+
+        with patch.object(wallet_manager_module, "Menu", _DummyMenu):
+            with self.assertRaises(WalletError):
+                asyncio.run(
+                    app.process_host_command(
+                        BytesIO(("liquidtestnet:" + address).encode()),
+                        show_screen,
+                    )
+                )
+
+        self.assertEqual(shown_screens, [])

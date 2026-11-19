@@ -79,8 +79,8 @@ class WalletManagerParsingTest(TestCase):
     def test_docs_address_request_is_detected(self):
         cmd, stream = self._parse_command(DOC_ADDRESS_REQUEST.encode())
         self.assertEqual(cmd, VERIFY_ADDRESS)
-        # parse_stream should keep address data available for processing
-        self.assertEqual(stream.read().decode(), DOC_ADDRESS_REQUEST.replace("bitcoin:", "", 1))
+        # Keep the URI scheme intact until address/network verification.
+        self.assertEqual(stream.read().decode(), DOC_ADDRESS_REQUEST)
 
     def test_regtest_legacy_address_hint_includes_regtest(self):
         public_key = ec.PrivateKey(b"\x00" * 31 + b"\x01").get_public_key()
