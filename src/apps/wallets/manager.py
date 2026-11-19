@@ -43,9 +43,11 @@ URI_NETWORKS = {
 
 
 def address_uri_scheme(payload):
-    """Return a supported URI scheme from a QR payload, if present."""
+    """Return a supported URI scheme only when the payload contains a colon."""
     separator = b":" if isinstance(payload, bytes) else ":"
-    prefix = payload.split(separator, 1)[0]
+    prefix, found_separator, _ = payload.partition(separator)
+    if not found_separator:
+        return None
     try:
         scheme = (
             prefix.decode("ascii").lower()

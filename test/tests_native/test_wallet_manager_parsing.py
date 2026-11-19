@@ -13,7 +13,13 @@ import gc
 from embit import ec, script
 from embit.networks import NETWORKS
 from tests.util import get_keystore, get_wallets_app, clear_testdir
-from apps.wallets.manager import ADD_WALLET, SIGN_PSBT, VERIFY_ADDRESS
+from apps.wallets.manager import (
+    ADDRESS_URI_SCHEMES,
+    ADD_WALLET,
+    SIGN_PSBT,
+    VERIFY_ADDRESS,
+    address_uri_scheme,
+)
 from apps.wallets.wallet import WalletError
 
 DOC_DESCRIPTOR = (
@@ -81,6 +87,12 @@ class WalletManagerParsingTest(TestCase):
         self.assertEqual(cmd, VERIFY_ADDRESS)
         # Keep the URI scheme intact until address/network verification.
         self.assertEqual(stream.read().decode(), DOC_ADDRESS_REQUEST)
+
+    def test_address_uri_scheme_requires_colon(self):
+        for scheme in ADDRESS_URI_SCHEMES:
+            with self.subTest(scheme=scheme):
+                self.assertIsNone(address_uri_scheme(scheme))
+                self.assertIsNone(address_uri_scheme(scheme.encode()))
 
     def test_regtest_legacy_address_hint_includes_regtest(self):
         public_key = ec.PrivateKey(b"\x00" * 31 + b"\x01").get_public_key()
