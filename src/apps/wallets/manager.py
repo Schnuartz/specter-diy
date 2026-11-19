@@ -6,6 +6,7 @@ import platform
 import os
 from binascii import hexlify, unhexlify, a2b_base64
 from embit import script, bip32, compact
+from embit.finalizer import parse_multisig
 from embit.psbt import DerivationPath, CompressMode
 from embit.psbtview import PSBTView, read_write, PSBTError
 from embit.networks import NETWORKS
@@ -73,6 +74,8 @@ class WalletManager(BaseApp):
     # supported networks
     Networks = NETWORKS
     DEFAULT_SIGHASH = SIGHASH.ALL
+    MAX_NETWORK_HINT_DERIVATIONS = 32
+    MAX_NETWORK_HINT_PATH_LENGTH = 10
 
     def __init__(self, path):
         self.root_path = path
@@ -823,56 +826,157 @@ class WalletManager(BaseApp):
                         return w, (idx, branch_idx)
         raise WalletError("Can't find wallet owning address %s" % addr)
 
-    def fill_zero_fingerprint(self, scope):
-        """Blue Wallet hack - zeroes in fingerprint should be checked and replaced by our fingerprint"""
-        for pub in scope.bip32_derivations:
-            if scope.bip32_derivations[pub].fingerprint == b"\x00\x00\x00\x00":
-                # check if pubkey matches
-                if self.keystore.get_xpub(scope.bip32_derivations[pub].derivation).key == pub:
-                    scope.bip32_derivations[pub].fingerprint = self.keystore.fingerprint
+    def fill_zero_fingerprint(self, scope, derivation_cache=None):
+        """Replace zero fingerprints after verifying the derived public key."""
+        if derivation_cache is None:
+            for pubkey, origin in scope.bip32_derivations.items():
+                if origin.fingerprint == b"\x00\x00\x00\x00":
+                    if self.keystore.get_xpub(origin.derivation).key == pubkey:
+                        origin.fingerprint = self.keystore.fingerprint
+            return False
 
-    def get_verified_bitcoin_network_hints(self, scope):
-        """Return Bitcoin coin types from key origins verified against this device."""
+        limit_reached = False
+        for pubkey, origin in getattr(scope, "bip32_derivations", {}).items():
+            if origin.fingerprint != b"\x00\x00\x00\x00":
+                continue
+            path = origin.derivation
+            if len(path) > self.MAX_NETWORK_HINT_PATH_LENGTH:
+                limit_reached = True
+                continue
+            path_key = tuple(path)
+            if path_key not in derivation_cache:
+                if len(derivation_cache) >= self.MAX_NETWORK_HINT_DERIVATIONS:
+                    limit_reached = True
+                    continue
+                try:
+                    derivation_cache[path_key] = self.keystore.get_xpub(path).key
+                except Exception:
+                    derivation_cache[path_key] = None
+            if derivation_cache[path_key] == pubkey:
+                origin.fingerprint = self.keystore.fingerprint
+        return limit_reached
+
+    def get_verified_bitcoin_network_hints(self, scope, derivation_cache):
+        """Return network hints from origins tied to this input's UTXO script."""
         hints = set()
         for pubkey, origin in getattr(scope, "bip32_derivations", {}).items():
-            coin_type = self.get_verified_bitcoin_coin_type(pubkey, origin)
+            coin_type, limited = self.get_verified_bitcoin_coin_type(
+                scope, pubkey, origin, derivation_cache
+            )
             if coin_type is not None:
                 hints.add(coin_type)
+            if limited:
+                return hints, True
         for pubkey, (_, origin) in getattr(
             scope, "taproot_bip32_derivations", {}
         ).items():
-            coin_type = self.get_verified_bitcoin_coin_type(
-                pubkey, origin, taproot=True
+            coin_type, limited = self.get_verified_bitcoin_coin_type(
+                scope, pubkey, origin, derivation_cache, taproot=True
             )
             if coin_type is not None:
                 hints.add(coin_type)
-        return hints
+            if limited:
+                return hints, True
+        return hints, False
 
-    def get_verified_bitcoin_coin_type(self, pubkey, origin, taproot=False):
-        """Return a standard Bitcoin coin type if this origin derives ``pubkey``."""
+    def get_verified_bitcoin_coin_type(
+        self, scope, pubkey, origin, derivation_cache, taproot=False
+    ):
+        """Return a coin type only when the derived key matches this input script."""
         fingerprint = self.keystore.fingerprint
-        # A zero fingerprint is accepted only if the derived public key below
-        # proves that the origin belongs to this device.
         if origin.fingerprint not in (fingerprint, b"\x00\x00\x00\x00"):
-            return None
+            return None, False
         path = origin.derivation
         if len(path) < 2 or path[0] < 0x80000000 or path[1] < 0x80000000:
-            return None
+            return None, False
         purpose = path[0] - 0x80000000
         coin_type = path[1] - 0x80000000
         if purpose not in (44, 48, 49, 84, 86) or coin_type not in (0, 1):
-            return None
-        try:
-            derived_key = self.keystore.get_xpub(path).key
-            matches = (
-                derived_key.xonly() == pubkey.xonly()
-                if taproot else derived_key == pubkey
-            )
-        except Exception:
-            return None
-        return coin_type if matches else None
+            return None, False
+        if len(path) > self.MAX_NETWORK_HINT_PATH_LENGTH:
+            return None, True
 
-    def get_psbt_network_info(self, coin_types):
+        path_key = tuple(path)
+        if path_key not in derivation_cache:
+            if len(derivation_cache) >= self.MAX_NETWORK_HINT_DERIVATIONS:
+                return None, True
+            try:
+                derivation_cache[path_key] = self.keystore.get_xpub(path).key
+            except Exception:
+                derivation_cache[path_key] = None
+        derived_key = derivation_cache[path_key]
+        if derived_key is None:
+            return None, False
+
+        try:
+            if not self.input_script_matches_network_key(
+                scope, pubkey, derived_key, purpose, taproot
+            ):
+                return None, False
+        except Exception:
+            return None, False
+        return coin_type, False
+
+    def input_script_matches_network_key(
+        self, scope, pubkey, derived_key, purpose, taproot=False
+    ):
+        """Check that the derived key participates in the input's committed script."""
+        script_pubkey = getattr(scope, "script_pubkey", None)
+        if script_pubkey is None:
+            return False
+
+        if purpose in (44, 49, 84):
+            if taproot or derived_key != pubkey:
+                return False
+            if purpose == 44:
+                expected_script = script.p2pkh(derived_key)
+            elif purpose == 49:
+                expected_script = script.p2sh(script.p2wpkh(derived_key))
+            else:
+                expected_script = script.p2wpkh(derived_key)
+            return expected_script == script_pubkey
+        if purpose == 48:
+            if taproot or derived_key != pubkey:
+                return False
+            witness_script = getattr(scope, "witness_script", None)
+            if witness_script is None:
+                return False
+            try:
+                _, pubkeys = parse_multisig(witness_script)
+            except Exception:
+                return False
+            if derived_key not in pubkeys:
+                return False
+            witness_program = script.p2wsh(witness_script)
+            if witness_program == script_pubkey:
+                return True
+            redeem_script = getattr(scope, "redeem_script", None)
+            return (
+                redeem_script == witness_program
+                and script.p2sh(redeem_script) == script_pubkey
+            )
+        if purpose == 86:
+            if not taproot and derived_key != pubkey:
+                return False
+            merkle_root = getattr(scope, "taproot_merkle_root", None) or b""
+            if merkle_root and len(merkle_root) != 32:
+                return False
+            internal_key = getattr(scope, "taproot_internal_key", None)
+            if (
+                internal_key is not None
+                and internal_key.xonly() != derived_key.xonly()
+            ):
+                return False
+            output_key = derived_key.taproot_tweak(merkle_root)
+            if script.Script(b"\x51\x20" + output_key.xonly()) != script_pubkey:
+                return False
+            return (
+                not taproot
+                or pubkey.xonly() in (derived_key.xonly(), output_key.xonly())
+            )
+        return False
+
+    def get_psbt_network_info(self, coin_types, analysis_limited=False):
         """Return the network hint and warning for verified Bitcoin key origins."""
         selected = {
             "main": "Bitcoin Mainnet",
@@ -881,7 +985,13 @@ class WalletManager(BaseApp):
             "regtest": "Bitcoin Regtest",
         }.get(self.network, self.network)
 
-        if coin_types == {0}:
+        if analysis_limited:
+            hinted_type = "Unknown (network analysis limit reached)"
+            warning = (
+                "Could not verify a complete network hint within safe analysis "
+                "limits. Review the selected network before signing."
+            )
+        elif coin_types == {0}:
             hinted_type = "Bitcoin Mainnet (verified key origins)"
             warning = None
             if self.network != "main":
@@ -969,7 +1079,9 @@ class WalletManager(BaseApp):
         }
 
         fingerprint = self.keystore.fingerprint
+        network_derivation_cache = {}
         network_coin_types = set()
+        network_analysis_limited = False
         # We need to detect wallets owning inputs and outputs,
         # Fill all necessary information:
         # bip32 derivations, witness script, redeem script
@@ -986,8 +1098,10 @@ class WalletManager(BaseApp):
             if inp.sighash_type is not None and inp.sighash_type != self.DEFAULT_SIGHASH:
                 metainp["sighash"] = self.get_sighash_info(inp.sighash_type)["name"]
 
-            self.fill_zero_fingerprint(inp)
-            network_coin_types.update(self.get_verified_bitcoin_network_hints(inp))
+            network_analysis_limited = (
+                self.fill_zero_fingerprint(inp, network_derivation_cache)
+                or network_analysis_limited
+            )
 
             # Find wallets owning the inputs and fill scope data:
             # first we check already detected wallet owns the input
@@ -1006,6 +1120,12 @@ class WalletManager(BaseApp):
                     if w.fill_scope(inp, fingerprint):
                         wallet = w
                         break
+            if not network_analysis_limited:
+                hints, limited = self.get_verified_bitcoin_network_hints(
+                    inp, network_derivation_cache
+                )
+                network_coin_types.update(hints)
+                network_analysis_limited = limited
             if wallet:
                 gaps = [g for g in wallet.gaps] # copy
                 res = wallet.get_derivation(
@@ -1051,7 +1171,6 @@ class WalletManager(BaseApp):
             metaout = meta["outputs"][i]
 
             self.fill_zero_fingerprint(out)
-            network_coin_types.update(self.get_verified_bitcoin_network_hints(out))
 
             wallet = None
             for w in wallets:
@@ -1074,7 +1193,7 @@ class WalletManager(BaseApp):
             out.write_to(fout, version=psbtv.version)
         meta["fee"] = fee
         meta["network_info"], network_warning = self.get_psbt_network_info(
-            network_coin_types
+            network_coin_types, network_analysis_limited
         )
         self.add_warnings(wallets, meta, network_warning)
         return wallets, meta
