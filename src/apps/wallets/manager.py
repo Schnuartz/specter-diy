@@ -831,6 +831,108 @@ class WalletManager(BaseApp):
                 if self.keystore.get_xpub(scope.bip32_derivations[pub].derivation).key == pub:
                     scope.bip32_derivations[pub].fingerprint = self.keystore.fingerprint
 
+    def get_verified_bitcoin_network_hints(self, scope):
+        """Return Bitcoin coin types from key origins verified against this device."""
+        hints = set()
+        fingerprint = self.keystore.fingerprint
+
+        def add_hint(pubkey, origin, is_taproot):
+            # A zero fingerprint is accepted only if the derived public key
+            # below proves that the origin belongs to this device.
+            if origin.fingerprint not in (fingerprint, b"\x00\x00\x00\x00"):
+                return
+            path = origin.derivation
+            if len(path) < 2 or path[0] < 0x80000000 or path[1] < 0x80000000:
+                return
+            purpose = path[0] - 0x80000000
+            coin_type = path[1] - 0x80000000
+            if purpose not in (44, 48, 49, 84, 86) or coin_type not in (0, 1):
+                return
+
+            try:
+                derived_key = self.keystore.get_xpub(path).key
+                if is_taproot:
+                    key_matches = derived_key.xonly() == pubkey.xonly()
+                else:
+                    key_matches = derived_key == pubkey
+            except Exception:
+                return
+            if key_matches:
+                hints.add(coin_type)
+
+        for pubkey, origin in getattr(scope, "bip32_derivations", {}).items():
+            add_hint(pubkey, origin, False)
+        for pubkey, (_, origin) in getattr(
+            scope, "taproot_bip32_derivations", {}
+        ).items():
+            add_hint(pubkey, origin, True)
+        return hints
+
+    def add_psbt_network_info(self, meta, coin_types):
+        """Show the network family indicated by verified Bitcoin key origins."""
+        selected_networks = {
+            "main": "Bitcoin Mainnet",
+            "test": "Bitcoin Testnet",
+            "signet": "Bitcoin Signet",
+            "regtest": "Bitcoin Regtest",
+        }
+        selected = selected_networks.get(self.network, self.network)
+        selected_family = (
+            "main" if self.network == "main"
+            else "test" if self.network in ("test", "signet", "regtest")
+            else None
+        )
+
+        if coin_types == {0}:
+            hinted_type = "Bitcoin Mainnet (verified key origins)"
+            hinted_family = "main"
+        elif coin_types == {1}:
+            hinted_type = (
+                "Bitcoin test network family (Testnet/Signet/Regtest)"
+            )
+            hinted_family = "test"
+        elif coin_types:
+            hinted_type = "Conflicting Bitcoin Mainnet and test network key origins"
+            hinted_family = None
+        else:
+            hinted_type = "Unknown (no verified standard key origins)"
+            hinted_family = None
+
+        meta["network_info"] = (
+            "PSBT network hint: %s\nSelected device network: %s"
+            % (hinted_type, selected)
+        )
+        if coin_types == {1}:
+            meta["network_info"] += (
+                "\nKey origins cannot distinguish Testnet, Signet, and Regtest."
+            )
+
+        warning = None
+        if hinted_family is None and coin_types:
+            warning = (
+                "Verified key origins indicate conflicting Bitcoin network types. "
+                "Review the transaction and selected network before signing."
+            )
+        elif (
+            hinted_family is not None
+            and selected_family is not None
+            and hinted_family != selected_family
+        ):
+            expected = (
+                "Bitcoin Mainnet" if hinted_family == "main"
+                else "a Bitcoin test network (Testnet/Signet/Regtest)"
+            )
+            warning = (
+                "PSBT key origins indicate %s, but the device is set to %s. "
+                "Switch the device network and scan again."
+                % (expected, selected)
+            )
+
+        if warning:
+            warnings = meta.setdefault("warnings", [])
+            if warning not in warnings:
+                warnings.append(warning)
+
     def check_signed_inputs(self, psbtv):
         """Goes through all input scopes and checks if they are already signed"""
         signed_inputs = 0
@@ -882,6 +984,7 @@ class WalletManager(BaseApp):
         }
 
         fingerprint = self.keystore.fingerprint
+        network_coin_types = set()
         # We need to detect wallets owning inputs and outputs,
         # Fill all necessary information:
         # bip32 derivations, witness script, redeem script
@@ -899,6 +1002,7 @@ class WalletManager(BaseApp):
                 metainp["sighash"] = self.get_sighash_info(inp.sighash_type)["name"]
 
             self.fill_zero_fingerprint(inp)
+            network_coin_types.update(self.get_verified_bitcoin_network_hints(inp))
 
             # Find wallets owning the inputs and fill scope data:
             # first we check already detected wallet owns the input
@@ -962,6 +1066,7 @@ class WalletManager(BaseApp):
             metaout = meta["outputs"][i]
 
             self.fill_zero_fingerprint(out)
+            network_coin_types.update(self.get_verified_bitcoin_network_hints(out))
 
             wallet = None
             for w in wallets:
@@ -984,6 +1089,7 @@ class WalletManager(BaseApp):
             out.write_to(fout, version=psbtv.version)
         meta["fee"] = fee
         self.add_warnings(wallets, meta)
+        self.add_psbt_network_info(meta, network_coin_types)
         return wallets, meta
 
     def add_warnings(self, wallets, meta):

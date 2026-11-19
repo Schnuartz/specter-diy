@@ -71,6 +71,16 @@ class TransactionScreen(Prompt):
             self.warning = self.add_warning(self.page, warning_text)
             obj = self.warning
 
+        network_info = meta.get("network_info")
+        if network_info:
+            network_lbl = lv.label(self.page)
+            network_lbl.set_long_mode(lv.label.LONG.BREAK)
+            network_lbl.set_width(440)
+            network_lbl.set_text(network_info)
+            network_lbl.set_style(0, style_gray)
+            network_lbl.align(obj, lv.ALIGN.OUT_BOTTOM_MID, 0, 15)
+            obj = network_lbl
+
         for out in meta["outputs"]:
             # Verified change needs no confirmation - the device proved it
             # can't be an attacker-controlled destination. It stays visible
@@ -98,10 +108,23 @@ class TransactionScreen(Prompt):
         if warning_text:
             page2_warning = self.add_warning(self.page2, warning_text)
 
+        details_header = page2_warning
+        if network_info:
+            network_lbl = lv.label(self.page2)
+            network_lbl.set_long_mode(lv.label.LONG.BREAK)
+            network_lbl.set_width(440)
+            network_lbl.set_text(network_info)
+            network_lbl.set_style(0, style_gray)
+            if details_header:
+                network_lbl.align(details_header, lv.ALIGN.OUT_BOTTOM_MID, 0, 15)
+            else:
+                network_lbl.align(self.page2, lv.ALIGN.IN_TOP_MID, 0, 30)
+            details_header = network_lbl
+
         meta_inputs_len = len(meta["inputs"])
         lbl = add_label("%d %s" % (meta_inputs_len, "INPUT" if meta_inputs_len == 1 else "INPUTS"), scr=self.page2)
-        if page2_warning:
-            lbl.align(page2_warning, lv.ALIGN.OUT_BOTTOM_MID, 0, 20)
+        if details_header:
+            lbl.align(details_header, lv.ALIGN.OUT_BOTTOM_MID, 0, 20)
         else:
             lbl.align(self.page2, lv.ALIGN.IN_TOP_MID, 0, 30)
         obj = lbl
