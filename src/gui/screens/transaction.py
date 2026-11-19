@@ -73,13 +73,7 @@ class TransactionScreen(Prompt):
 
         network_info = meta.get("network_info")
         if network_info:
-            network_lbl = lv.label(self.page)
-            network_lbl.set_long_mode(lv.label.LONG.BREAK)
-            network_lbl.set_width(440)
-            network_lbl.set_text(network_info)
-            network_lbl.set_style(0, style_gray)
-            network_lbl.align(obj, lv.ALIGN.OUT_BOTTOM_MID, 0, 15)
-            obj = network_lbl
+            obj = self.add_network_info_label(self.page, network_info, obj)
 
         for out in meta["outputs"]:
             # Verified change needs no confirmation - the device proved it
@@ -110,16 +104,9 @@ class TransactionScreen(Prompt):
 
         details_header = page2_warning
         if network_info:
-            network_lbl = lv.label(self.page2)
-            network_lbl.set_long_mode(lv.label.LONG.BREAK)
-            network_lbl.set_width(440)
-            network_lbl.set_text(network_info)
-            network_lbl.set_style(0, style_gray)
-            if details_header:
-                network_lbl.align(details_header, lv.ALIGN.OUT_BOTTOM_MID, 0, 15)
-            else:
-                network_lbl.align(self.page2, lv.ALIGN.IN_TOP_MID, 0, 30)
-            details_header = network_lbl
+            details_header = self.add_network_info_label(
+                self.page2, network_info, details_header
+            )
 
         meta_inputs_len = len(meta["inputs"])
         lbl = add_label("%d %s" % (meta_inputs_len, "INPUT" if meta_inputs_len == 1 else "INPUTS"), scr=self.page2)
@@ -261,6 +248,16 @@ class TransactionScreen(Prompt):
             ltdatelbl.align(ltlbl, lv.ALIGN.OUT_BOTTOM_LEFT, 15, 5)
 
         self.toggle_details()
+
+    def add_network_info_label(self, page, text, anchor=None):
+        label = add_label(text, scr=page)
+        label.set_align(lv.label.ALIGN.LEFT)
+        label.set_style(0, self.style_gray)
+        if anchor is not None:
+            label.align(anchor, lv.ALIGN.OUT_BOTTOM_MID, 0, 15)
+        else:
+            label.align(page, lv.ALIGN.IN_TOP_MID, 0, 30)
+        return label
 
     def add_warning(self, page, text):
         warning = add_label(text, scr=page)
