@@ -55,6 +55,8 @@
       font-size: 0.85rem; margin-bottom: 1rem; line-height: 1.45;
     }
     .banner-error { background: rgba(248,81,73,0.1);   border: 1px solid var(--error); color: var(--error); display: none; }
+    .banner-warn { background: rgba(210,153,34,0.12); border: 1px solid var(--warn); color: var(--warn); display: none; }
+    .banner-warn.visible { display: block; }
 
     .fork-alert {
       border: 2px solid var(--error); border-radius: 8px; padding: 0.5rem; margin-bottom: 1rem;
@@ -173,7 +175,7 @@
         <li><strong>Do not use it with real seeds or real funds.</strong> Testnet and throwaway keys only.</li>
         <li>Not reviewed or endorsed by the Specter-DIY maintainers, never audited, and tested on one board.</li>
         <li>Secure boot and flash encryption are not enabled: anyone with physical access to the board can read or replace what is on it.</li>
-        <li>Flashing <strong>wipes everything stored on the device</strong>. Builds are development snapshots and may misbehave.</li>
+        <li>Flashing resets and reformats the internal filesystem. This is <strong>not a secure physical erase</strong>; old flash contents may remain recoverable. Builds are development snapshots and may misbehave.</li>
         <li>No warranty and no support. Report problems to this fork, not to upstream Specter-DIY.</li>
       </ul>
       <p class="official">
@@ -189,8 +191,10 @@
     <ol class="steps">
       <li>Plug the board into its <strong>UART</strong> USB-C port with a data cable.</li>
       <li>Pick the firmware below (the latest release is selected).</li>
-      <li>Click <strong>Connect</strong>, choose the board's serial port, then <strong>Flash</strong>.</li>
-      <li>The board reboots and shows the Specter screen. If Connect fails, hold <strong>BOOT</strong>, tap <strong>RST</strong>, release <strong>BOOT</strong> and try again.</li>
+      <li>Click <strong>Connect</strong> and choose the board's UART serial port.</li>
+      <li>If the error says <code>Failed to open serial port</code>, close Kern, serial monitors and other browser tabs using the port, then retry. BOOT/RESET only helps when the chip fails to sync.</li>
+      <li>Flash only the exact board and chip revisions listed above; the page blocks unsupported ESP32-P4 revisions.</li>
+      <li>After flashing, the board resets and starts Specter.</li>
     </ol>
   </div>
 
@@ -203,7 +207,11 @@
     </div>
 
     <div id="releasePanel">
-      <div class="board">Waveshare ESP32-P4-WIFI6-Touch-LCD-4.3-C (480×800, chip revision v0.x/v1.x)</div>
+      <div class="board" id="boardInfo">Waveshare ESP32-P4-WIFI6-Touch-LCD-4.3-C (480×800; matching firmware selected from chip revision)</div>
+      <div class="banner banner-warn visible" id="variantBanner" role="alert">
+        Connect the board to detect its ESP32-P4 revision. The page selects the matching v0.x/v1.x or v3.x firmware.
+        Kern's <code>wave_4b_v3</code> is a different board; do not flash it here.
+      </div>
       <div class="release" id="releaseInfo">Loading release information…</div>
       <div class="file-list" id="releaseFileList"></div>
     </div>
@@ -225,6 +233,15 @@
 
   <div class="card">
     <div class="card-title">Flash</div>
+    <div class="banner banner-warn" id="hardwareBanner" role="alert"></div>
+    <label class="ack" for="modelBox">
+      <input type="checkbox" id="modelBox" onchange="updateFlashEnabled()">
+      <span>I verified the label on my physical board: it is the Waveshare ESP32-P4-WIFI6-Touch-LCD-4.3-C (480×800), not the 4B or another model.</span>
+    </label>
+    <label class="ack" for="wipeBox">
+      <input type="checkbox" id="wipeBox" onchange="updateFlashEnabled()">
+      <span>I understand flashing resets the internal filesystem, but does not securely erase the physical flash. I have backed up anything needed and will not use real seeds or funds.</span>
+    </label>
     <label class="ack" for="ackBox">
       <input type="checkbox" id="ackBox" onchange="updateFlashEnabled()">
       <span>I understand this is an unofficial, experimental build that has not been
@@ -242,8 +259,9 @@
   </div>
 
   <footer>
-    <a href="https://github.com/sandman21vs/specter-diy/tree/esp32-p4-port" target="_blank">Source</a> ·
-    <a href="https://github.com/sandman21vs/specter-diy/releases" target="_blank">Releases</a> ·
+    <a href="https://github.com/schnuartz-ai/specter-diy/tree/gh-pages" target="_blank" rel="noopener">Flasher source</a> ·
+    <a href="https://github.com/sandman21vs/specter-diy/tree/esp32-p4-port" target="_blank" rel="noopener">Firmware source</a> ·
+    <a href="https://github.com/sandman21vs/specter-diy/releases" target="_blank" rel="noopener">Releases</a> ·
     <a href="https://github.com/cryptoadvance/specter-diy" target="_blank">Specter-DIY</a><br>
     Based on the <a href="https://odudex.github.io/Kern/flash/" target="_blank">Kern Web Flasher</a> ·
     Powered by <a href="https://github.com/espressif/esptool-js" target="_blank">esptool-js</a>
@@ -255,11 +273,15 @@
 <script src="./vendor/jszip-3.10.1.min.js"></script>
 
 <script type="module">
-import { ESPLoader, Transport } from './vendor/esptool-js-0.6.0.js';
+import { ESPLoader, Transport } from './vendor/esptool-js-0.7.0.js';
 
-// The published firmware lives next to this page, in firmware/wave_43/, copied
-// there from the latest GitHub release by tools/publish-flasher.sh.
-const RELEASE_DIR = './firmware/wave_43';
+// Separate images are required: pre-v3 ESP32-P4 silicon and rev3 silicon use
+// different ROM/IDF configuration. The publisher stages each in its own folder.
+const RELEASE_ROOT = './firmware/wave_43';
+const FW_PROFILES = {
+  'pre-rev3': { label: 'ESP32-P4 v0.x/v1.x', dir: 'pre-rev3' },
+  'rev3':     { label: 'ESP32-P4 v3.0–v3.99 · experimental community build', dir: 'rev3' },
+};
 
 // Fallback flash layout, only used if a bundle has no flasher_args.json. It is
 // the layout of the Specter-DIY ESP32-P4 port (see the board's partitions.csv).
@@ -269,17 +291,34 @@ const FLASH_FILES_FALLBACK = [
   { name: 'specter-diy.bin',     offset: 0x10000  },
   { name: 'storage-reset.bin',   offset: 0x410000 },
 ];
+const ALLOWED_FLASH_FILES = new Map([
+  [0x2000, new Set(['bootloader.bin'])],
+  [0x8000, new Set(['partition-table.bin'])],
+  [0x10000, new Set(['specter-diy.bin', 'micropython.bin'])],
+  [0x410000, new Set(['storage-reset.bin'])],
+]);
 
-// Parse flasher_args.json's flash_files map into [{name, offset}] sorted by
-// offset. Returns null on any error so callers can fall back.
+// Parse and constrain flasher_args.json to this board's known flash layout.
+// Returns null for invalid or incomplete layouts.
 function parseFlashFiles(jsonText) {
   try {
     const args = JSON.parse(jsonText);
-    if (!args || !args.flash_files) return null;
+    if (!args || !args.flash_files || typeof args.flash_files !== 'object') return null;
     const out = [];
+    const seenOffsets = new Set();
+    const seenNames = new Set();
     for (const [addrHex, filePath] of Object.entries(args.flash_files)) {
-      out.push({ name: filePath.split('/').pop(), offset: parseInt(addrHex, 16) });
+      if (typeof filePath !== 'string' || !/^0x[0-9a-f]+$/i.test(addrHex)) return null;
+      if (filePath.includes('/') || filePath.includes('\\')) return null;
+      const offset = parseInt(addrHex, 16);
+      const allowedNames = ALLOWED_FLASH_FILES.get(offset);
+      if (!allowedNames || !allowedNames.has(filePath) || seenOffsets.has(offset) || seenNames.has(filePath)) return null;
+      seenOffsets.add(offset);
+      seenNames.add(filePath);
+      out.push({ name: filePath, offset });
     }
+    if (out.length !== ALLOWED_FLASH_FILES.size ||
+        [...ALLOWED_FLASH_FILES.keys()].some(offset => !seenOffsets.has(offset))) return null;
     out.sort((a, b) => a.offset - b.offset);
     return out.length ? out : null;
   } catch { return null; }
@@ -289,18 +328,36 @@ function parseFlashFiles(jsonText) {
 const FLASH_MODE = 'dio';
 const FLASH_FREQ = '40m';
 const FLASH_SIZE = '16MB';
-const BAUD       = 460800;
+const BAUD       = 115200;
+const USB_UART_VENDOR_ID = 0x1a86; // WCH bridge reported by the Waveshare 4.3-C UART port.
 
 let currentMode = 'release';
 let transport   = null;
 let esploader   = null;
 let customFiles = null; // [{name, offset, data:Uint8Array}]
 let chipRev     = null; // major * 100 + minor, read on connect
+let activeProfile = 'pre-rev3';
+const loadedProfiles = Object.create(null);
+const profileLoads = Object.create(null);
 
-// Flashing needs a connected device and the experimental-build acknowledgement.
+function profileForRevision(rev) {
+  if (rev === null) return null;
+  if (rev >= 0 && rev <= 199) return 'pre-rev3';
+  if (rev >= 300 && rev <= 399) return 'rev3';
+  return null;
+}
+
+// The board model cannot be identified reliably from the serial connection.
 function updateFlashEnabled() {
+  const profile = profileForRevision(chipRev);
+  const firmwareReady = currentMode === 'custom'
+    ? !!(customFiles && customFiles.length)
+    : !!(profile && loadedProfiles[profile] && loadedProfiles[profile].files.length);
   document.getElementById('flashBtn').disabled =
-    !esploader || !document.getElementById('ackBox').checked;
+    !esploader || !profile || !firmwareReady ||
+    !document.getElementById('modelBox').checked ||
+    !document.getElementById('wipeBox').checked ||
+    !document.getElementById('ackBox').checked;
 }
 window.updateFlashEnabled = updateFlashEnabled;
 
@@ -330,12 +387,24 @@ function clearProgress() {
 }
 
 function fileItem(name, offset, bytes) {
-  const size = bytes === undefined ? '' :
-    `<span class="size">${(bytes / 1024).toFixed(1)} KB</span>`;
-  return `<div class="file-item">
-            <span class="name">${name}</span>
-            <span><span class="addr">@ 0x${offset.toString(16).padStart(5, '0')}</span>${size}</span>
-          </div>`;
+  const row = document.createElement('div');
+  row.className = 'file-item';
+  const fileName = document.createElement('span');
+  fileName.className = 'name';
+  fileName.textContent = name;
+  const details = document.createElement('span');
+  const address = document.createElement('span');
+  address.className = 'addr';
+  address.textContent = '@ 0x' + offset.toString(16).padStart(5, '0');
+  details.appendChild(address);
+  if (bytes !== undefined) {
+    const size = document.createElement('span');
+    size.className = 'size';
+    size.textContent = (bytes / 1024).toFixed(1) + ' KB';
+    details.appendChild(size);
+  }
+  row.append(fileName, details);
+  return row;
 }
 
 window.setMode = function (m) {
@@ -344,6 +413,7 @@ window.setMode = function (m) {
   document.getElementById('tabCustom').classList.toggle('active', m === 'custom');
   document.getElementById('releasePanel').style.display = m === 'release' ? '' : 'none';
   document.getElementById('customPanel').style.display  = m === 'custom'  ? '' : 'none';
+  updateFlashEnabled();
 };
 
 function fmtRev(rev) {
@@ -353,7 +423,11 @@ function fmtRev(rev) {
 // Bootloader and app images carry the supported range in their header:
 // min_chip_rev_full at bytes 15-16, max_chip_rev_full at 17-18.
 function checkChipRev(name, data) {
-  if (chipRev === null || data.length < 24 || data[0] !== 0xE9) return;
+  if (!['bootloader.bin', 'specter-diy.bin', 'micropython.bin'].includes(name)) return;
+  if (data.length < 24 || data[0] !== 0xE9) {
+    throw new Error(`${name} is not a valid ESP image.`);
+  }
+  if (chipRev === null) throw new Error('Could not confirm the ESP32-P4 chip revision.');
   const min = data[15] | (data[16] << 8);
   const max = data[17] | (data[18] << 8);
   if (chipRev < min || (max !== 0xFFFF && chipRev > max)) {
@@ -362,28 +436,120 @@ function checkChipRev(name, data) {
   }
 }
 
-// ── Published release ────────────────────────────────────────────────────────
-let releaseFiles = null;
-
-async function loadRelease() {
-  const info = document.getElementById('releaseInfo');
-  try {
-    const meta = await (await fetch(`${RELEASE_DIR}/release.json`, { cache: 'no-cache' })).json();
-    info.innerHTML = `Release <a href="${meta.url}" target="_blank">${meta.tag}</a>` +
-      (meta.published ? ` · ${meta.published.slice(0, 10)}` : '') +
-      ` · <a href="${RELEASE_DIR}/${meta.zip}" download>download zip</a>`;
-  } catch {
-    info.textContent = 'No published release found.';
+// ── Published firmware profiles ───────────────────────────────────────────────
+async function sha256Hex(data) {
+  if (!globalThis.crypto || !crypto.subtle) {
+    throw new Error('SHA-256 verification is unavailable in this browser. Use current Chrome or Edge over HTTPS.');
   }
-  try {
-    const r = await fetch(`${RELEASE_DIR}/flasher_args.json`, { cache: 'no-cache' });
-    releaseFiles = r.ok ? (parseFlashFiles(await r.text()) || FLASH_FILES_FALLBACK) : null;
-  } catch { releaseFiles = null; }
-  document.getElementById('releaseFileList').innerHTML = releaseFiles
-    ? releaseFiles.map(f => fileItem(f.name, f.offset)).join('')
-    : '';
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
 }
-loadRelease();
+
+function appendHttpsLink(parent, label, value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    parent.appendChild(document.createTextNode(String(label)));
+    return;
+  }
+  if (url.protocol !== 'https:' || url.hostname !== 'github.com') {
+    parent.appendChild(document.createTextNode(String(label)));
+    return;
+  }
+  const link = document.createElement('a');
+  link.href = url.href;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.textContent = String(label);
+  parent.appendChild(link);
+}
+
+function renderProfile(profile) {
+  const loaded = loadedProfiles[profile];
+  const profileInfo = document.getElementById('releaseInfo');
+  const fileList = document.getElementById('releaseFileList');
+  const banner = document.getElementById('variantBanner');
+  const title = document.getElementById('boardInfo');
+  if (!loaded) {
+    profileInfo.textContent = 'Firmware files for ' + FW_PROFILES[profile].label + ' are unavailable.';
+    fileList.replaceChildren();
+    return;
+  }
+  const { metadata: meta, files } = loaded;
+  profileInfo.replaceChildren(document.createTextNode('Firmware '));
+  appendHttpsLink(profileInfo, meta.tag, meta.url);
+  if (meta.published) profileInfo.appendChild(document.createTextNode(' · ' + String(meta.published).slice(0, 10)));
+  profileInfo.appendChild(document.createTextNode(' · SHA-256 checked before flash'));
+  if (meta.source_commit && meta.source_url) {
+    profileInfo.appendChild(document.createTextNode(' · source '));
+    appendHttpsLink(profileInfo, String(meta.source_commit).slice(0, 7), meta.source_url);
+  }
+  if (typeof meta.zip === 'string' && /^[A-Za-z0-9._-]+\.zip$/i.test(meta.zip)) {
+    profileInfo.appendChild(document.createTextNode(' · '));
+    const zipLink = document.createElement('a');
+    zipLink.href = RELEASE_ROOT + '/' + FW_PROFILES[profile].dir + '/' + encodeURIComponent(meta.zip);
+    zipLink.download = meta.zip;
+    zipLink.textContent = 'download ZIP';
+    profileInfo.appendChild(zipLink);
+  }
+  fileList.replaceChildren(...files.map(f => fileItem(f.name, f.offset)));
+  if (profile === 'rev3') {
+    title.textContent = 'Waveshare ESP32-P4-WIFI6-Touch-LCD-4.3-C (480×800; ESP32-P4 v3.x)';
+    banner.textContent = 'Selected for ESP32-P4 v3.x. This is a community build based on Sandman ' + meta.tag +
+      ', compiled for v3.x and not tested on your physical board. Do not use real seeds or funds.';
+  } else {
+    title.textContent = 'Waveshare ESP32-P4-WIFI6-Touch-LCD-4.3-C (480×800; ESP32-P4 v0.x/v1.x)';
+    banner.textContent = 'Selected for ESP32-P4 v0.x/v1.x. This is the upstream Sandman release. ' +
+      'Kern wave_4b_v3 is a different board; do not flash it here.';
+  }
+}
+
+async function loadRelease(profile) {
+  if (loadedProfiles[profile]) return loadedProfiles[profile];
+  if (profileLoads[profile]) return profileLoads[profile];
+  const dir = RELEASE_ROOT + '/' + FW_PROFILES[profile].dir;
+  profileLoads[profile] = (async () => {
+    try {
+      const [metaResponse, argsResponse] = await Promise.all([
+        fetch(dir + '/release.json', { cache: 'no-cache' }),
+        fetch(dir + '/flasher_args.json', { cache: 'no-cache' }),
+      ]);
+      if (!metaResponse.ok) throw new Error('release.json HTTP ' + metaResponse.status);
+      if (!argsResponse.ok) throw new Error('flasher_args.json HTTP ' + argsResponse.status);
+      const metadata = await metaResponse.json();
+      const files = parseFlashFiles(await argsResponse.text());
+      if (!files || !files.length) throw new Error('No flash files listed.');
+      for (const file of files) {
+        if (!metadata.sha256 || !metadata.sha256[file.name]) {
+          throw new Error('No SHA-256 checksum for ' + file.name + '.');
+        }
+      }
+      loadedProfiles[profile] = { metadata, files };
+      if (activeProfile === profile) renderProfile(profile);
+      updateFlashEnabled();
+      return loadedProfiles[profile];
+    } catch (error) {
+      if (activeProfile === profile) {
+        document.getElementById('releaseInfo').textContent = 'Firmware unavailable: ' + error.message;
+        document.getElementById('releaseFileList').replaceChildren();
+      }
+      updateFlashEnabled();
+      return null;
+    } finally {
+      delete profileLoads[profile];
+    }
+  })();
+  return profileLoads[profile];
+}
+
+async function selectProfile(profile) {
+  activeProfile = profile;
+  renderProfile(profile);
+  await loadRelease(profile);
+}
+
+loadRelease('pre-rev3');
 
 // ── Custom ZIP ───────────────────────────────────────────────────────────────
 const dropZone = document.getElementById('dropZone');
@@ -397,6 +563,9 @@ dropZone.addEventListener('drop', e => {
 });
 
 window.handleZipSelect = async function (file) {
+  customFiles = null;
+  document.getElementById('customFileList').replaceChildren();
+  updateFlashEnabled();
   if (!file || !file.name.toLowerCase().endsWith('.zip')) {
     log('Please select a .zip file.', 'l-err');
     return;
@@ -409,31 +578,29 @@ window.handleZipSelect = async function (file) {
     const zip = await JSZip.loadAsync(file);
     const argsEntry = zip.file('flasher_args.json');
     const fileList = argsEntry
-      ? (parseFlashFiles(await argsEntry.async('string')) || FLASH_FILES_FALLBACK)
+      ? parseFlashFiles(await argsEntry.async('string'))
       : FLASH_FILES_FALLBACK;
+    if (!fileList) throw new Error('Invalid flash layout in flasher_args.json.');
 
     const loaded = [];
     const listEl = document.getElementById('customFileList');
-    listEl.innerHTML = '';
     for (const ff of fileList) {
       const entry = zip.file(ff.name);
       if (!entry) {
-        log(`Warning: ${ff.name} not found in zip, skipping.`, 'l-err');
-        continue;
+        throw new Error(`${ff.name} is missing from the firmware ZIP.`);
       }
       const data = new Uint8Array(await entry.async('arraybuffer'));
       loaded.push({ name: ff.name, offset: ff.offset, data });
-      listEl.innerHTML += fileItem(ff.name, ff.offset, data.length);
+      listEl.appendChild(fileItem(ff.name, ff.offset, data.length));
     }
 
-    if (loaded.length === 0) {
-      log('No recognised firmware files found in the zip.', 'l-err');
-    } else {
-      customFiles = loaded;
-      log(`Loaded ${loaded.length} file(s) from ${file.name}.`, 'l-ok');
-    }
+    customFiles = loaded;
+    updateFlashEnabled();
+    log(`Loaded ${loaded.length} file(s) from ${file.name}.`, 'l-ok');
   } catch (e) {
-    log('Error reading zip: ' + e.message, 'l-err');
+    document.getElementById('customFileList').replaceChildren();
+    updateFlashEnabled();
+    log('Error reading ZIP: ' + e.message, 'l-err');
   }
 };
 
@@ -448,10 +615,19 @@ window.toggleConnect = async function () {
 
 async function doConnect() {
   const connectBtn = document.getElementById('connectBtn');
+  const hardwareBanner = document.getElementById('hardwareBanner');
   connectBtn.disabled = true;
+  hardwareBanner.classList.remove('visible');
   log('Requesting serial port…');
   try {
-    const port = await navigator.serial.requestPort();
+    const port = await navigator.serial.requestPort({ filters: [{ usbVendorId: USB_UART_VENDOR_ID }] });
+    const usbInfo = port.getInfo ? port.getInfo() : {};
+    if (usbInfo.usbVendorId !== undefined && usbInfo.usbProductId !== undefined) {
+      log('Selected USB serial device: VendorID 0x' + usbInfo.usbVendorId.toString(16).padStart(4, '0') +
+          ' ProductID 0x' + usbInfo.usbProductId.toString(16).padStart(4, '0'));
+    } else {
+      log('This port does not report USB IDs. If it cannot open, select the board’s USB-UART/CH343 port.');
+    }
     transport  = new Transport(port, true);
 
     const terminal = {
@@ -460,24 +636,50 @@ async function doConnect() {
       write:     s   => log(s),
     };
 
-    esploader   = new ESPLoader({ transport, baudrate: BAUD, terminal });
+    esploader   = new ESPLoader({ transport, baudrate: BAUD, romBaudrate: BAUD, terminal });
     const chip  = await esploader.main();
     log(`Connected to: ${chip}`, 'l-ok');
-    chipRev = esploader.chip.getChipRevision
+    const detectedRevision = esploader.chip.getChipRevision
       ? await esploader.chip.getChipRevision(esploader) : null;
-    if (chipRev !== null && chipRev >= 300) {
-      log(`This board has chip revision ${fmtRev(chipRev)}. ` +
-          'These builds only support revisions v0.x and v1.x.', 'l-err');
+    chipRev = Number.isFinite(detectedRevision) ? detectedRevision : null;
+    if (chipRev === null) {
+      hardwareBanner.textContent = 'Could not read the ESP32-P4 revision. Flashing is disabled because the supported revision cannot be confirmed.';
+      hardwareBanner.classList.add('visible');
+      log('Could not read the ESP32-P4 revision; flashing is disabled.', 'l-err');
+    } else {
+      const profile = profileForRevision(chipRev);
+      if (!profile) {
+        hardwareBanner.textContent = 'ESP32-P4 revision ' + fmtRev(chipRev) +
+          ' is unsupported. This page has matching builds only for v0.x/v1.x and v3.0–v3.99.';
+        hardwareBanner.classList.add('visible');
+        log('Unsupported chip revision ' + fmtRev(chipRev) + '. Flashing is blocked.', 'l-err');
+      } else {
+        log('Detected ESP32-P4 revision ' + fmtRev(chipRev) +
+          '; selecting the ' + FW_PROFILES[profile].label + ' firmware.', 'l-ok');
+        await selectProfile(profile);
+        if (!loadedProfiles[profile]) {
+          hardwareBanner.textContent = 'Matching firmware files could not be verified. Flashing is disabled.';
+          hardwareBanner.classList.add('visible');
+        }
+      }
     }
 
     connectBtn.textContent = '⏏ Disconnect';
     connectBtn.classList.add('connected');
     updateFlashEnabled();
   } catch (e) {
-    log('Connection failed: ' + e.message, 'l-err');
+    const message = e && e.message ? e.message : String(e);
+    log('Connection failed: ' + message, 'l-err');
+    if (/open.*serial port|failed to execute.*open|failed to open serial port/i.test(message)) {
+      log('Select the board’s USB-UART/CH343 port. Close Kern, serial monitors and browser tabs that use it, then retry.', 'l-info');
+    }
+    try { if (transport) await transport.disconnect(); } catch { /* release a partially opened port */ }
     transport = null;
     esploader = null;
+    chipRev = null;
+    hardwareBanner.classList.remove('visible');
   }
+  updateFlashEnabled();
   connectBtn.disabled = false;
 }
 
@@ -490,6 +692,7 @@ async function doDisconnect() {
   transport = null;
   esploader = null;
   chipRev   = null;
+  document.getElementById('hardwareBanner').classList.remove('visible');
   connectBtn.textContent = '🔌 Connect';
   connectBtn.classList.remove('connected');
   updateFlashEnabled();
@@ -500,6 +703,15 @@ async function doDisconnect() {
 // ── Flash ────────────────────────────────────────────────────────────────────
 window.startFlash = async function () {
   if (!esploader) { log('Not connected.', 'l-err'); return; }
+  const profile = profileForRevision(chipRev);
+  if (!profile || !document.getElementById('modelBox').checked) {
+    log('Flashing is blocked. Confirm the Waveshare 4.3-C and a supported ESP32-P4 revision (v0.x/v1.x or v3.x).', 'l-err');
+    return;
+  }
+  if (!document.getElementById('wipeBox').checked) {
+    log('Confirm that the internal filesystem will be reset; this is not a secure physical erase.', 'l-err');
+    return;
+  }
   if (!document.getElementById('ackBox').checked) {
     log('Confirm the warning above before flashing.', 'l-err');
     return;
@@ -516,18 +728,25 @@ window.startFlash = async function () {
     let fileNames;
 
     if (currentMode === 'release') {
-      if (!releaseFiles) throw new Error('No published release is available. Use a custom ZIP.');
-      log('Downloading firmware…');
+      const selected = loadedProfiles[profile];
+      if (!selected) throw new Error('No verified firmware release is available for ' + FW_PROFILES[profile].label + '.');
+      const dir = RELEASE_ROOT + '/' + FW_PROFILES[profile].dir;
+      log('Downloading verified ' + FW_PROFILES[profile].label + ' firmware…');
       fileArray = [];
       fileNames = [];
-      for (const ff of releaseFiles) {
-        log(`  Fetching ${ff.name}…`);
-        const resp = await fetch(`${RELEASE_DIR}/${ff.name}`, { cache: 'no-cache' });
-        if (!resp.ok) throw new Error(`Failed to fetch ${ff.name} (HTTP ${resp.status})`);
+      for (const ff of selected.files) {
+        log('  Fetching ' + ff.name + '…');
+        const resp = await fetch(dir + '/' + ff.name, { cache: 'no-cache' });
+        if (!resp.ok) throw new Error('Failed to fetch ' + ff.name + ' (HTTP ' + resp.status + ')');
         const data = new Uint8Array(await resp.arrayBuffer());
+        const expectedHash = selected.metadata.sha256[ff.name];
+        const actualHash = await sha256Hex(data);
+        if (actualHash !== expectedHash.toLowerCase()) {
+          throw new Error('SHA-256 mismatch for ' + ff.name + '; refusing to flash this file.');
+        }
         fileArray.push({ data, address: ff.offset });
         fileNames.push(ff.name);
-        log(`  ✓ ${ff.name} (${(data.length / 1024).toFixed(1)} KB)`, 'l-ok');
+        log('  ✓ ' + ff.name + ' (' + (data.length / 1024).toFixed(1) + ' KB, SHA-256 verified)', 'l-ok');
       }
     } else {
       if (!customFiles || customFiles.length === 0) {
