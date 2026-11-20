@@ -5,7 +5,7 @@ from .screens import WalletScreen, ConfirmWalletScreen
 import platform
 import os
 from binascii import hexlify, unhexlify, a2b_base64
-from embit import script, bip32, compact
+from embit import script, bip32, compact, base58
 from embit.psbt import DerivationPath, CompressMode
 from embit.psbtview import PSBTView, read_write, PSBTError
 from embit.networks import NETWORKS
@@ -194,12 +194,32 @@ class WalletManager(BaseApp):
             stream.seek(0)
             return ADD_WALLET, stream
         # probably verifying address
-        if data.startswith(b"bitcoin:") or data.startswith(b"BITCOIN:") or b"index=" in data:
+        if (data.startswith(b"bitcoin:") or data.startswith(b"BITCOIN:") or
+                data.startswith(b"liquid:") or data.startswith(b"LIQUID:") or
+                b"index=" in data):
             if data.startswith(b"bitcoin:") or data.startswith(b"BITCOIN:"):
                 stream.seek(8)
+            elif data.startswith(b"liquid:") or data.startswith(b"LIQUID:"):
+                stream.seek(7)
             else:
                 stream.seek(0)
             return VERIFY_ADDRESS, stream
+        # probably raw bitcoin address (base58 or bech32)
+        try:
+            txt = data.decode().strip()
+        except UnicodeDecodeError:
+            txt = ""
+        if txt:
+            addr_chars = set(
+                "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+            )
+            bech32_chars = set("023456789acdefghjklmnpqrstuvwxyz")
+            addr_chars |= {c.upper() for c in bech32_chars}
+            addr_chars |= bech32_chars
+            candidate = txt.split("\n")[0].strip()
+            if candidate and all(c in addr_chars for c in candidate):
+                stream.seek(0)
+                return VERIFY_ADDRESS, stream
 
         return None, None
 
@@ -258,20 +278,55 @@ class WalletManager(BaseApp):
                 self.add_wallet(w)
             return bool(confirm)
         elif cmd == VERIFY_ADDRESS:
-            data = stream.read().decode().replace("bitcoin:", "")
-            # should be of the form addr?index=N or similar
-            if "index=" not in data or "?" not in data:
-                raise WalletError("Can't verify address with unknown index")
-            addr, rest = data.split("?")
-            args = rest.split("&")
+            raw = stream.read().decode().strip()
+            # Liquid wallets use the same URI shape but with a liquid: scheme.
+            if (raw.lower().startswith("bitcoin:") or
+                    raw.lower().startswith("liquid:")):
+                raw = raw.split(":", 1)[1]
+            addr_part = raw
+            query = ""
+            if "?" in raw:
+                addr_part, query = raw.split("?", 1)
+            addr_part = addr_part.strip()
+            if not addr_part:
+                raise WalletError("Can't verify address with unknown value")
+            network_hint = self.address_network_hint(addr_part)
+            if network_hint is not None:
+                expected_networks, expected_name = network_hint
+                if isinstance(expected_networks, str):
+                    expected_networks = (expected_networks,)
+                if self.network not in expected_networks:
+                    raise WalletError(
+                        "This is a %s address.\n\n"
+                        "Switch the device network to %s and scan again."
+                        % (expected_name, expected_name)
+                    )
             idx = None
-            for arg in args:
-                if arg.startswith("index="):
-                    idx = int(arg[6:])
-                    break
-            w, _ = self.find_wallet_from_address(addr, index=idx)
-            await show_screen(WalletScreen(w, self.network, idx))
-            return True
+            if query:
+                for arg in query.split("&"):
+                    if arg.startswith("index="):
+                        try:
+                            idx = int(arg[6:])
+                        except ValueError:
+                            raise WalletError("Invalid address index")
+                        if idx < 0 or idx >= 0x80000000:
+                            raise WalletError("Invalid address index")
+                        break
+            prepared_target = self.validate_address(addr_part, prepare_match=True)
+            if idx is not None:
+                return await self.verify_address_at_index(
+                    addr_part, idx, show_screen, prepared_target
+                )
+
+            wallet = await self.select_wallet_for_verification(show_screen)
+            if wallet is None:
+                return False
+            return await self.verify_address_in_wallet(
+                wallet,
+                addr_part,
+                show_screen,
+                prepared_target=prepared_target,
+            )
         elif cmd == DERIVE_ADDRESS:
             arr = stream.read().split(b" ")
             redeem_script = None
@@ -290,6 +345,189 @@ class WalletManager(BaseApp):
             return BytesIO(res), {}
         else:
             raise WalletError("Unknown command")
+
+    async def select_wallet_for_verification(self, show_screen):
+        if not self.wallets:
+            raise WalletError("No wallets available")
+        buttons = [(w, w.name) for w in self.wallets]
+        menu = Menu(
+            buttons,
+            last=(255, None),
+            title="Select wallet",
+            note="Choose a wallet to check the scanned address.",
+        )
+        selection = await show_screen(menu)
+        if selection == 255:
+            return None
+        return selection
+
+    @staticmethod
+    def normalize_verification_address(address):
+        """Normalize case-insensitive Bitcoin bech32 addresses before matching."""
+        if address.lower().startswith(("bc1", "tb1", "bcrt1")):
+            return address.lower()
+        return address
+
+    async def verify_address_at_index(
+        self, address, index, show_screen, prepared_target=None
+    ):
+        """Use the same match rules for indexed and indexless QR verification."""
+        target = self.normalize_verification_address(address)
+        for wallet in self.wallets:
+            for branch_idx in range(wallet.descriptor.num_branches):
+                candidate, _ = wallet.get_address(index, self.network, branch_idx)
+                match_type = self.address_match_type(
+                    self.normalize_verification_address(candidate),
+                    target,
+                    prepared_target,
+                )
+                if match_type is not None:
+                    return await self.show_verified_address(
+                        wallet, index, branch_idx, match_type, show_screen
+                    )
+        raise WalletError("Can't find wallet owning address %s" % address)
+
+    async def verify_address_in_wallet(
+        self, wallet, address, show_screen, batch_size=25, prepared_target=None
+    ):
+        addr_to_check = address.strip()
+        target = self.normalize_verification_address(addr_to_check)
+
+        start_idx = 0
+        branches = wallet.descriptor.num_branches
+        gui_loader = getattr(self.show_loader, "__self__", None)
+        while True:
+            end_idx = start_idx + batch_size - 1
+            self.show_loader(
+                title="Checking addresses %d-%d..." % (start_idx, end_idx)
+            )
+            found = None
+            try:
+                for branch_idx in range(branches):
+                    for idx in range(start_idx, start_idx + batch_size):
+                        candidate, _ = wallet.get_address(
+                            idx, self.network, branch_idx
+                        )
+                        match_type = self.address_match_type(
+                            self.normalize_verification_address(candidate),
+                            target,
+                            prepared_target,
+                        )
+                        if match_type is not None:
+                            found = (idx, branch_idx, match_type)
+                            break
+                    if found is not None:
+                        break
+            finally:
+                if gui_loader is not None and hasattr(gui_loader, "hide_loader"):
+                    gui_loader.hide_loader()
+
+            if found is not None:
+                idx, branch_idx, match_type = found
+                return await self.show_verified_address(
+                    wallet, idx, branch_idx, match_type, show_screen
+                )
+
+            message = (
+                "The address %s was not found between indexes %d and %d.\n\n"
+                "Check the next %d addresses?"
+                % (addr_to_check, start_idx, end_idx, batch_size)
+            )
+            cont = await show_screen(
+                Prompt(
+                    "Address not found",
+                    message,
+                    confirm_text="Next %d" % batch_size,
+                    cancel_text="Abort",
+                )
+            )
+            if not cont:
+                return False
+            start_idx += batch_size
+
+    async def show_verified_address(
+        self, wallet, idx, branch_idx, match_type, show_screen
+    ):
+        """Show an exact match, or explicitly distinguish an unconfidential scan."""
+        if match_type == "same_script":
+            confirmed = await show_screen(
+                Prompt(
+                    "Script match only",
+                    "The scanned unconfidential address matches this wallet's "
+                    "output script, but lacks its confidential blinding key. "
+                    "Compare the wallet's confidential address before receiving.",
+                    confirm_text="Show wallet address",
+                    cancel_text="Cancel",
+                )
+            )
+            if not confirmed:
+                return False
+        await show_screen(
+            WalletScreen(wallet, self.network, idx, branch_index=branch_idx)
+        )
+        return True
+
+    def addresses_match(self, candidate, target):
+        """Allow network-specific managers to compare address variants."""
+        return candidate == target
+
+    def address_match_type(self, candidate, target, prepared_target=None):
+        return "exact" if self.addresses_match(candidate, target) else None
+
+    def validate_address(self, address, prepare_match=False):
+        """Reject malformed or unsupported Bitcoin addresses before wallet search."""
+        address = address.strip()
+        normalized = address.lower()
+        separator = normalized.find("1")
+        hrp = normalized[:separator] if separator > 0 else None
+        bech32_hrps = [
+            network.get("bech32")
+            for network in self.Networks.values()
+            if network.get("bech32")
+        ]
+
+        if hrp in bech32_hrps:
+            if not (address.islower() or address.isupper()):
+                raise WalletError("Invalid Bitcoin address")
+            try:
+                script.address_to_scriptpubkey(normalized)
+            except Exception:
+                raise WalletError("Invalid Bitcoin address")
+            return
+
+        try:
+            payload = base58.decode_check(address)
+        except Exception:
+            raise WalletError("Invalid Bitcoin address")
+        base58_versions = [
+            network.get(version)
+            for network in self.Networks.values()
+            for version in ("p2pkh", "p2sh")
+            if network.get(version)
+        ]
+        if len(payload) != 21 or payload[:1] not in base58_versions:
+            raise WalletError("Invalid Bitcoin address")
+
+    def address_network_hint(self, address):
+        """Return the expected Specter network for recognizable address prefixes."""
+        addr = address
+        lower_addr = addr.lower()
+        # Liquid uses ex1/lq1 on mainnet and tex1/tlq1 on testnet.
+        if lower_addr.startswith(("ex1", "lq1")):
+            return "liquidv1", "Liquid Mainnet"
+        if lower_addr.startswith(("tex1", "tlq1")):
+            return "liquidtestnet", "Liquid Testnet"
+        if lower_addr.startswith("bc1") or addr.startswith(("1", "3")):
+            return "main", "Bitcoin Mainnet"
+        # Testnet and Signet share tb1. Legacy m/n/2 addresses also use the
+        # same prefixes on Regtest, so they cannot identify one network alone.
+        if lower_addr.startswith("tb1"):
+            return ("test", "signet"), "Bitcoin Testnet or Signet"
+        if addr.startswith(("m", "n", "2")):
+            return ("test", "signet", "regtest"), "Bitcoin Testnet, Signet or Regtest"
+        if lower_addr.startswith("bcrt1"):
+            return "regtest", "Bitcoin Regtest"
+        return None
 
     async def sign_psbt(self, stream, show_screen, encoding=BASE64_STREAM):
         if encoding == BASE64_STREAM:
