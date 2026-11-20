@@ -242,6 +242,68 @@ class PSBTNetworkHintsTest(TestCase):
         self.assertIn("Conflicting Bitcoin", info)
         self.assertIn("conflicting Bitcoin network types", warning)
 
+    def test_output_zero_fingerprints_use_bounded_derivations(self):
+        # Host-controlled output origins must not bypass the per-PSBT
+        # derivation limit or change the input-only network hint.
+        input_key = ec.PrivateKey(bytes([103]) * 32).get_public_key()
+        output_key = ec.PrivateKey(bytes([104]) * 32).get_public_key()
+        psbt = PSBT(
+            Transaction(
+                vin=[TransactionInput(b"\x33" * 32, 0)],
+                vout=[TransactionOutput(90_000, script.p2wpkh(output_key))],
+            )
+        )
+        psbt.inputs[0].witness_utxo = TransactionOutput(
+            100_000, script.p2wpkh(input_key)
+        )
+        for index in range(self.manager.MAX_NETWORK_HINT_DERIVATIONS + 1):
+            claimed_key = ec.PrivateKey(bytes([index + 1]) * 32).get_public_key()
+            claimed_path = bip32.parse_path("m/84h/0h/0h/0/%d" % index)
+            psbt.outputs[0].bip32_derivations[claimed_key] = DerivationPath(
+                b"\x00" * 4, claimed_path
+            )
+
+        with patch.object(
+            self.keystore, "get_xpub", wraps=self.keystore.get_xpub
+        ) as get_xpub:
+            _, meta = self.manager.preprocess_psbt(
+                BytesIO(psbt.serialize()), BytesIO()
+            )
+            self.assertLessEqual(
+                get_xpub.call_count, self.manager.MAX_NETWORK_HINT_DERIVATIONS
+            )
+        self.assertIn(
+            "Unknown (no verified standard key origins)", meta["network_info"]
+        )
+        self.assertIn(
+            "Output key origin verification limit reached",
+            meta["outputs"][0]["warnings"][0],
+        )
+
+    def test_default_zero_fingerprint_path_is_also_bounded(self):
+        derivations = {}
+        for index in range(self.manager.MAX_NETWORK_HINT_DERIVATIONS + 1):
+            claimed_key = ec.PrivateKey(bytes([index + 1]) * 32).get_public_key()
+            claimed_path = bip32.parse_path("m/84h/0h/0h/0/%d" % index)
+            derivations[claimed_key] = DerivationPath(b"\x00" * 4, claimed_path)
+        scope = self.make_scope(None, derivations)
+        with patch.object(
+            self.keystore, "get_xpub", wraps=self.keystore.get_xpub
+        ) as get_xpub:
+            self.assertTrue(self.manager.fill_zero_fingerprint(scope))
+            self.assertEqual(
+                get_xpub.call_count, self.manager.MAX_NETWORK_HINT_DERIVATIONS
+            )
+
+    def test_obviously_unrelated_script_does_not_trigger_derivation(self):
+        pubkey, origin = self.make_origin(coin_type=0)
+        scope = self.make_scope(script.p2pkh(pubkey), {pubkey: origin})
+        with patch.object(
+            self.keystore, "get_xpub", wraps=self.keystore.get_xpub
+        ) as get_xpub:
+            self.assertEqual(self.verified_hints(scope), (set(), False))
+            get_xpub.assert_not_called()
+
     def test_network_hints_are_not_taken_from_output_metadata(self):
         pubkey, origin = self.make_origin(coin_type=0)
         external_input_key = ec.PrivateKey(bytes([96]) * 32).get_public_key()

@@ -828,12 +828,10 @@ class WalletManager(BaseApp):
 
     def fill_zero_fingerprint(self, scope, derivation_cache=None):
         """Replace zero fingerprints after verifying the derived public key."""
+        # Never derive unbounded paths from untrusted PSBT metadata, even
+        # when callers do not supply a shared per-transaction cache.
         if derivation_cache is None:
-            for pubkey, origin in scope.bip32_derivations.items():
-                if origin.fingerprint == b"\x00\x00\x00\x00":
-                    if self.keystore.get_xpub(origin.derivation).key == pubkey:
-                        origin.fingerprint = self.keystore.fingerprint
-            return False
+            derivation_cache = {}
 
         limit_reached = False
         for pubkey, origin in getattr(scope, "bip32_derivations", {}).items():
@@ -895,6 +893,24 @@ class WalletManager(BaseApp):
             return None, False
         if len(path) > self.MAX_NETWORK_HINT_PATH_LENGTH:
             return None, True
+
+        # Reject obviously unrelated scripts before deriving a device key.
+        # The PSBT host controls these origin records.
+        script_pubkey = getattr(scope, "script_pubkey", None)
+        if script_pubkey is None:
+            return None, False
+        allowed_scripts = {
+            44: ("p2pkh",),
+            49: ("p2sh",),
+            48: ("p2wsh", "p2sh"),
+            84: ("p2wpkh",),
+            86: ("p2tr",),
+        }
+        try:
+            if script_pubkey.script_type() not in allowed_scripts[purpose]:
+                return None, False
+        except Exception:
+            return None, False
 
         path_key = tuple(path)
         if path_key not in derivation_cache:
@@ -1170,7 +1186,15 @@ class WalletManager(BaseApp):
             out = psbtv.output(i)
             metaout = meta["outputs"][i]
 
-            self.fill_zero_fingerprint(out)
+            # Apply the same per-PSBT derivation budget to output metadata.
+            # Outputs must not influence network hints, but skipped origin
+            # verification should still be visible to the user.
+            if self.fill_zero_fingerprint(out, network_derivation_cache):
+                self.add_output_warning(
+                    metaout,
+                    "Output key origin verification limit reached. "
+                    "Verify the recipient address."
+                )
 
             wallet = None
             for w in wallets:
