@@ -1,5 +1,12 @@
 # Security Policy
 
+> **ESP32-P4 experimental port:** The signed-release and hardware protection
+> statements below apply to the upstream STM32/F469 releases, not this P4
+> port. P4 images are unsigned and lack secure boot, flash encryption, and
+> secure wipe. Do not use real seeds or funds. See the
+> [P4 security notes](ports/esp32p4/README.md#perfil-de-segurança).
+
+
 This document describes how to report security vulnerabilities in
 Specter-DIY and how we handle them. For a description of the security
 architecture itself (threat model, PIN protection, storage modes,

@@ -1,5 +1,5 @@
 from .applet import Applet, ISOException, AppletException
-from .securechannel import SecureChannel, SecureError
+from .securechannel import SecureChannel, SecureError, SecureChannelError
 import hashlib
 
 
@@ -47,9 +47,11 @@ class SecureApplet(Applet):
 
     def get_pin_status(self):
         status = self.sc.request(self.PIN_STATUS)
-        (self._pin_attempts_left, self._pin_attempts_max, self._pin_status) = list(
-            status
-        )
+        if (len(status) != 3 or status[2] not in (self.PIN_UNSET, self.PIN_LOCKED,
+                                                   self.PIN_UNLOCKED, self.PIN_BRICKED)
+                or status[0] > status[1]):
+            raise SecureChannelError("Invalid PIN status")
+        (self._pin_attempts_left, self._pin_attempts_max, self._pin_status) = status
         return tuple(status)
 
     def get_random(self):

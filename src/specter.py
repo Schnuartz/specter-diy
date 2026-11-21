@@ -1,4 +1,5 @@
 import sys
+import os
 import gc
 import json
 from io import BytesIO
@@ -16,6 +17,7 @@ from platform import (
     get_firmware_boot_mode,
     get_flash_read_protection_status,
     get_flash_write_protection_status,
+    esp32,
 )
 from hosts import Host, HostError
 from app import BaseApp
@@ -27,6 +29,7 @@ from gui.screens.mnemonic import MnemonicPrompt
 # small helper functions
 from helpers import gen_mnemonic, fix_mnemonic
 from errors import BaseError
+from keystore.core import KeyStoreUnavailable
 
 
 class SpecterError(BaseError):
@@ -115,8 +118,9 @@ class Specter:
     def start(self):
         # register battery monitor (runs every 3 seconds)
         self.gui.set_battery_callback(get_battery_status, 3000)
-        # start the GUI
-        self.gui.start()
+        # start the GUI. On the ESP32-P4 LVGL only redraws what changed and keeps
+        # real time, so a shorter period gives smoother animations at no cost.
+        self.gui.start(rate=15 if esp32 else 30)
         # register coroutines for all hosts
         for host in self.hosts:
             host.start(self)
@@ -173,6 +177,8 @@ class Specter:
         if len(self.keystores) == 1:
             self.keystore = self.keystores[0]()
             return
+        if not self.keystores:
+            raise SpecterError("No keystore is available. Restart the device to retry.")
         # checking the first available keystore
         keystore_cls = None
         # TODO: show some screen here if none are available
@@ -181,27 +187,39 @@ class Specter:
                 if keystore.is_available():
                     keystore_cls = keystore
                     break
-            # if none are available just wait for it
-            # if keystore_cls is None:
-            #     await asyncio.sleep_ms(50)
+            if keystore_cls is None:
+                await asyncio.sleep_ms(50)
         self.keystore = keystore_cls()
 
     async def setup(self):
-        try:
-            # check if the user already selected the keystore class
-            if self.keystore is None:
-                await self.select_keystore()
+        while True:
+            try:
+                while True:
+                    # check if the user already selected the keystore class
+                    if self.keystore is None:
+                        await self.select_keystore()
 
-            if self.keystore is not None:
-                self.load_network(self.path, self.network)
+                    if hasattr(self.keystore, "on_pin_error"):
+                        self.keystore.on_pin_error = self.lock
+                    if self.keystore is not None:
+                        self.load_network(self.path, self.network)
 
-            # load secrets
-            await self.keystore.init(self.gui.show_screen(), self.gui.show_loader)
-            # unlock with PIN or set up the PIN code
-            await self.unlock()
-        except Exception as e:
-            next_fn = await self.handle_exception(e, self.setup)
-            await next_fn()
+                    try:
+                        # load secrets
+                        await self.keystore.init(self.gui.show_screen(), self.gui.show_loader)
+                        # unlock with PIN or set up the PIN code
+                        await self.unlock()
+                        break
+                    except KeyStoreUnavailable as e:
+                        # this one bowed out: the next in line gets its turn
+                        if getattr(e, "notify_on_unavailable", False):
+                            await self.gui.alert(e.NAME, str(e))
+                        skipped = type(self.keystore)
+                        self.keystores = [k for k in self.keystores if k is not skipped]
+                        self.keystore = None
+                break
+            except Exception as e:
+                await self.handle_exception(e, self.setup)
 
         await self.main()
 
@@ -228,6 +246,14 @@ class Specter:
                 if next_menu is not None:
                     self.current_menu = next_menu
 
+            except KeyStoreUnavailable as e:
+                await self.lock()
+                await self.gui.alert(e.NAME, str(e))
+                skipped = type(self.keystore)
+                self.keystores = [k for k in self.keystores if k is not skipped]
+                self.keystore = None
+                self.current_menu = self.initmenu
+                return await self.setup()
             except Exception as e:
                 next_fn = await self.handle_exception(e, self.setup)
                 await next_fn()
@@ -272,6 +298,8 @@ class Specter:
         ]
         if self.keystore.is_key_saved and self.keystore.load_button:
             buttons.append((2, self.keystore.load_button))
+        if self.nfc_available():
+            buttons.append((778, "Load key from NFC card"))
         buttons += [(None, "Settings"), (3, "Device settings")]
         # wait for menu selection
         menuitem = await self.gui.menu(buttons)
@@ -302,6 +330,8 @@ class Specter:
             await self.update_devsettings()
         elif menuitem == 777:
             return await self.import_mnemonic()
+        elif menuitem == 778:
+            return await self.load_mnemonic_from_nfc()
         # lock device
         elif menuitem == 5:
             await self.lock()
@@ -337,6 +367,55 @@ class Specter:
         scr = MnemonicPrompt(title="Imported mnemonic:", mnemonic=mnemonic)
         # confirm mnemonic
         if not await self.gui.show_screen()(scr):
+            return
+        return self.set_mnemonic(mnemonic, "")
+
+    def nfc_supported(self):
+        """True when this build has a driver for an NFC reader"""
+        try:
+            import nfc
+
+            return nfc.is_supported()
+        except Exception:
+            return False
+
+    def nfc_enabled(self):
+        """NFC is off until it is switched on in the communication settings"""
+        return bool(self.GLOBAL.get("nfc", {}).get("enabled", False))
+
+    def nfc_available(self):
+        """True when NFC is switched on and a reader is plugged in right now"""
+        if not self.nfc_enabled():
+            return False
+        try:
+            import nfc
+
+            return nfc.is_available()
+        except Exception:
+            return False
+
+    async def nfc_settings(self):
+        from nfc.settings import settings_menu
+
+        def save(enabled):
+            settings = dict(self.GLOBAL)
+            settings["nfc"] = {"enabled": enabled}
+            self.GLOBAL = settings
+            BaseApp.GLOBAL = settings
+            self.save_settings(settings)
+
+        from keystore import nfccard
+
+        await settings_menu(
+            self.gui, self.nfc_enabled(), save,
+            smartcard=(nfccard.is_enabled, nfccard.set_enabled),
+        )
+
+    async def load_mnemonic_from_nfc(self):
+        from nfc.seed import load_mnemonic
+
+        mnemonic = await load_mnemonic(self.gui)
+        if mnemonic is None:
             return
         return self.set_mnemonic(mnemonic, "")
 
@@ -417,6 +496,8 @@ class Specter:
         buttons.append((2, "Enter passphrase"))
         if hasattr(self.keystore, "show_mnemonic"):
             buttons.append((3, "Show recovery phrase"))
+        if getattr(self.keystore, "mnemonic", None) and self.nfc_available():
+            buttons.append((7, "Save key to NFC card"))
         buttons.extend([(None, "Security"), (4, "Device settings")])  # delimiter
         buttons.extend([(None, "About"), (6, "About this device")])
         # wait for menu selection
@@ -445,6 +526,10 @@ class Specter:
             await self.select_network()
         elif menuitem == 6:
             await self.show_about()
+        elif menuitem == 7:
+            from nfc.seed import save_mnemonic
+
+            await save_mnemonic(self.gui, self.keystore.mnemonic)
         else:
             print(menuitem)
             raise SpecterError("Not implemented")
@@ -502,6 +587,8 @@ class Specter:
             for host in self.hosts
             if host.settings_button is not None
         ]
+        if self.nfc_supported():
+            buttons.append(("nfc", "NFC card reader"))
         while True:
             menuitem = await self.gui.menu(buttons,
                                       title="Communication settings",
@@ -510,6 +597,8 @@ class Specter:
             )
             if menuitem == 255:
                 return
+            elif menuitem == "nfc":
+                await self.nfc_settings()
             elif isinstance(menuitem, Host):
                 reboot_required = await menuitem.settings_menu(self.gui.show_screen(), self.keystore)
                 if reboot_required:
@@ -528,14 +617,18 @@ class Specter:
         return self.SETTINGS_DIR+"/global.settings"
 
     def load_settings(self, fname=None):
-        settings = {}
+        if fname is None:
+            fname = self.settings_fname
         try:
-            if fname is None:
-                fname = self.settings_fname
-            adata, _ = self.keystore.load_aead(fname, key=self.keystore.settings_key)
-            settings = json.loads(adata.decode())
-        except Exception as e:
-            print(e)
+            os.stat(fname)
+        except OSError as e:
+            if e.args and e.args[0] == 2:  # ENOENT: first run
+                return {}
+            raise
+        adata, _ = self.keystore.load_aead(fname, key=self.keystore.settings_key)
+        settings = json.loads(adata.decode())
+        if not isinstance(settings, dict):
+            raise SpecterError("Invalid global settings")
         return settings
 
     def save_settings(self, settings, fname=None):
@@ -546,6 +639,32 @@ class Specter:
                            adata=json.dumps(settings).encode(),
                            key=self.keystore.settings_key
         )
+
+    async def load_settings_with_recovery(self):
+        try:
+            return self.load_settings()
+        except Exception:
+            if not await self.gui.prompt(
+                "Global settings could not be read",
+                "Restore default settings? The unreadable file will be "
+                "kept as a backup.\n\nChoose No to retry without changing it.",
+            ):
+                raise SpecterError("Global settings were not changed. Retry or restart the device.")
+
+        # Do not overwrite an earlier backup, or replace the existing settings
+        # unless the original has been preserved successfully.
+        index = 1
+        while True:
+            backup = self.settings_fname + ".unreadable.%d" % index
+            try:
+                os.stat(backup)
+            except OSError as e:
+                if e.args and e.args[0] == 2:
+                    break
+                raise
+            index += 1
+        os.rename(self.settings_fname, backup)
+        return {}
 
     async def experimental_settings(self):
 
@@ -567,10 +686,9 @@ class Specter:
             return
         taproot, *_ = res
         # for now only experimental, can be extended
-        settings = {
-            "experimental": {
-                "taproot": taproot,
-            }
+        settings = dict(self.GLOBAL)
+        settings["experimental"] = {
+            "taproot": taproot,
         }
         self.GLOBAL = settings
         BaseApp.GLOBAL = settings
@@ -658,7 +776,7 @@ class Specter:
         # now keystore is unlocked - we can load hosts configs
         for host in self.hosts:
             host.load_settings(self.keystore)
-        settings = self.load_settings()
+        settings = await self.load_settings_with_recovery()
         self.GLOBAL = settings
         BaseApp.GLOBAL = settings
 
@@ -696,6 +814,8 @@ class Specter:
         This method is called whenever we got data from the host.
         It tries to find a proper app and pass the stream with data to it.
         """
+        if self.keystore is None or self.keystore.is_locked:
+            raise HostError("Keystore is locked")
         self.gui.show_loader(title="Processing host data...")
         res = None
         if show_fn is None:
