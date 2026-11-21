@@ -55,3 +55,10 @@ CONFIG_ESP_VIDEO_ENABLE_DVP_VIDEO_DEVICE=n
 # que tinha ~470 KB livres.
 CONFIG_CACHE_L2_CACHE_256KB=y
 CONFIG_CACHE_L2_CACHE_LINE_128B=y
+
+# --- Companion radio ---
+#
+# esp_wifi_remote pulls in esp_hosted, and esp_hosted refuses to compile without
+# a slave target. This board's companion chip is an ESP32-C6. The radio itself is
+# held in reset by p4board.radio_off(); the target only lets the component build.
+CONFIG_ESP_HOSTED_IDF_SLAVE_TARGET="esp32c6"
