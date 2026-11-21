@@ -81,49 +81,60 @@ the current v3.x bundle unless a replacement ZIP is supplied with
 
 ## Smartcard hat (optional)
 
-Specter can keep the key on a smartcard instead of on the device. On this board
-that works with the **SEC1210 Smartcard Hat** by CryptoGuide:
+Specter can keep the key on a smartcard instead of on the device. Two SEC1210
+hats work on this board.
 
-- Buy it ready-made: **[cryptoguide.tips/shop](https://cryptoguide.tips/shop/)**
-- Design files and build notes:
-  [3rdIteration/seedsigner, `electronics/SmartcardHat`](https://github.com/3rdIteration/seedsigner/tree/main/electronics/SmartcardHat)
+### New CryptoGuide ESP32-P4 hat (recommended)
 
-The card needs the Specter applet from
-[specter-javacard](https://github.com/cryptoadvance/specter-javacard)
-(MemoryCard). Other cards are detected by the reader, but Specter cannot use
-them.
+The **Smartcard Hat for ESP32-P4 with USB-C Input power** by CryptoGuide is made
+for this board and needs no rework:
 
-### The hat needs a small rework
+- Buy it ready-made:
+  [cryptoguide.tips, Smartcard Hat for ESP32-P4](https://cryptoguide.tips/product/smartcard-hat-for-esp32-p4-with-usb-c-input-power/)
+- It uses the **SEC1210UR2** or **SEC1210URT** serial interface.
+- It plugs onto the 40-pin header. The UART is **UART2, TX GPIO21, RX GPIO28**.
+- The USB-C socket on the hat is a power input, not a data port.
 
-The hat was designed for a Raspberry Pi. On a Pi header its serial lines are on
-pins 8 and 10, and on this board those pins are **GPIO37 and GPIO38**: the
+### Old Raspberry Pi SEC1210 hat (needs rework)
+
+The older CryptoGuide/SeedSigner hat was designed for a Raspberry Pi. Its serial
+lines are on Pi pins 8 and 10, which are **GPIO37 and GPIO38** on this board: the
 console, also used to flash the firmware. Plugged in as it is, the hat would
 fight with the console and the card would see the boot log.
 
-So the two serial lines are moved to GPIO21 and GPIO22. This takes a soldering
-iron and two short wires:
+So the two serial lines are moved to **GPIO21 and GPIO22** (UART1). This takes a
+soldering iron and two short wires:
 
-1. **Lift R44 and R45** on the hat. They are the two 100 Ω resistors in series
+1. **Lift R44 and R45** on the hat. They are the two 100 ohm resistors in series
    with the serial lines, between the header and the SEC1210 chip. With them
    lifted, the hat no longer touches GPIO37 and GPIO38.
 2. **Solder a wire from each resistor's chip-side pad to the board**:
 
    | Hat | Signal | Board | Header pin |
    |---|---|---|---|
-   | R44, chip side | P4 TX → SEC1210 RXD | **GPIO21** | 15 |
-   | R45, chip side | P4 RX ← SEC1210 TXD | **GPIO22** | 17 |
+   | R44, chip side | P4 TX to SEC1210 RXD | **GPIO21** | 15 |
+   | R45, chip side | P4 RX from SEC1210 TXD | **GPIO22** | 17 |
 
 3. Plug the hat onto the 40-pin header as usual. It takes 5 V and ground from
    the header; nothing else needs wiring.
+
+The firmware tries the new ESP32-P4 wiring first (UART2, TX21, RX28) and then
+the old reworked wiring (UART1, TX21, RX22), so either hat works without a
+setting.
+
+The card needs the Specter applet from
+[specter-javacard](https://github.com/cryptoadvance/specter-javacard)
+(MemoryCard). Other cards are detected by the reader, but Specter cannot use
+them.
 
 Insert the card and power the board. Specter picks the smartcard keystore at
 boot when it finds a card with the applet.
 
 If the card is not found, copy
 [`ports/esp32p4/test_uscard.py`](./ports/esp32p4/test_uscard.py) to the board
-and run it from the serial console. It says which step fails: the reader, the
-card, the ATR or the command exchange. If the reader does not answer, the two
-wires are most likely swapped.
+and run it from the serial console. It prints the UART pins it tried and says
+which step fails: the reader, the card, the ATR or the command exchange. If the
+reader does not answer, check the 5 V supply and whether TX and RX are swapped.
 
 ## Smartcard over NFC (experimental)
 

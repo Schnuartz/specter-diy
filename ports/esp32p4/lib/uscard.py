@@ -10,15 +10,17 @@ TPDU). Aqui ficam tres camadas:
   2. os comandos CCID: estado do slot, liga/desliga o cartao, troca de bloco;
   3. o protocolo T=1 do cartao (blocos I/R/S), e T=0 para cartoes antigos.
 
-Ligacao. O hat foi feito para o conector de um Raspberry Pi, onde o UART cai nos
-pinos 8 e 10 -- na Waveshare, GPIO37 e GPIO38, que sao o console e a gravacao de
-firmware. Por isso o hat e usado com os dois sinais desviados para GPIO21 (TX do
-P4, RXD do SEC1210) e GPIO22 (RX do P4, TXD do SEC1210). O hat tira 5 V do
-proprio conector.
+Ligacao. O hat novo da CryptoGuide para a ESP32-P4 ja vem ligado em UART2:
+GPIO21 (TX do P4, RXD do SEC1210) e GPIO28 (RX do P4, TXD do SEC1210). O hat
+antigo, feito para o conector de um Raspberry Pi, usa os pinos 8 e 10 -- na
+Waveshare, GPIO37 e GPIO38, que sao o console e a gravacao de firmware. Por isso
+o hat antigo precisa de R44/R45 levantados e dos dois sinais desviados para
+GPIO21 (TX) e GPIO22 (RX), em UART1. O driver tenta as duas ligacoes e fica com
+a que responde.
 
 Referencia do protocolo serial: ccid_serial.c do driver CCID de Ludovic
-Rousseau, que suporta este leitor como "SEC1210URT": 115200 baud, 8 bits, dois
-stop bits, sem eco.
+Rousseau, que suporta este leitor como "SEC1210URT" e "SEC1210UR2": 115200 baud,
+8 bits, dois stop bits, sem eco.
 
 A API espelha f469-disco/libs/unix/uscard.py, que e a que o keystore do Specter
 usa: Reader.createConnection(), e na conexao isCardInserted(), connect(),
@@ -29,10 +31,22 @@ import time
 
 import machine
 
-# Pinos do hat modificado. TX/RX do ponto de vista do P4.
-UART_ID = 1
-TX_PIN = 21
-RX_PIN = 22
+# Ligacoes do hat. TX/RX do ponto de vista do P4.
+#
+# O hat novo CryptoGuide ESP32-P4 usa UART2 com TX=GPIO21 e RX=GPIO28. O hat
+# antigo, depois de levantar R44/R45, usa UART1 com TX=GPIO21 e RX=GPIO22.
+# Tentamos o hat novo primeiro e ficamos com a ligacao que responder.
+PIN_CANDIDATES = (
+    (2, 21, 28),
+    (1, 21, 22),
+)
+UART_ID, TX_PIN, RX_PIN = PIN_CANDIDATES[0]
+_active_pins = PIN_CANDIDATES[0]
+
+
+def active_pins():
+    """Devolve (uart, tx, rx) da ligacao que respondeu por ultimo."""
+    return _active_pins
 
 _SYNC = 0x03
 _CTRL_ACK = 0x06
@@ -126,23 +140,39 @@ class _SEC1210:
     def __init__(self):
         self._uart = None
         self._seq = 0
+        self._pin_index = 0
         self._absent_until = None
         self._settle_deadline = None
 
     def _open(self):
+        global _active_pins
         if self._uart is None:
+            uart_id, tx_pin, rx_pin = PIN_CANDIDATES[self._pin_index]
             self._uart = machine.UART(
-                UART_ID,
+                uart_id,
                 baudrate=115200,
                 bits=8,
                 parity=None,
                 stop=2,
-                tx=TX_PIN,
-                rx=RX_PIN,
+                tx=tx_pin,
+                rx=rx_pin,
                 timeout=20,
                 rxbuf=1024,
             )
+            _active_pins = (uart_id, tx_pin, rx_pin)
         return self._uart
+
+    def _next_pins(self):
+        """Troca para a proxima ligacao do hat; False quando ja tentou todas."""
+        if self._pin_index + 1 >= len(PIN_CANDIDATES):
+            return False
+        try:
+            self._uart.deinit()
+        except Exception:
+            pass
+        self._uart = None
+        self._pin_index += 1
+        return True
 
     def _read(self, count, deadline):
         uart = self._uart
@@ -183,6 +213,9 @@ class _SEC1210:
         try:
             result = self._response(seq, time.ticks_add(time.ticks_ms(), timeout_ms))
         except CardConnectionException as error:
+            if self._next_pins():
+                _record(message_type, "retry on the next hat wiring")
+                return self.command(message_type, data, params, timeout_ms)
             _record(message_type, str(error))
             self._absent_until = time.ticks_add(time.ticks_ms(), _READER_RETRY_MS)
             raise

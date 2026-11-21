@@ -178,6 +178,7 @@
         <li><strong>Do not use it with real seeds or real funds.</strong> Testnet and throwaway keys only.</li>
         <li>Not reviewed or endorsed by the Specter-DIY maintainers, never audited, and tested on one board.</li>
         <li>Secure boot and flash encryption are not enabled: anyone with physical access to the board can read or replace what is on it.</li>
+        <li>The new CryptoGuide ESP32-P4 smartcard hat uses <strong>UART2, TX GPIO21, RX GPIO28</strong>. The older Raspberry Pi hat uses UART1, TX GPIO21, RX GPIO22 after lifting R44/R45.</li>
         <li>Flashing resets and reformats the internal filesystem. This is <strong>not a secure physical erase</strong>; old flash contents may remain recoverable. Builds are development snapshots and may misbehave.</li>
         <li>No warranty and no support. Report problems to this fork, not to upstream Specter-DIY.</li>
       </ul>

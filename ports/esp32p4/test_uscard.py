@@ -21,8 +21,12 @@ def run():
     try:
         present = connection._reader.card_present()
     except uscard.SmartcardException as error:
+        uart_id, tx, rx = uscard.active_pins()
         print("READER: no answer on UART%d (tx=%d rx=%d): %s"
-              % (uscard.UART_ID, uscard.TX_PIN, uscard.RX_PIN, error))
+              % (uart_id, tx, rx, error))
+        print("        new CryptoGuide hat: UART2, tx=GPIO21, rx=GPIO28")
+        print("        old Raspberry Pi hat: UART1, tx=GPIO21, rx=GPIO22 "
+              "(after lifting R44/R45)")
         print("        check the 5 V supply and whether TX and RX are swapped")
         return False
     print("READER: answered in %d ms" % time.ticks_diff(time.ticks_ms(), started))
