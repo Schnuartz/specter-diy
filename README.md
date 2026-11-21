@@ -52,14 +52,14 @@ Open the **[Specter-DIY Web Flasher](https://schnuartz-ai.github.io/specter-diy/
 in Chrome, Edge or Brave on a desktop computer. Plug the board into its **UART**
 port, click **Connect**, confirm the physical Waveshare 4.3-C board and storage
 reset, then click **Flash**. The page reads the ESP32-P4 revision and chooses a
-matching image: the Sandman pre-rev3 release for v0.x/v1.x, or the experimental
-community image for v3.x. Other revisions are blocked.
+matching image: the integrated pre-rev3 build with the SEC1210 Smartcard HAT
+for v0.x/v1.x, or Sandman's experimental community image for v3.x. Other
+revisions are blocked.
 
 This uses the ESP32-P4 ROM serial bootloader through the UART bridge. It does
 not use the virtual USB drive from the STM32 firmware. A custom firmware ZIP can
-also be dropped onto the page. The current page is a development flasher and
-still installs Sandman-based bundles; it is not yet a release of this integrated
-branch.
+also be dropped onto the page. The pre-rev3 image is a development build of this
+integrated branch; the v3.x image remains Sandman's community build.
 
 The bundle writes `storage-reset.bin` at `0x410000`, which resets the internal
 filesystem so firmware can initialize it again. It does not securely erase the

@@ -37,6 +37,8 @@ it requires `gh api user --jq .login` to report `schnuartz-ai`. Set
 `PAGES_REPO=owner/repo` to assemble a site for another repository; publishing
 still requires the account check in the script to pass.
 
-The current bundles are Sandman-based development images. The v3.x community
+The pre-rev3 bundle is built from the integrated ESP32-P4 branch and includes
+the SEC1210 Smartcard HAT. The v3.x bundle remains Sandman's community image.
+Both are development images. The v3.x community
 build has not been validated on a physical recipient board. Do not use either
 profile with real seeds or funds.
