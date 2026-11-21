@@ -62,3 +62,5 @@ CONFIG_CACHE_L2_CACHE_LINE_128B=y
 # a slave target. This board's companion chip is an ESP32-C6. The radio itself is
 # held in reset by p4board.radio_off(); the target only lets the component build.
 CONFIG_ESP_HOSTED_IDF_SLAVE_TARGET="esp32c6"
+CONFIG_IDF_SLAVE_TARGET="esp32c6"
+CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
