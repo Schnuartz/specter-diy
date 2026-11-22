@@ -280,17 +280,9 @@ def _load_drivers():
     return _drivers
 
 
-def _usable_drivers():
-    return tuple(
-        entry
-        for entry in _load_drivers()
-        if not (entry[1] == "MFRC522" and _rc522_conflicts_with_smartcard())
-    )
-
-
 def _detect():
     """The driver entry of the reader answering right now, or None"""
-    for entry in _usable_drivers():
+    for entry in _load_drivers():
         try:
             if entry[0].is_present():
                 return entry
@@ -305,7 +297,7 @@ def open_reader():
     With nothing plugged in the first driver is handed out anyway: its init()
     is what reports the missing reader.
     """
-    drivers = _usable_drivers()
+    drivers = _load_drivers()
     if not drivers:
         raise NFCNotFound("No NFC reader on this board")
     module, cls, _ = _detect() or drivers[0]
@@ -313,8 +305,8 @@ def open_reader():
 
 
 def is_supported():
-    """True when this build has a usable reader driver, plugged in or not"""
-    return bool(_usable_drivers())
+    """True when this build has a reader driver, plugged in or not"""
+    return bool(_load_drivers())
 
 
 def is_available():

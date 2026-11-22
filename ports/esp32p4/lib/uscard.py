@@ -174,6 +174,19 @@ class _SEC1210:
         self._pin_index += 1
         return True
 
+    def _reset_pins(self):
+        """Fecha a UART e volta a ligacao preferida na proxima consulta.
+
+        Sem isto, um leitor desligado na partida deixaria o driver preso na
+        segunda ligacao e o hat novo so voltaria a ser tentado num reboot.
+        """
+        try:
+            self._uart.deinit()
+        except Exception:
+            pass
+        self._uart = None
+        self._pin_index = 0
+
     def _read(self, count, deadline):
         uart = self._uart
         data = b""
@@ -216,6 +229,7 @@ class _SEC1210:
             if self._next_pins():
                 _record(message_type, "retry on the next hat wiring")
                 return self.command(message_type, data, params, timeout_ms)
+            self._reset_pins()
             _record(message_type, str(error))
             self._absent_until = time.ticks_add(time.ticks_ms(), _READER_RETRY_MS)
             raise
