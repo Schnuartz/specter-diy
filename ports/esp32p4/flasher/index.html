@@ -167,11 +167,11 @@
     <div class="inner">
       <h2>⚠ Unofficial port, not official Specter-DIY</h2>
       <p>
-        The pre-rev3 profile is built from
+        Both the pre-rev3 and v3.x profiles are built from
         <a href="https://github.com/Schnuartz/specter-diy/tree/codex/esp32p4-smartcard-hat" target="_blank" rel="noopener">Schnuartz/specter-diy</a>,
-        the integrated ESP32-P4 branch that includes the SEC1210 Smartcard HAT.
-        The v3.x profile remains Sandman's
-        <a href="https://github.com/sandman21vs/specter-diy/tree/esp32-p4-port" target="_blank" rel="noopener">community build</a>.
+        the integrated ESP32-P4 branch that includes the SEC1210 Smartcard HAT
+        and the port originally published by
+        <a href="https://github.com/sandman21vs/specter-diy/tree/esp32-p4-port" target="_blank" rel="noopener">Sandman</a>.
         Both run Specter-DIY on the <strong>Waveshare ESP32-P4 4.3" board</strong>.
       </p>
       <ul>
@@ -265,7 +265,7 @@
   <footer>
     <a href="https://github.com/schnuartz-ai/specter-diy/tree/gh-pages" target="_blank" rel="noopener">Flasher source</a> ·
     <a href="https://github.com/Schnuartz/specter-diy/tree/codex/esp32p4-smartcard-hat" target="_blank" rel="noopener">Integrated firmware source</a> ·
-    <a href="https://github.com/sandman21vs/specter-diy/tree/esp32-p4-port" target="_blank" rel="noopener">Sandman firmware source</a> ·
+    <a href="https://github.com/sandman21vs/specter-diy/tree/esp32-p4-port" target="_blank" rel="noopener">Sandman upstream port</a> ·
     <a href="https://github.com/sandman21vs/specter-diy/releases" target="_blank" rel="noopener">Releases</a> ·
     <a href="https://github.com/cryptoadvance/specter-diy" target="_blank">Specter-DIY</a><br>
     Based on the <a href="https://odudex.github.io/Kern/flash/" target="_blank">Kern Web Flasher</a> ·
@@ -285,7 +285,7 @@ import { ESPLoader, Transport } from './vendor/esptool-js-0.7.0.js';
 const RELEASE_ROOT = './firmware/wave_43';
 const FW_PROFILES = {
   'pre-rev3': { label: 'ESP32-P4 v0.x/v1.x', dir: 'pre-rev3' },
-  'rev3':     { label: 'ESP32-P4 v3.0–v3.99 · experimental community build', dir: 'rev3' },
+  'rev3':     { label: 'ESP32-P4 v3.0–v3.99 · integrated build', dir: 'rev3' },
 };
 
 // Fallback flash layout, only used if a bundle has no flasher_args.json. It is
