@@ -248,11 +248,30 @@ _DRIVERS = (
 _drivers = None
 
 
+def _rc522_conflicts_with_smartcard():
+    """True when the smartcard port claims GPIO28, the RC522 reset line.
+
+    The new CryptoGuide ESP32-P4 hat uses UART2 RX on GPIO28. The RC522
+    driver drives GPIO28 as reset, so the two cannot coexist: probing the
+    RC522 would corrupt the smartcard UART and crash the firmware. The
+    RC522 was already unable to power a smartcard on this board; the PN532
+    and WS1850S (I2C) readers are the supported NFC modules.
+    """
+    try:
+        import uscard
+
+        return any(rx == 28 for _, _, rx in uscard.PIN_CANDIDATES)
+    except Exception:
+        return False
+
+
 def _load_drivers():
     global _drivers
     if _drivers is None:
         found = []
         for module, cls, name in _DRIVERS:
+            if cls == "MFRC522" and _rc522_conflicts_with_smartcard():
+                continue
             try:
                 found.append((__import__(module), cls, name))
             except ImportError:

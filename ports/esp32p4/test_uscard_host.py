@@ -133,12 +133,21 @@ class FakeSEC1210:
     noise = True
     voltage = 1  # bPowerSelect que o cartao aceita: 1 = 5 V, 2 = 3 V, 3 = 1,8 V
     detect_after = 0  # quantas consultas de status respondem "vazio" antes de ver o cartao
+    wired = None  # (uart, tx, rx) que responde; None = qualquer uma
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, uart_id, **kwargs):
         assert kwargs["baudrate"] == 115200 and kwargs["stop"] == 2
-        assert kwargs["tx"] == 21 and kwargs["rx"] == 22
+        assert (kwargs["tx"], kwargs["rx"]) in ((21, 28), (21, 22))
+        self.uart_id = uart_id
+        self.pins = (kwargs["tx"], kwargs["rx"])
         self.rx = b""
         self.max_wait = 0
+
+    def answers(self):
+        cls = type(self)
+        if cls.silent:
+            return False
+        return cls.wired is None or (self.uart_id,) + self.pins == cls.wired
 
     def frame(self, message):
         body = bytes([0x03, 0x06]) + message
@@ -150,7 +159,7 @@ class FakeSEC1210:
 
     def write(self, frame):
         cls = type(self)
-        if cls.silent:
+        if not self.answers():
             return len(frame)
         assert frame[0] == 0x03 and frame[1] == 0x06 and lrc(frame[:-1]) == frame[-1]
         message = frame[2:-1]
@@ -300,6 +309,20 @@ def main():
         conn.isCardInserted()
     check("no hat: repeated polls do not each wait a timeout", time.monotonic() - started < first + 0.15)
     FakeSEC1210.silent = False
+
+    # Um leitor silencioso nao pode prender o driver na segunda ligacao.
+    time.sleep(uscard._READER_RETRY_MS / 1000 + 0.05)
+    check("hat back: the preferred wiring is tried again", conn.isCardInserted())
+    check("hat back: reports UART2 GPIO21/GPIO28",
+          uscard.active_pins() == (2, 21, 28))
+
+    # Hat antigo (R44/R45 levantados): so a UART1/GPIO22 responde.
+    FakeSEC1210.wired = (1, 21, 22)
+    conn = fresh()
+    check("old hat: fallback finds the UART1 wiring", conn.isCardInserted())
+    check("old hat: reports UART1 GPIO21/GPIO22",
+          uscard.active_pins() == (1, 21, 22))
+    FakeSEC1210.wired = None
 
     print("all good")
 

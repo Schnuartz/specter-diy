@@ -37,6 +37,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "sdkconfig.h"
 #include "p4board.h"
 
 #define ARRAY_SIZE(values) (sizeof(values) / sizeof((values)[0]))
@@ -272,7 +273,12 @@ esp_err_t p4board_display_init(void) {
     esp_lcd_dsi_bus_config_t bus_config = {
         .bus_id = 0,
         .num_data_lanes = P4BOARD_LCD_DSI_LANES,
+#if CONFIG_ESP32P4_REV_MIN_300
+        /* Rev3 silicon has no PLL_F20M reference; the legacy default aborts. */
+        .phy_clk_src = MIPI_DSI_PHY_PLLREF_CLK_SRC_XTAL,
+#else
         .phy_clk_src = MIPI_DSI_PHY_CLK_SRC_DEFAULT,
+#endif
         .lane_bit_rate_mbps = P4BOARD_LCD_DSI_LANE_BITRATE_MBPS,
     };
     if ((result = esp_lcd_new_dsi_bus(&bus_config, &dsi_bus)) != ESP_OK) {

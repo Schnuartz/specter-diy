@@ -568,6 +568,13 @@ simulador (`test/tests_native/test_nfc_mfrc522.py`).
 A Waveshare numera o conector com as fileiras trocadas; o "pino 15" do rework
 do Smartcard Hat (GPIO21) é da numeração dela, não desta tabela.
 
+**Neste port o RC522 não é sondado.** O hat novo do smartcard usa GPIO28 como
+RX da UART2, e o driver do RC522 dirige o mesmo GPIO28 como reset. Sondar o
+RC522 com o hat ligado disputaria a linha e derrubaria o firmware, então
+`nfc.open_reader()` exclui o MFRC522 enquanto a porta do smartcard listar
+GPIO28. O RFID Unit 2 e o PN532 (I²C) continuam disponíveis, e o smartcard por
+NFC também.
+
 Decisões, e o porquê:
 
 - **Um driver só para a lógica do chip.** O WS1850S é compatível em

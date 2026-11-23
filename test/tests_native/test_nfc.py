@@ -8,6 +8,7 @@ registers and the card at its frames, and the real driver runs between them.
 import os
 import sys
 import time
+import types
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -448,6 +449,39 @@ class RecordTest(unittest.TestCase):
         with self.assertRaises(NFCSizeError):
             link.write(8, bytes(16))  # not on a block boundary
         self.assertEqual(len(link.read(719, 1)), 1)
+
+
+class DriverSelectionTest(unittest.TestCase):
+    """The RC522 reset line is GPIO28 on the P4; the smartcard hat may own it."""
+
+    def setUp(self):
+        self._saved_drivers = nfc._drivers
+        sys.modules.pop("uscard", None)
+
+    def tearDown(self):
+        sys.modules.pop("uscard", None)
+        nfc._drivers = self._saved_drivers
+
+    def _classes(self):
+        nfc._drivers = None
+        return [cls for _, cls, _ in nfc._load_drivers()]
+
+    def test_rc522_is_offered_without_a_smartcard_port(self):
+        self.assertIn("MFRC522", self._classes())
+
+    def test_rc522_is_skipped_when_the_smartcard_port_claims_gpio28(self):
+        module = types.ModuleType("uscard")
+        module.PIN_CANDIDATES = ((2, 21, 28), (1, 21, 22))
+        sys.modules["uscard"] = module
+        classes = self._classes()
+        self.assertNotIn("MFRC522", classes)
+        self.assertIn("WS1850S", classes)
+
+    def test_rc522_is_offered_when_the_smartcard_port_avoids_gpio28(self):
+        module = types.ModuleType("uscard")
+        module.PIN_CANDIDATES = ((1, 21, 22),)
+        sys.modules["uscard"] = module
+        self.assertIn("MFRC522", self._classes())
 
 
 if __name__ == "__main__":
