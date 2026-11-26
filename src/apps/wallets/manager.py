@@ -463,7 +463,7 @@ class WalletManager(BaseApp):
                 )
 
             message = (
-                "The address\n\n%s\n\nwas not found between indexes %d and %d.\n\n"
+                "%s\n\nWas not found between indexes %d and %d.\n\n"
                 "Check the next %d addresses?"
                 % (format_addr(addr_to_check, words=4), start_idx, end_idx, batch_size)
             )
