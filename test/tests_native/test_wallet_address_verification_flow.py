@@ -195,7 +195,16 @@ class WalletAddressVerificationFlowTest(TestCase):
     def test_cancel_after_address_search_batch(self):
         app = get_wallets_app(self.keystore, "regtest")
         address, _ = app.manager.wallets[0].get_address(26, app.manager.network)
-        result, screens = self._process_qr(app, address, confirm=False)
+        formatted = "formatted address"
+        with patch.object(wallet_manager_module, "format_addr", return_value=formatted) as formatter:
+            result, screens = self._process_qr(app, address, confirm=False)
+        formatter.assert_called_once_with(address, words=4)
+        self.assertEqual(
+            screens[1].args[1],
+            "The address\n\nformatted address\n\n"
+            "was not found between indexes 0 and 24.\n\n"
+            "Check the next 25 addresses?",
+        )
         self.assertFalse(result)
         self.assertEqual(len(screens), 2)
         self.assertIsInstance(screens[1], _DummyPrompt)

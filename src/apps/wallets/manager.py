@@ -1,4 +1,5 @@
 from app import BaseApp
+from gui.common import format_addr
 from gui.screens import Menu, InputScreen, Prompt, TransactionScreen
 from .screens import WalletScreen, ConfirmWalletScreen
 
@@ -462,9 +463,9 @@ class WalletManager(BaseApp):
                 )
 
             message = (
-                "The address %s was not found between indexes %d and %d.\n\n"
+                "The address\n\n%s\n\nwas not found between indexes %d and %d.\n\n"
                 "Check the next %d addresses?"
-                % (addr_to_check, start_idx, end_idx, batch_size)
+                % (format_addr(addr_to_check, words=4), start_idx, end_idx, batch_size)
             )
             cont = await show_screen(
                 Prompt(
